@@ -249,3 +249,20 @@ Todos os testes foram executados e validados no ambiente:
   - 0 caminhos absolutos locais do Windows vazados no código de produção.
 - Commit canônico estruturado sob o padrão Conventional Commits com autoria `Dante Ferraz <danteferraz06@gmail.com>`.
 
+### 8.5. Humanização do Manifesto Técnico, Refinamento do Código e Publicação Remota
+- **Humanização do `README.md`:**
+  - Redação completa do manifesto do DA-V explicando o racional técnico contra soluções comerciais (Discord/Zoom/AnyDesk com 30 FPS e compressão severa).
+  - Diagrama Mermaid de arquitetura ponta a ponta (Sender -> P2P / STUN / Relay -> Receiver).
+  - Tabela comparativa de benchmarks reais comprovando 60 FPS estáveis, latência submétrica (< 2.5ms) e 0% perda de pacotes.
+  - Guias práticos de compilação C++23 e execução para Windows e Linux.
+- **Humanização do Código:**
+  - `scripts/gui_app.py`: Documentação dos mecanismos de scheduler do Windows NT (timer de 1ms via `timeBeginPeriod`, desktop handle interativo e GIL switch interval).
+  - `scripts/dav_sender_worker.py`: Explicação detalhada da arquitetura desacoplada de 3 threads com afinidade de CPU para eliminar contenção de GIL.
+  - `src/capture/linux/x11_capturer.cpp`: Racional de engenharia detalhando a escolha de MIT-SHM sobre XGetImage para eliminar o overhead de cópia IPC de ~8.3MB por frame.
+  - `src/discovery/p2p_channel.py` e `src/signaling/server/dav_rendezvous.py`: Documentação do fluxo de perfuração de NAT (UDP Hole-Punching) e Blind Encrypted Relay.
+- **Sincronização e Publicação Remota no GitHub:**
+  - Repositório remoto vinculado: `https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video.git`.
+  - Mesclada licença MIT padrão e preservado o manifesto humanizado.
+  - Executado push com sucesso da branch `main` com rastreamento upstream (`origin/main`).
+
+
