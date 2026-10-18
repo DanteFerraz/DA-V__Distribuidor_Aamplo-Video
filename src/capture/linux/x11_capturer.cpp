@@ -1,3 +1,16 @@
+// ==============================================================================
+// DA-V: Motor de Captura Nativa X11 com Memória Compartilhada (MIT-SHM)
+// Autor: Dante Ferraz (MonoTech)
+//
+// Racional de Engenharia:
+// A função padrão XGetImage transfere o bitmap bruto através de sockets Unix de
+// domínio local (IPC), o que para 1080p BGRA significa ~8.3 MB copiados em espaço
+// de usuário a cada frame (sobrecarregando CPU e gerando jitter).
+// Com a extensão MIT-SHM (XShmGetImage), o servidor X grava os pixels diretamente
+// em um segmento de memória compartilhada (shmget/shmat) mapeado no espaço de
+// endereçamento virtual do processo, viabilizando captura zero-copy em < 2ms.
+// ==============================================================================
+
 #include "src/capture/linux/x11_capturer.hpp"
 #include "src/core/logger.hpp"
 #include "src/core/time.hpp"

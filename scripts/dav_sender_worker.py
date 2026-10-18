@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DA-V Sender Subprocess Worker (v3.0 Multi-Threaded Decoupled Pipeline)
-Runs in an isolated Python process to completely eliminate CPython GIL contention.
+DA-V — Pipeline Desacoplado de Transmissão de Vídeo (Sender Worker)
+Autor: Dante Ferraz (MonoTech)
 
-Architecture:
-- Thread 0 (Capture Worker):  Win32 GDI BitBlt + DIBSection -> Ring Buffer (TIME_CRITICAL @ Core 0)
-- Thread 1 (Encode Worker):   NVIDIA NVENC RTX 4070 (p1 ULL) + SIMD Vector Encryption (HIGHEST @ Core 1)
-- Thread 2 (Send Worker):     MTU Datagram Fragmentation + Non-blocking UDP (ABOVE_NORMAL @ Core 2)
-- High-precision multimedia timer (1ms) + Hybrid Sleep/Spinwait Cadence loop (0% drift)
+Executa em um processo isolado para mitigar contenção de GIL do CPython,
+organizado em três threads dedicadas com afinidade de CPU:
+- Thread 0 (Captura):  DXGI / Win32 GDI / Linux X11 MIT-SHM -> Ring Buffer SPSC lock-free.
+- Thread 1 (Encode):   NVIDIA NVENC (p1 Ultra-Low Latency) / PyAV H.264 + Criptografia ChaCha20-Poly1305.
+- Thread 2 (Envio):    Fragmentação MTU, pacotes RTP 32B e socket UDP assíncrono.
+Pacing de 60 FPS garantido via relógio de precisão monotônico com 0% de drift.
 """
 
 import sys

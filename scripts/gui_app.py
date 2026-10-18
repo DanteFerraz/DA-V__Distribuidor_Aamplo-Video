@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DA-V — Distribuidor Aamplo · Video Distribution Service GUI
-Modern Desktop Application powered by PySide6 (LGPL v3 - Safe for Commercial & Closed-Source Use).
-Acts strictly as a lightweight presentation launcher consuming the modular DA-V UI package.
+DA-V — Distribuidor Amplo de Vídeo (Desktop Launcher)
+Autor: Dante Ferraz (MonoTech)
+
+Ponto de entrada da interface gráfica desktop construída sobre PySide6 (Qt).
+Configura afinidade de SO, timer de alta precisão (1ms), prioridade de processo
+e formatação de superfície gráfica sem bloqueio de VSync antes de inicializar a janela.
 """
 
 import sys
 import os
 import argparse
 
-# Enable 1ms high-precision multimedia timer, elevate priority and attach to WinSta0\Default
+# ── Otimizações de Baixo Nível do SO ──────────────────────────────────────────
+# O Windows por padrão usa granularidade de timer de ~15.6ms. Para sustentar
+# 60 FPS com precisão milimétrica sem jitter, forçamos o kernel NT a 1ms
+# e elevamos a prioridade do processo para prevenir preempção por outras tarefas.
 if sys.platform == "win32":
     try:
         import ctypes
@@ -30,7 +36,7 @@ if sys.platform == "win32":
             _k32.SetPriorityClass(_h, 0x8000)  # ABOVE_NORMAL_PRIORITY_CLASS
             _k32.CloseHandle(_h)
 
-        # Attach main thread to interactive user desktop WinSta0\Default
+        # Garante vínculo da thread principal ao desktop interativo WinSta0\Default
         _u32 = ctypes.windll.user32
         _h_desk = _u32.OpenDesktopW("Default", 0, False, 0x01FF)
         if _h_desk:
@@ -38,11 +44,14 @@ if sys.platform == "win32":
     except Exception:
         pass
 else:
+    # No Linux, reduzimos o nice value para elevar a prioridade de agendamento POSIX
     try:
         os.nice(-10)
     except Exception:
         pass
 
+# Ajuste do GIL switch interval para 1ms (padrão é 5ms) para alternância rápida
+# entre o loop de eventos Qt e as threads de decodificação e streaming
 try:
     sys.setswitchinterval(0.001)
 except Exception:

@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DA-V Rendezvous & NAT Traversal Signaling Server
-Lightweight, zero-dependency microservice for peer discovery, STUN reflection,
-HMAC session derivation (TCD model), and blind UDP relay fallback.
+DA-V — Servidor de Sinalização Rendezvous e Descoberta STUN
+Autor: Dante Ferraz (MonoTech)
 
-Can run locally or deployed directly on the Oracle Cloud VPS.
+Microserviço autônomo e sem dependências externas (Python puro: asyncio + socket),
+projetado para deploy imediato em VPS Linux (Oracle Cloud) ou teste local.
+Responsabilidades:
+- Servidor STUN UDP reflexivo para identificação do par (IP:Porta) público.
+- Pareamento de nós transmissor e receptor baseado em PIN efêmero de 180 segundos.
+- Derivação de tokens de autenticação HMAC anti-replay (herdado do TCD Core).
+- Roteamento cego (Blind Encrypted Relay) como fallback caso os dois nós
+  estejam atrás de NATs simétricos restritivos que impeçam o hole-punching direto.
 """
 
 import sys

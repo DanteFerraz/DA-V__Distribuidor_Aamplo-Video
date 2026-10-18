@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DA-V P2P Channel Client & UDP Hole-Punching Engine
-Connects to the Oracle Cloud Rendezvous Server, resolves NAT reflexive endpoints via STUN,
-conducts simultaneous UDP hole punching, and verifies peer connectivity.
+DA-V — Orquestrador de Canal P2P e Perfuração de NAT (UDP Hole-Punching)
+Autor: Dante Ferraz (MonoTech)
+
+Viabiliza conexão ponto a ponto direta entre dois computadores remotos atrás
+de roteadores domésticos/corporativos (NAT assimétrico/cone de portas).
+Fluxo Operacional:
+1. Consulta STUN reflexivo para mapeamento da porta pública externa do nó.
+2. Troca de endpoints através do servidor Rendezvous via código PIN de 6 dígitos.
+3. Rajada concorrente de pacotes UDP SYN/ACK para abrir as tabelas de estado do NAT.
+4. Confirmação bidirecional e comutação para transmissão direta sem intermediários.
 """
 
 import sys
@@ -28,7 +35,7 @@ MAGIC_ACK = b"DAV_P2P_ACK"
 
 class P2PChannelClient:
     """
-    Client orchestrator for P2P WAN and LAN connections using PIN Rendezvous and UDP Hole-Punching.
+    Cliente de conexão direta P2P para tráfego de vídeo e sinalização em tempo real.
     """
     def __init__(self, rendezvous_host: str = DEFAULT_RENDEZVOUS_HOST,
                  http_port: int = DEFAULT_HTTP_PORT,
