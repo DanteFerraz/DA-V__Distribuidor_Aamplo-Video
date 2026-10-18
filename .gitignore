@@ -1,0 +1,85 @@
+# ==============================================================================
+# Git Ignore - DA-V (Distribuidor Aamplo - Vídeo)
+# ==============================================================================
+
+# Python Cache & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# C++ / CMake Build Artifacts
+build/
+build_linux/
+out/
+bin/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+CMakeScripts/
+Testing/
+*.ninja
+.ninja_*
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+*.dylib
+*.pdb
+*.ilk
+*.exp
+vcpkg_installed/
+
+# Logs & Temporary Data
+logs/
+*.log
+scratch/
+temp/
+*.tmp
+*.temp
+
+# Video / Benchmark Test Dumps
+*.mp4
+*.avi
+*.mkv
+*.yuv
+test_cap_*.png
+test_output_*.png
+benchmark_*.csv
+
+# Sensitive & Environment Files
+.env
+.env.*
+!.env.example
+credentials.env
+private/
+secrets/
+
+# IDE & Editor Specific
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
