@@ -265,4 +265,17 @@ Todos os testes foram executados e validados no ambiente:
   - Mesclada licença MIT padrão e preservado o manifesto humanizado.
   - Executado push com sucesso da branch `main` com rastreamento upstream (`origin/main`).
 
+### 8.6. Deploy do Servidor de Sinalização na Nuvem (Oracle Cloud VPS 129.148.26.150)
+- **Serviço de Sistema Dedicado (`dav-rendezvous.service`):**
+  - Implantado em `/opt/dav_rendezvous/dav_rendezvous.py` na VPS Linux Oracle Cloud (`129.148.26.150`).
+  - Habilitado no `systemd` para inicialização automática no boot do servidor com reinício resiliente (`Restart=always`).
+- **Roteamento Nginx e Detecção de IP Real:**
+  - Configurado bloco reverso `/p2p/` no Nginx na porta padrão 80, permitindo que qualquer nó acesse a API REST de sinalização sem necessidade de regras complexas de firewall.
+  - Implementado suporte aos cabeçalhos `X-Real-IP` e `X-Forwarded-For` no servidor Python para identificar com exatidão o IP público real dos nós clientes.
+- **Firewall do Kernel Linux:**
+  - Regras inseridas e persistidas via `netfilter-persistent` para portas 8765/TCP, 8768/UDP (STUN reflexivo) e 9200/UDP (transporte KCP).
+- **Validação Ponta a Ponta:**
+  - Registro de nós e resolução por PIN de 6 dígitos testados através da Internet com 100% de sucesso.
+
+
 
