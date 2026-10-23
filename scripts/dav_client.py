@@ -186,12 +186,22 @@ class DavCoreEngine:
                 codec_type=codec_type, monitor_index=monitor_index
             )
 
+    def update_sender_target(self, new_ip: str, new_port: int):
+        """Atualiza dinamicamente o IP e porta de destino do transmissor."""
+        if hasattr(self, "_sender_cmd_queue") and self._sender_cmd_queue is not None:
+            try:
+                self._sender_cmd_queue.put(("UPDATE_TARGET", str(new_ip), int(new_port)))
+                print(f"[DAV-Client] Alvo de transmissão atualizado para {new_ip}:{new_port}")
+            except Exception as e:
+                print(f"[DAV-Client] Erro ao atualizar alvo: {e}")
+
     def start_receiver(
         self,
         bind_port: int,
         pin: str,
         on_frame_ready: Callable,
-        on_telemetry: Optional[Callable] = None
+        on_telemetry: Optional[Callable] = None,
+        target_peer: Optional[Tuple[str, int]] = None
     ) -> bool:
         self._user_frame_callback = on_frame_ready
         self._user_telemetry_callback = on_telemetry
@@ -223,7 +233,7 @@ class DavCoreEngine:
             )
             return res == 0
         else:
-            return self._start_fallback_receiver(bind_port, pin)
+            return self._start_fallback_receiver(bind_port, pin, target_peer=target_peer)
 
     def stop(self):
         if self._is_native:
@@ -271,6 +281,7 @@ class DavCoreEngine:
 
         ctx = mp.get_context("spawn")
         self._sender_stats_queue: "mp.Queue" = ctx.Queue(maxsize=16)
+        self._sender_cmd_queue: "mp.Queue" = ctx.Queue(maxsize=16)
         self._sender_stop_event: "mp.Event" = ctx.Event()
 
         self._sender_process = ctx.Process(
@@ -284,6 +295,7 @@ class DavCoreEngine:
                 self._sender_stop_event,
                 codec_type,
                 monitor_index,
+                self._sender_cmd_queue
             ),
         )
         self._sender_process.start()
@@ -309,7 +321,7 @@ class DavCoreEngine:
         return True
 
 
-    def _start_fallback_receiver(self, bind_port: int, pin: str) -> bool:
+    def _start_fallback_receiver(self, bind_port: int, pin: str, target_peer: Optional[Tuple[str, int]] = None) -> bool:
         self._fallback_running = True
 
         def _receiver_loop():
@@ -318,6 +330,16 @@ class DavCoreEngine:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024 * 1024)
             sock.bind(('0.0.0.0', bind_port))
             sock.settimeout(0.5)
+
+            # Envia rajada de pacotes SYN de perfuração de NAT (UDP Hole-Punching) se peer remoto foi informado
+            if target_peer:
+                peer_ip, peer_port = target_peer
+                for _ in range(8):
+                    try:
+                        sock.sendto(b"DAV_P2P_SYN", (str(peer_ip), int(peer_port)))
+                    except Exception:
+                        pass
+                    time.sleep(0.015)
 
             clean_pin = str(pin).replace("-", "").replace(" ", "").strip()
             raw_key = f"dav-secret-{clean_pin}-key-salt-2026".encode('utf-8')
@@ -443,6 +465,11 @@ class DavCoreEngine:
 
 
                 except socket.timeout:
+                    if target_peer and packets_received == 0:
+                        try:
+                            sock.sendto(b"DAV_P2P_SYN", (str(target_peer[0]), int(target_peer[1])))
+                        except Exception:
+                            pass
                     continue
                 except Exception:
                     continue

@@ -44,6 +44,7 @@ class DavMainWindow(QMainWindow):
     """
     peers_updated_signal = Signal(list)
     tupa_metrics_signal = Signal(object)
+    target_updated_signal = Signal(str, int, str)
 
     def __init__(
         self,
@@ -112,6 +113,7 @@ class DavMainWindow(QMainWindow):
         # ── TUPÃ Telemetry & Health Checker ──
         self.tupa_checker = TupaHealthChecker(sample_interval_sec=1.0)
         self.tupa_metrics_signal.connect(self._on_tupa_metrics_updated)
+        self.target_updated_signal.connect(self._on_target_updated)
         self.tupa_checker.start(lambda snap: self.tupa_metrics_signal.emit(snap))
 
         # ── Build Layout & Apply Theme ──
@@ -185,7 +187,7 @@ class DavMainWindow(QMainWindow):
 
         # View 0: Viewer / Receiver
         self.view_viewer = ViewerView(
-            initial_ip=self.local_ip,
+            initial_ip="",
             default_port=self.default_port,
             initial_pin=self.my_pin,
             parent=self.stacked_views
@@ -195,7 +197,7 @@ class DavMainWindow(QMainWindow):
 
         # View 1: Sender / Screen Sharing
         self.view_sender = SenderView(
-            initial_target_ip="127.0.0.1",
+            initial_target_ip="",
             default_target_port=self.target_default_port,
             initial_pin=self.my_pin,
             parent=self.stacked_views
@@ -247,6 +249,7 @@ class DavMainWindow(QMainWindow):
             port = self.view_viewer.spn_recv_port.value()
             pin = self.view_viewer.txt_recv_pin.text().strip()
 
+            target_peer = None
             # P2P Universal PIN Mode: If IP is omitted, resolve peer via Rendezvous
             if not target_ip:
                 self._append_log("INFO", f"[P2P] Modo PIN Universal ativo: Resolvendo '{pin}' no Rendezvous...")
@@ -257,13 +260,16 @@ class DavMainWindow(QMainWindow):
                         peer = res["peer"]
                         peer_target_ip = peer.get("public_ip") or peer.get("local_ip")
                         peer_target_port = int(peer.get("public_port") or peer.get("local_port"))
-                        self._append_log("SUCCESS", f"[P2P] Peer pareado via Rendezvous: {peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
+                        target_peer = (peer_target_ip, peer_target_port)
+                        self._append_log("SUCCESS", f"[P2P WAN] Transmissor localizado: {peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
                     else:
                         self._append_log("WARN", f"[P2P] Não foi possível parear o PIN '{pin}' no Rendezvous. Verifique se o Transmissor está ativo.")
                         return
                 except Exception as e:
                     self._append_log("WARN", f"[P2P] Falha ao consultar Rendezvous: {e}")
                     return
+            else:
+                target_peer = (target_ip, port)
 
             def _on_raw_frame(frame_data, width, height, ts, is_kf):
                 if isinstance(frame_data, bytes):
@@ -277,11 +283,11 @@ class DavMainWindow(QMainWindow):
                 self.frames_count = frames
                 self.bridge.telemetry_ready.emit(fps, mbps, lat, pkts, frames)
 
-            success = self.engine.start_receiver(port, pin, _on_raw_frame, _on_telem)
+            success = self.engine.start_receiver(port, pin, _on_raw_frame, _on_telem, target_peer=target_peer)
             if success:
                 self.is_receiving = True
                 self.view_viewer.set_connection_state(True)
-                mode_str = "P2P WAN" if not target_ip else f"LAN {target_ip}"
+                mode_str = f"P2P WAN -> {target_peer[0]}:{target_peer[1]}" if not target_ip else f"LAN {target_ip}"
                 self._append_log("INFO", f"Receptor ouvindo na porta UDP {port} ({mode_str} / PIN {pin})")
             else:
                 self._append_log("ERROR", f"Falha ao iniciar receptor na porta {port}")
@@ -335,22 +341,37 @@ class DavMainWindow(QMainWindow):
             )
             if success:
                 self.is_sending = True
-                details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}]"
+                if target_ip:
+                    details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}] -> {target_ip}:{target_port}"
+                else:
+                    details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}] (Aguardando Receptor PIN {pin})"
                 self.view_sender.set_sending_state(True, details)
                 self.beacon_service.update_status(True)
-                self._append_log("INFO", f"Transmissão iniciada para {target_ip}:{target_port} ({details})")
+                dest_str = f"{target_ip}:{target_port}" if target_ip else f"P2P WAN (PIN: {pin})"
+                self._append_log("INFO", f"Transmissão iniciada ({dest_str} - {details})")
 
                 # Background registration in Rendezvous for remote P2P PIN access
                 def _bg_register_sender():
                     try:
                         p2p = P2PChannelClient()
-                        reg = p2p.register_as_sender(pin, target_port, node_name=self.hostname)
-                        if reg:
-                            self._append_log("SUCCESS", f"[P2P] PIN '{pin}' registrado no Rendezvous para pareamento remoto.")
-                    except Exception as e:
-                        self._append_log("DEBUG", f"[P2P] Registro no Rendezvous em background ignorado: {e}")
+                        def _on_receiver_paired(peer):
+                            recv_ip = peer.get("public_ip") or peer.get("local_ip")
+                            recv_port = int(peer.get("public_port") or peer.get("local_port") or target_port)
+                            node_name = peer.get("node_name", "Receptor Remoto")
+                            self.bridge.log_message.emit(
+                                "SUCCESS",
+                                f"[P2P WAN] Receptor conectado ({node_name} em {recv_ip}:{recv_port})! Transmitindo vídeo..."
+                            )
+                            self.engine.update_sender_target(recv_ip, recv_port)
+                            self.target_updated_signal.emit(recv_ip, recv_port, node_name)
 
-                threading.Thread(target=_bg_register_sender, daemon=True).start()
+                        reg = p2p.register_as_sender(pin, target_port, node_name=self.hostname, on_paired_callback=_on_receiver_paired)
+                        if reg:
+                            self.bridge.log_message.emit("SUCCESS", f"[P2P] PIN '{pin}' registrado no Rendezvous (Aguardando Receptor remoto).")
+                    except Exception as e:
+                        self.bridge.log_message.emit("DEBUG", f"[P2P] Registro no Rendezvous em background ignorado: {e}")
+
+                threading.Thread(target=_bg_register_sender, daemon=True, name=f"P2P-Reg-{pin}").start()
             else:
                 self._append_log("ERROR", f"Falha ao iniciar transmissão para {target_ip}:{target_port}")
 
@@ -374,6 +395,16 @@ class DavMainWindow(QMainWindow):
             img, self.cur_fps, self.cur_mbps, self.cur_lat,
             self.pkts_count, self.frames_count
         )
+
+    @Slot(str, int, str)
+    def _on_target_updated(self, ip: str, port: int, node_name: str):
+        """Called when a remote receiver pairs with this sender."""
+        self.view_sender.txt_send_ip.setText(ip)
+        self.view_sender.spn_send_port.setValue(port)
+        res_txt = self.view_sender.cmb_res.currentText().split()[0]
+        fps_txt = self.view_sender.cmb_fps.currentText().split()[0]
+        details = f"{res_txt} @ {fps_txt} [P2P -> {ip}:{port}]"
+        self.view_sender.set_sending_state(True, details)
 
     @Slot(float, float, float, int, int)
     def _on_telemetry_updated(self, fps: float, mbps: float, lat: float, pkts: int, frames: int):

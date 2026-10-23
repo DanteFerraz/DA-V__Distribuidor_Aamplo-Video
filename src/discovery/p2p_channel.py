@@ -33,6 +33,61 @@ MAGIC_SYN = b"DAV_P2P_SYN"
 MAGIC_ACK = b"DAV_P2P_ACK"
 
 
+import struct
+
+def query_rfc5389_stun(local_sock: Optional[socket.socket] = None, stun_hosts=None) -> Optional[Tuple[str, int]]:
+    """
+    Executes a standard RFC 5389 STUN Binding Request against public STUN servers
+    (Google / Cloudflare) to discover the NAT reflexive public IP and external UDP port.
+    """
+    if stun_hosts is None:
+        stun_hosts = [
+            ("stun.l.google.com", 19302),
+            ("stun1.l.google.com", 19302),
+            ("stun.cloudflare.com", 3478),
+        ]
+
+    created_socket = False
+    sock = local_sock
+    if sock is None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        created_socket = True
+
+    magic_cookie = 0x2112A442
+    trans_id = os.urandom(12)
+    req = struct.pack('!HHI12s', 0x0001, 0, magic_cookie, trans_id)
+
+    old_timeout = sock.gettimeout()
+    sock.settimeout(1.5)
+
+    try:
+        for host, port in stun_hosts:
+            try:
+                sock.sendto(req, (host, port))
+                data, _ = sock.recvfrom(2048)
+                if len(data) >= 20:
+                    offset = 20
+                    while offset + 4 <= len(data):
+                        attr_type, attr_len = struct.unpack('!HH', data[offset:offset+4])
+                        if attr_type == 0x0020 and offset + 4 + attr_len <= len(data):  # XOR-MAPPED-ADDRESS
+                            xport = struct.unpack('!H', data[offset+6:offset+8])[0]
+                            mapped_port = xport ^ (magic_cookie >> 16)
+                            xip = struct.unpack('!I', data[offset+8:offset+12])[0]
+                            real_ip = xip ^ magic_cookie
+                            return (socket.inet_ntoa(struct.pack('!I', real_ip)), mapped_port)
+                        offset += 4 + attr_len
+            except Exception:
+                continue
+    finally:
+        try:
+            sock.settimeout(old_timeout)
+        except Exception:
+            pass
+        if created_socket:
+            sock.close()
+    return None
+
+
 class P2PChannelClient:
     """
     Cliente de conexão direta P2P para tráfego de vídeo e sinalização em tempo real.
@@ -76,21 +131,26 @@ class P2PChannelClient:
             except Exception as err:
                 logger.debug(f"Auto-início do Rendezvous local: {err}")
 
-    def get_public_endpoint_via_stun(self, local_sock: socket.socket) -> Optional[Tuple[str, int]]:
-        """Queries the STUN server using the local socket to get the reflexive public IP and Port."""
-        self._ensure_local_rendezvous()
-        try:
-            local_sock.sendto(b"DAV_STUN_REQ", (self.rendezvous_host, self.stun_port))
-            old_timeout = local_sock.gettimeout()
-            local_sock.settimeout(2.0)
-            data, _ = local_sock.recvfrom(1024)
-            local_sock.settimeout(old_timeout)
+    def get_public_endpoint_via_stun(self, local_sock: Optional[socket.socket] = None) -> Optional[Tuple[str, int]]:
+        """Queries STUN servers to get the reflexive public IP and Port."""
+        stun_res = query_rfc5389_stun(local_sock)
+        if stun_res:
+            return stun_res
 
-            resp = json.loads(data.decode("utf-8"))
-            if resp.get("status") == "ok":
-                return (resp["reflexive_ip"], int(resp["reflexive_port"]))
-        except Exception as e:
-            logger.debug(f"STUN query to {self.rendezvous_host}:{self.stun_port} failed: {e}")
+        self._ensure_local_rendezvous()
+        if local_sock is not None:
+            try:
+                local_sock.sendto(b"DAV_STUN_REQ", (self.rendezvous_host, self.stun_port))
+                old_timeout = local_sock.gettimeout()
+                local_sock.settimeout(2.0)
+                data, _ = local_sock.recvfrom(1024)
+                local_sock.settimeout(old_timeout)
+
+                resp = json.loads(data.decode("utf-8"))
+                if resp.get("status") == "ok":
+                    return (resp["reflexive_ip"], int(resp["reflexive_port"]))
+            except Exception as e:
+                logger.debug(f"STUN query failed: {e}")
         return None
 
     def register_as_sender(
@@ -106,10 +166,20 @@ class P2PChannelClient:
         """
         self._ensure_local_rendezvous()
         try:
+            pub_ip, pub_port = None, None
+            try:
+                stun_ep = self.get_public_endpoint_via_stun()
+                if stun_ep:
+                    pub_ip, pub_port = stun_ep
+            except Exception:
+                pass
+
             payload = json.dumps({
                 "pin": pin,
                 "node_name": node_name,
-                "local_port": local_port
+                "local_port": local_port,
+                "public_port": pub_port or local_port,
+                "local_ip": pub_ip or "127.0.0.1"
             }).encode("utf-8")
 
             req = urllib.request.Request(
@@ -138,7 +208,8 @@ class P2PChannelClient:
                             with urllib.request.urlopen(p_req, timeout=3) as p_resp:
                                 p_data = json.loads(p_resp.read().decode("utf-8"))
                                 if p_data.get("status") == "paired":
-                                    on_paired_callback(p_data["peer"])
+                                    peer = p_data["peer"]
+                                    on_paired_callback(peer)
                                     break
                         except Exception:
                             continue
@@ -164,10 +235,20 @@ class P2PChannelClient:
         """
         self._ensure_local_rendezvous()
         try:
+            pub_ip, pub_port = None, None
+            try:
+                stun_ep = self.get_public_endpoint_via_stun()
+                if stun_ep:
+                    pub_ip, pub_port = stun_ep
+            except Exception:
+                pass
+
             payload = json.dumps({
                 "pin": pin,
                 "node_name": node_name,
-                "local_port": local_port
+                "local_port": local_port,
+                "public_port": pub_port or local_port,
+                "local_ip": pub_ip or "127.0.0.1"
             }).encode("utf-8")
 
             req = urllib.request.Request(

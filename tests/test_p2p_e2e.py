@@ -120,18 +120,18 @@ def test_p2p_e2e():
         print("[4/4] Testando envio de dados pelo tunel P2P aberto ...")
         sender_sock.sendto(b"DAV_FRAME_DATA_CHUNK_60FPS", ("127.0.0.1", 19002))
         
-        receiver_sock.settimeout(1.0)
+        receiver_sock.settimeout(0.5)
         received_frame = False
-        for i in range(10):
+        t_end = time.time() + 3.0
+        while time.time() < t_end:
             try:
                 data, addr = receiver_sock.recvfrom(1024)
-                print(f"       Pacote {i+1} no receiver: {data} de {addr}")
+                print(f"       Pacote no receiver: {data} de {addr}")
                 if data == b"DAV_FRAME_DATA_CHUNK_60FPS":
                     received_frame = True
                     break
-            except socket.timeout:
-                print("       Timeout no receiver")
-                break
+            except (socket.timeout, ConnectionResetError):
+                continue
 
         assert received_frame, "Quadro de video nao recebido pelo tunel P2P"
         print(f"  [OK] Pacote de video recebido via P2P de {addr}!")

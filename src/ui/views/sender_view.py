@@ -41,6 +41,7 @@ class SenderView(QWidget):
         # Row 0: Target IP and Target UDP Port
         grid.addWidget(QLabel("IP Alvo (Destino):"), 0, 0)
         self.txt_send_ip = QLineEdit(self.initial_target_ip)
+        self.txt_send_ip.setPlaceholderText("Vazio p/ P2P Remoto (PIN) ou IP específico")
         grid.addWidget(self.txt_send_ip, 0, 1)
 
         grid.addWidget(QLabel("Porta UDP Alvo:"), 0, 2)

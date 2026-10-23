@@ -227,7 +227,8 @@ def _sender_subprocess(
     stats_queue: "mp.Queue",
     stop_event: "mp.Event",
     codec_type: str = "h264_nvenc",
-    monitor_index: int = 0
+    monitor_index: int = 0,
+    cmd_queue: Optional["mp.Queue"] = None
 ):
     """Runs in a separate OS process — triple-threaded decoupled pipeline."""
     if sys.platform == "win32":
@@ -559,11 +560,42 @@ def _sender_subprocess(
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
             sock.setblocking(False)
+            try:
+                sock.bind(('0.0.0.0', target_port))
+            except Exception:
+                try:
+                    sock.bind(('0.0.0.0', 0))
+                except Exception:
+                    pass
 
             max_chunk = 1350
             mac_tag = b"POL1305_AUTH_16B"
 
             while not stop_event.is_set() or not ready_buffers.empty():
+                # Process command queue
+                if cmd_queue is not None:
+                    try:
+                        while True:
+                            cmd = cmd_queue.get_nowait()
+                            if cmd[0] == "UPDATE_TARGET":
+                                target_ip, target_port = cmd[1], cmd[2]
+                                print(f"[DA-V Sender] Alvo redirecionado para {target_ip}:{target_port}")
+                    except Exception:
+                        pass
+
+                # Non-blocking check for incoming P2P hole-punch packets
+                try:
+                    in_pkt, in_addr = sock.recvfrom(2048)
+                    if in_pkt.startswith(b"DAV_"):
+                        if in_addr != (target_ip, target_port):
+                            target_ip, target_port = in_addr[0], in_addr[1]
+                            print(f"[DA-V Sender P2P] Hole-Punch recebido! Alvo ajustado para {target_ip}:{target_port}")
+                        try:
+                            sock.sendto(b"DAV_P2P_ACK", in_addr)
+                        except Exception:
+                            pass
+                except (BlockingIOError, OSError):
+                    pass
                 try:
                     buf_idx, frame_id, _t_cap_start, _t_cap_end = ready_buffers.get(timeout=0.05)
                 except queue.Empty:
@@ -605,13 +637,14 @@ def _sender_subprocess(
                             frame_id, chunk_len, frag_idx, frag_count,
                         )
                         pkt = header + chunk_data + mac_tag
-                        try:
-                            sock.sendto(pkt, (target_ip, target_port))
-                        except (BlockingIOError, OSError):
+                        if target_ip:
                             try:
                                 sock.sendto(pkt, (target_ip, target_port))
-                            except Exception:
-                                pass
+                            except (BlockingIOError, OSError):
+                                try:
+                                    sock.sendto(pkt, (target_ip, target_port))
+                                except Exception:
+                                    pass
 
                         total_packets_sent += 1
                         frame_sent_bytes += len(pkt)
@@ -642,6 +675,13 @@ def _sender_subprocess(
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
         sock.setblocking(False)
+        try:
+            sock.bind(('0.0.0.0', target_port))
+        except Exception:
+            try:
+                sock.bind(('0.0.0.0', 0))
+            except Exception:
+                pass
 
         max_chunk = 1350
         mac_tag = b"POL1305_AUTH_16B"
@@ -654,6 +694,31 @@ def _sender_subprocess(
         t_target = time.perf_counter() + frame_interval
 
         while not stop_event.is_set():
+            # Process command queue (dynamic target redirect)
+            if cmd_queue is not None:
+                try:
+                    while True:
+                        cmd = cmd_queue.get_nowait()
+                        if cmd[0] == "UPDATE_TARGET":
+                            target_ip, target_port = cmd[1], cmd[2]
+                            print(f"[DA-V Sender] Alvo redirecionado para {target_ip}:{target_port}")
+                except Exception:
+                    pass
+
+            # Non-blocking check for incoming P2P hole-punch packets
+            try:
+                in_pkt, in_addr = sock.recvfrom(2048)
+                if in_pkt.startswith(b"DAV_"):
+                    if in_addr != (target_ip, target_port):
+                        target_ip, target_port = in_addr[0], in_addr[1]
+                        print(f"[DA-V Sender P2P] Hole-Punch recebido! Alvo ajustado para {target_ip}:{target_port}")
+                    try:
+                        sock.sendto(b"DAV_P2P_ACK", in_addr)
+                    except Exception:
+                        pass
+            except (BlockingIOError, OSError):
+                pass
+
             # 1. Grab latest frame under lock (< 1ms copy)
             with buf_lock:
                 np.copyto(local_enc_buf, shared_frame_buf)
@@ -700,13 +765,14 @@ def _sender_subprocess(
                         frame_id, chunk_len, frag_idx, frag_count,
                     )
                     pkt = header + chunk_data + mac_tag
-                    try:
-                        sock.sendto(pkt, (target_ip, target_port))
-                    except (BlockingIOError, OSError):
+                    if target_ip:
                         try:
                             sock.sendto(pkt, (target_ip, target_port))
-                        except Exception:
-                            pass
+                        except (BlockingIOError, OSError):
+                            try:
+                                sock.sendto(pkt, (target_ip, target_port))
+                            except Exception:
+                                pass
 
                     total_packets_sent += 1
                     frame_sent_bytes += len(pkt)

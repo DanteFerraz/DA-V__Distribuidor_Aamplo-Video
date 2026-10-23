@@ -157,7 +157,7 @@ class DavRendezvousServer:
             resp_data = {}
 
             # ── 1. GET /health or /status ──
-            if method == "GET" and path in ("/health", "/status", "/"):
+            if method == "GET" and (path in ("/health", "/status", "/", "/p2p/health", "/p2p/status", "/p2p/", "/p2p") or path.endswith("/health") or path.endswith("/status")):
                 resp_data = {
                     "service": "DAV-Rendezvous",
                     "status": "online",
