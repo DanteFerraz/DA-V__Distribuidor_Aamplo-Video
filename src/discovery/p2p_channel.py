@@ -25,9 +25,9 @@ from typing import Optional, Tuple, Callable
 
 logger = logging.getLogger("DAV-P2PChannel")
 
-DEFAULT_RENDEZVOUS_HOST = "127.0.0.1"
-DEFAULT_HTTP_PORT = 8765
-DEFAULT_STUN_PORT = 8768
+DEFAULT_RENDEZVOUS_HOST = os.environ.get("DAV_RENDEZVOUS_HOST", "127.0.0.1")
+DEFAULT_HTTP_PORT = int(os.environ.get("DAV_RENDEZVOUS_PORT", 8765))
+DEFAULT_STUN_PORT = int(os.environ.get("DAV_STUN_PORT", 8768))
 
 MAGIC_SYN = b"DAV_P2P_SYN"
 MAGIC_ACK = b"DAV_P2P_ACK"
