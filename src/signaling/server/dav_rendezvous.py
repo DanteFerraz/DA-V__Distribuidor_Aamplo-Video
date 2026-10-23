@@ -135,6 +135,11 @@ class DavRendezvousServer:
                         except ValueError:
                             content_length = 0
 
+            if "x-real-ip" in headers:
+                client_ip = headers["x-real-ip"]
+            elif "x-forwarded-for" in headers:
+                client_ip = headers["x-forwarded-for"].split(",")[0].strip()
+
             # Read body
             body_bytes = b""
             if content_length > 0:

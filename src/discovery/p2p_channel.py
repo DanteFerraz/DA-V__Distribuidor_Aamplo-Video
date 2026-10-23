@@ -25,8 +25,8 @@ from typing import Optional, Tuple, Callable
 
 logger = logging.getLogger("DAV-P2PChannel")
 
-DEFAULT_RENDEZVOUS_HOST = os.environ.get("DAV_RENDEZVOUS_HOST", "127.0.0.1")
-DEFAULT_HTTP_PORT = int(os.environ.get("DAV_RENDEZVOUS_PORT", 8765))
+DEFAULT_RENDEZVOUS_HOST = os.environ.get("DAV_RENDEZVOUS_HOST", "129.148.26.150")
+DEFAULT_HTTP_PORT = int(os.environ.get("DAV_RENDEZVOUS_PORT", 80))
 DEFAULT_STUN_PORT = int(os.environ.get("DAV_STUN_PORT", 8768))
 
 MAGIC_SYN = b"DAV_P2P_SYN"
@@ -43,7 +43,7 @@ class P2PChannelClient:
         self.rendezvous_host = rendezvous_host
         self.http_port = http_port
         self.stun_port = stun_port
-        self.base_url = f"http://{rendezvous_host}:{http_port}"
+        self.base_url = f"http://{rendezvous_host}:{http_port}" if http_port not in (80, 443) else f"http://{rendezvous_host}"
         self.is_running = False
 
     def _ensure_local_rendezvous(self):
