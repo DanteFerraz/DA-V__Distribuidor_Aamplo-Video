@@ -46,8 +46,39 @@ class P2PChannelClient:
         self.base_url = f"http://{rendezvous_host}:{http_port}"
         self.is_running = False
 
+    def _ensure_local_rendezvous(self):
+        """Inicia automaticamente o microserviço Rendezvous local se estiver em localhost e a porta estiver fechada."""
+        if self.rendezvous_host not in ("127.0.0.1", "localhost"):
+            return
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.2)
+                if s.connect_ex(("127.0.0.1", self.http_port)) == 0:
+                    return
+        except Exception:
+            pass
+
+        srv_script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "src", "signaling", "server", "dav_rendezvous.py"
+        )
+        if os.path.isfile(srv_script):
+            import subprocess
+            try:
+                creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+                subprocess.Popen(
+                    [sys.executable, srv_script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags
+                )
+                time.sleep(0.6)
+            except Exception as err:
+                logger.debug(f"Auto-início do Rendezvous local: {err}")
+
     def get_public_endpoint_via_stun(self, local_sock: socket.socket) -> Optional[Tuple[str, int]]:
         """Queries the STUN server using the local socket to get the reflexive public IP and Port."""
+        self._ensure_local_rendezvous()
         try:
             local_sock.sendto(b"DAV_STUN_REQ", (self.rendezvous_host, self.stun_port))
             old_timeout = local_sock.gettimeout()
@@ -73,6 +104,7 @@ class P2PChannelClient:
         Registers sender on the Rendezvous server with PIN and starts background polling
         for receiver connection.
         """
+        self._ensure_local_rendezvous()
         try:
             payload = json.dumps({
                 "pin": pin,
@@ -130,6 +162,7 @@ class P2PChannelClient:
         Queries the Rendezvous server to match a Sender using only the PIN.
         Returns the peer's endpoints and session tokens.
         """
+        self._ensure_local_rendezvous()
         try:
             payload = json.dumps({
                 "pin": pin,
