@@ -1,6 +1,7 @@
 #include "src/session/session.hpp"
 #include "src/core/logger.hpp"
 #include "src/core/time.hpp"
+#include <cstring>
 
 namespace dav {
 

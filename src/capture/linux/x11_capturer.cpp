@@ -15,6 +15,7 @@
 #include "src/core/logger.hpp"
 #include "src/core/time.hpp"
 #include <chrono>
+#include <cstring>
 
 namespace dav {
 
