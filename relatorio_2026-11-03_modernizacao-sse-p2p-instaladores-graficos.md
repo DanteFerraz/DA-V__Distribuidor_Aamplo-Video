@@ -51,7 +51,7 @@ Principais objetivos atingidos:
 
 ### E. Instaladores Gráficos Multiplataforma e Pré-Compilação Windows
 - **`installer/windows/dav_setup.iss`:** Instalador profissional do Windows (Inno Setup) com suporte a tema moderno, atalhos, liberação de firewall e registro de protocolo URI.
-- **`scripts/dav_installer_win.py`:** Assistente gráfico em PySide6 redesenhado do zero (arquitetura Dark Obsidian & Electric Cyan, WCAG 2.2 AAA compliant), eliminando o tema nativo Aero do QWizard. Conta com Stepper lateral de 4 etapas, card de telemetria NVIDIA NVENC em tempo real, seleção de regras de firewall UDP e atalhos.
+- **`scripts/dav_installer_win.py`:** Assistente gráfico em PySide6 redesenhado do zero (arquitetura Dark Obsidian & Electric Cyan, WCAG 2.2 AAA compliant), eliminando o tema nativo Aero do QWizard. Conta com Stepper lateral de 4 etapas, card de telemetria NVIDIA NVENC em tempo real, seleção de regras de firewall UDP e geração de atalhos nativos do Windows (`.lnk`) via WScript.Shell (eliminando scripts `.vbs` obsoletos).
 - **`installer/linux/dav.desktop` & `installer/linux/build_appimage.sh`:** Lançador XDG com ícone e script gerador de AppImage portátil autocontido.
 - **`scripts/dav_installer_linux.py`:** Assistente gráfico em PySide6 para instalação em distros Linux com detecção de sessão X11/Wayland e GPU.
 - **`dist_installer/DA-V_Instalador.exe`:** Executável binário standalone oficial otimizado (~45.9 MB) gerado com PyInstaller. Elimina dependências desnecessárias, carrega instantaneamente e possui interface escura profissional com alto contraste.
