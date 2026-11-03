@@ -13,6 +13,7 @@ import sys
 import os
 import subprocess
 import winreg
+import shutil
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -607,6 +608,27 @@ class DavModernInstaller(QDialog):
         self.current_step = max(self.current_step - 1, 0)
         self._update_step_view()
 
+    @staticmethod
+    def _get_proj_root() -> Path:
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).parent
+            if (base / "scripts" / "gui_app.py").exists():
+                return base
+            elif (base.parent / "scripts" / "gui_app.py").exists():
+                return base.parent
+            return base
+        return Path(__file__).resolve().parent.parent
+
+    @staticmethod
+    def _get_python_runtime() -> str:
+        pyw = shutil.which("pythonw") or shutil.which("pyw") or shutil.which("python")
+        if pyw:
+            return pyw
+        candidate = Path(sys.executable).parent / "pythonw.exe"
+        if candidate.exists():
+            return str(candidate)
+        return "pythonw"
+
     def _execute_installation(self):
         """Aplica as configurações no Windows com feedback visual passo a passo."""
         # Etapa 1: Permissões
@@ -639,26 +661,17 @@ class DavModernInstaller(QDialog):
             self.lbl_log2.setText("— Configuração de Firewall ignorada pelo usuário.")
         QApplication.processEvents()
 
+        proj_root = self._get_proj_root()
+        launcher = proj_root / "scripts" / "gui_app.py"
+        pyw_exe = self._get_python_runtime()
+
         # Etapa 3: Protocolo dav://
         if self.chk_protocol.isChecked():
             self.progress_bar.setValue(70)
             self.lbl_status.setText("Registrando protocolo 'dav://' no Registro do Windows...")
             QApplication.processEvents()
             try:
-                py_exe = sys.executable
-                if getattr(sys, "frozen", False):
-                    # Se congelado, apontar para o launcher ou próprio executável
-                    base_dir = Path(sys.executable).parent
-                    if (base_dir / "scripts" / "gui_app.py").exists():
-                        launcher = str(base_dir / "scripts" / "gui_app.py")
-                        cmd_str = f'"{sys.executable}" "{launcher}" "%1"'
-                    else:
-                        cmd_str = f'"{sys.executable}" "%1"'
-                else:
-                    proj_root = Path(__file__).resolve().parent.parent
-                    launcher = str(proj_root / "scripts" / "gui_app.py")
-                    pyw_exe = sys.executable.replace("python.exe", "pythonw.exe")
-                    cmd_str = f'"{pyw_exe}" "{launcher}" "%1"'
+                cmd_str = f'"{pyw_exe}" "{launcher}" "%1"'
 
                 with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\dav") as k:
                     winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "URL:DA-V Protocol")
@@ -681,19 +694,28 @@ class DavModernInstaller(QDialog):
             QApplication.processEvents()
             try:
                 desktop = Path(os.environ["USERPROFILE"]) / "Desktop"
-                vbs_path = desktop / "DA-V.vbs"
-                if getattr(sys, "frozen", False):
-                    base_dir = Path(sys.executable).parent
-                    target_script = base_dir / "scripts" / "gui_app.py"
-                    py_run = "pyw"
-                else:
-                    proj_root = Path(__file__).resolve().parent.parent
-                    target_script = proj_root / "scripts" / "gui_app.py"
-                    py_run = sys.executable.replace("python.exe", "pythonw.exe")
+                lnk_path = desktop / "DA-V.lnk"
 
-                with open(vbs_path, "w", encoding="utf-8") as f:
-                    f.write(f'CreateObject("Wscript.Shell").Run "\"{py_run}\" \"{target_script}\"", 0, False\n')
-                self.lbl_log4.setText("✓ Atalho criado na Área de Trabalho (DA-V.vbs).")
+                # Limpa qualquer .vbs antigo
+                vbs_old = desktop / "DA-V.vbs"
+                if vbs_old.exists():
+                    try:
+                        vbs_old.unlink()
+                    except Exception:
+                        pass
+
+                # Cria atalho nativo .lnk do Windows com ícone via PowerShell
+                ps_cmd = (
+                    f'$ws = New-Object -ComObject WScript.Shell; '
+                    f'$s = $ws.CreateShortcut("{lnk_path}"); '
+                    f'$s.TargetPath = "{pyw_exe}"; '
+                    f'$s.Arguments = "`"{launcher}`""; '
+                    f'$s.WorkingDirectory = "{proj_root}"; '
+                    f'$s.Description = "DA-V - Distribuidor Amplo de Vídeo (60 FPS P2P)"; '
+                    f'$s.Save()'
+                )
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], shell=True, capture_output=True, check=True)
+                self.lbl_log4.setText("✓ Atalho oficial criado na Área de Trabalho (DA-V).")
                 self.lbl_log4.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
             except Exception as e:
                 self.lbl_log4.setText(f"⚠ Atalho: {e}")
@@ -716,18 +738,10 @@ class DavModernInstaller(QDialog):
     def _launch_app(self):
         """Dispara a abertura da aplicação DA-V."""
         try:
-            if getattr(sys, "frozen", False):
-                base_dir = Path(sys.executable).parent
-                target = base_dir / "scripts" / "gui_app.py"
-                if target.exists():
-                    subprocess.Popen(["pyw", str(target)], shell=True)
-                else:
-                    subprocess.Popen([sys.executable], shell=True)
-            else:
-                proj_root = Path(__file__).resolve().parent.parent
-                target = proj_root / "scripts" / "gui_app.py"
-                pyw = sys.executable.replace("python.exe", "pythonw.exe")
-                subprocess.Popen([pyw, str(target)], shell=True)
+            proj_root = self._get_proj_root()
+            launcher = proj_root / "scripts" / "gui_app.py"
+            pyw_exe = self._get_python_runtime()
+            subprocess.Popen([pyw_exe, str(launcher)], cwd=str(proj_root), shell=True)
         except Exception as e:
             print(f"Erro ao abrir DA-V: {e}")
 
