@@ -63,8 +63,8 @@ using Result = std::expected<T, Error>;
 
 using VoidResult = std::expected<void, Error>;
 
-inline Error make_error(ErrorCode code, std::string_view message) {
-    return Error(code, message);
+inline std::unexpected<Error> make_error(ErrorCode code, std::string_view message) {
+    return std::unexpected(Error(code, message));
 }
 
 } // namespace dav

@@ -10,7 +10,7 @@ Result<AppConfig> AppConfig::from_default() {
 }
 
 Result<AppConfig> AppConfig::from_toml_file(std::string_view filepath) {
-    std::ifstream file(std::string(filepath));
+    std::ifstream file{std::string(filepath)};
     if (!file.is_open()) {
         return make_error(ErrorCode::NotFound, std::format("Could not open config file: {}", filepath));
     }
