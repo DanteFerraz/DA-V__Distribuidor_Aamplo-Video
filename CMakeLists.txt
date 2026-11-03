@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Modules and Platform
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -61,6 +62,7 @@ endif()
 # Core static library
 add_library(dav_core STATIC ${DAV_CORE_SOURCES})
 target_include_directories(dav_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
@@ -73,6 +75,7 @@ add_library(dav_shared SHARED ${DAV_CORE_SOURCES})
 set_target_properties(dav_shared PROPERTIES OUTPUT_NAME "dav_core")
 target_compile_definitions(dav_shared PRIVATE DAV_BUILDING_DLL)
 target_include_directories(dav_shared PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party

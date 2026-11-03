@@ -45,6 +45,10 @@ echo "[*] Gerador de Build: $BUILD_GEN"
 
 # 4. Configuração do CMake
 BUILD_DIR="$DIR/build"
+if [ "$1" == "--clean" ]; then
+    echo "[*] Limpando cache e diretório de build anterior..."
+    rm -rf "$BUILD_DIR"
+fi
 mkdir -p "$BUILD_DIR"
 
 echo "[*] Configurando projeto CMake em modo Release..."
