@@ -57,6 +57,11 @@ Principais objetivos atingidos:
 - **`dist_installer/DA-V_Instalador.exe`:** Executável binário standalone oficial otimizado (~45.9 MB) gerado com PyInstaller. Elimina dependências desnecessárias, carrega instantaneamente e possui interface escura profissional com alto contraste.
 - **`instalar_windows.bat`:** Script facilitador para execução com um clique no Windows.
 
+### F. Correção de Compilação C++23 no GCC 15 / Ubuntu 26.04
+- **`CMakeLists.txt` & `cmake/dependencies.cmake`:** Adicionado `${CMAKE_CURRENT_SOURCE_DIR}` às diretivas `target_include_directories` dos alvos `dav_core` e `dav_shared`. No GCC 15 / Ninja, os arquivos de código-fonte que importam com prefixo `"src/..."` falhavam na varredura de dependências sem o diretório raiz nos caminhos de busca (`-I`).
+- **`set(CMAKE_CXX_SCAN_FOR_MODULES OFF)`:** Desativada a varredura experimental de módulos C++20 do GCC 15, garantindo compilação ágil e limpa baseada em headers.
+- **`build_linux.sh`:** Adicionado suporte ao parâmetro `--clean` para limpeza de cache anterior (`./build_linux.sh --clean`).
+
 ---
 
 ## 3. Validação e Testes de Benchmark
