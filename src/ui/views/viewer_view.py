@@ -38,7 +38,7 @@ class ViewerView(QWidget):
 
         ctrl_layout.addWidget(QLabel("IP do Transmissor:"))
         self.txt_recv_ip = QLineEdit(self.initial_ip)
-        self.txt_recv_ip.setPlaceholderText("Vazio p/ P2P Remoto ou IP local")
+        self.txt_recv_ip.setPlaceholderText("Deixe VAZIO para PIN P2P ou IP LAN")
         ctrl_layout.addWidget(self.txt_recv_ip)
 
         ctrl_layout.addWidget(QLabel("Porta UDP:"))
@@ -49,18 +49,19 @@ class ViewerView(QWidget):
 
         ctrl_layout.addWidget(QLabel("PIN de Acesso:"))
         self.txt_recv_pin = QLineEdit(self.initial_pin)
-        self.txt_recv_pin.setPlaceholderText("PIN ou Link dav://")
-        self.txt_recv_pin.setFixedWidth(140)
+        self.txt_recv_pin.setPlaceholderText("PIN ex: 845-747")
+        self.txt_recv_pin.setFixedWidth(130)
         self.txt_recv_pin.textChanged.connect(self._on_pin_changed)
         ctrl_layout.addWidget(self.txt_recv_pin)
 
         self.btn_recv_toggle = QPushButton("Conectar e Assistir")
-        self.btn_recv_toggle.setMinimumWidth(180)
+        self.btn_recv_toggle.setMinimumWidth(150)
         self.btn_recv_toggle.clicked.connect(self.connect_toggled.emit)
         ctrl_layout.addWidget(self.btn_recv_toggle)
 
-        self.chk_hud = QCheckBox("Exibir HUD Telemetria")
+        self.chk_hud = QCheckBox("HUD Telemetria")
         self.chk_hud.setChecked(True)
+        self.chk_hud.setMinimumWidth(120)
         self.chk_hud.toggled.connect(self._on_hud_toggled)
         ctrl_layout.addWidget(self.chk_hud)
 

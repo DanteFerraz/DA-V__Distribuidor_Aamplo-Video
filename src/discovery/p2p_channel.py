@@ -33,6 +33,16 @@ MAGIC_SYN = b"DAV_P2P_SYN"
 MAGIC_ACK = b"DAV_P2P_ACK"
 
 
+def get_local_ip() -> str:
+    """Retorna o IP da interface de rede local ativa."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
 import struct
 
 def query_rfc5389_stun(local_sock: Optional[socket.socket] = None, stun_hosts=None) -> Optional[Tuple[str, int]]:
@@ -174,12 +184,14 @@ class P2PChannelClient:
             except Exception:
                 pass
 
+            clean_pin = str(pin).replace("-", "").replace(" ", "").strip()
+            loc_ip = get_local_ip()
             payload = json.dumps({
-                "pin": pin,
+                "pin": clean_pin,
                 "node_name": node_name,
                 "local_port": local_port,
                 "public_port": pub_port or local_port,
-                "local_ip": pub_ip or "127.0.0.1"
+                "local_ip": loc_ip
             }).encode("utf-8")
 
             req = urllib.request.Request(
@@ -200,7 +212,7 @@ class P2PChannelClient:
                     paired = False
                     # 1. Real-time push via Server-Sent Events (SSE) (< 50ms)
                     try:
-                        sse_url = f"{self.base_url}/p2p/events?pin={pin}&token={token}"
+                        sse_url = f"{self.base_url}/p2p/events?pin={clean_pin}&token={token}"
                         sse_req = urllib.request.Request(sse_url, headers={"Accept": "text/event-stream"})
                         with urllib.request.urlopen(sse_req, timeout=120) as sse_resp:
                             for raw_line in sse_resp:
@@ -226,7 +238,7 @@ class P2PChannelClient:
                             try:
                                 p_req = urllib.request.Request(
                                     f"{self.base_url}/p2p/poll",
-                                    data=json.dumps({"pin": pin, "token": token}).encode("utf-8"),
+                                    data=json.dumps({"pin": clean_pin, "token": token}).encode("utf-8"),
                                     headers={"Content-Type": "application/json"}
                                 )
                                 with urllib.request.urlopen(p_req, timeout=3) as p_resp:
@@ -267,12 +279,14 @@ class P2PChannelClient:
             except Exception:
                 pass
 
+            clean_pin = str(pin).replace("-", "").replace(" ", "").strip()
+            loc_ip = get_local_ip()
             payload = json.dumps({
-                "pin": pin,
+                "pin": clean_pin,
                 "node_name": node_name,
                 "local_port": local_port,
                 "public_port": pub_port or local_port,
-                "local_ip": pub_ip or "127.0.0.1"
+                "local_ip": loc_ip
             }).encode("utf-8")
 
             req = urllib.request.Request(

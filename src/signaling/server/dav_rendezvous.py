@@ -182,14 +182,15 @@ class DavRendezvousServer:
 
             # ── 1.5. GET /p2p/events (Server-Sent Events for instant pairing push) ──
             elif method == "GET" and (raw_path in ("/p2p/events", "/events") or raw_path.endswith("/events")):
-                pin = query_params.get("pin", "").strip()
+                raw_pin = query_params.get("pin", "").strip()
+                clean_pin = raw_pin.replace("-", "").replace(" ", "")
                 token = query_params.get("token", "").strip()
 
-                if not pin or pin not in self.sessions:
+                if not clean_pin or clean_pin not in self.sessions:
                     status_code = 404
                     resp_data = {"error": "Sessao nao encontrada"}
                 else:
-                    record = self.sessions[pin]
+                    record = self.sessions[clean_pin]
                     if record.token != token:
                         status_code = 403
                         resp_data = {"error": "Token invalido"}
@@ -238,30 +239,31 @@ class DavRendezvousServer:
 
             # ── 2. POST /p2p/register (Sender creates/registers PIN) ──
             elif method == "POST" and (raw_path == "/p2p/register" or raw_path.endswith("/register")):
-                pin = body_json.get("pin", "").strip()
+                raw_pin = body_json.get("pin", "").strip()
+                clean_pin = raw_pin.replace("-", "").replace(" ", "")
                 node_name = body_json.get("node_name", "Unknown-Sender")
                 local_ip = body_json.get("local_ip", client_ip)
                 local_port = int(body_json.get("local_port", 9000))
                 public_port = int(body_json.get("public_port", local_port))
 
-                if not pin:
+                if not clean_pin:
                     status_code = 400
                     resp_data = {"error": "PIN obrigatorio"}
                 else:
                     record = SessionRecord(
-                        pin=pin,
+                        pin=raw_pin,
                         sender_node=node_name,
                         sender_local_ip=local_ip,
                         sender_local_port=local_port,
                         sender_public_ip=client_ip
                     )
                     record.sender_public_port = public_port
-                    self.sessions[pin] = record
-                    logger.info(f"Transmissor registrado com PIN {pin} ({client_ip}:{public_port})")
+                    self.sessions[clean_pin] = record
+                    logger.info(f"Transmissor registrado com PIN {raw_pin} ({client_ip}:{public_port})")
 
                     resp_data = {
                         "status": "registered",
-                        "pin": pin,
+                        "pin": raw_pin,
                         "token": record.token,
                         "session_seed": record.session_seed,
                         "your_public_ip": client_ip,
@@ -270,17 +272,18 @@ class DavRendezvousServer:
 
             # ── 3. POST /p2p/resolve (Receiver pairs using PIN) ──
             elif method == "POST" and (raw_path == "/p2p/resolve" or raw_path.endswith("/resolve")):
-                pin = body_json.get("pin", "").strip()
+                raw_pin = body_json.get("pin", "").strip()
+                clean_pin = raw_pin.replace("-", "").replace(" ", "")
                 node_name = body_json.get("node_name", "Unknown-Receiver")
                 local_ip = body_json.get("local_ip", client_ip)
                 local_port = int(body_json.get("local_port", 9002))
                 public_port = int(body_json.get("public_port", local_port))
 
-                if pin not in self.sessions:
+                if clean_pin not in self.sessions:
                     status_code = 404
                     resp_data = {"error": "PIN nao encontrado ou sessao expirada"}
                 else:
-                    record = self.sessions[pin]
+                    record = self.sessions[clean_pin]
                     record.receiver_node = node_name
                     record.receiver_local_ip = local_ip
                     record.receiver_local_port = local_port
@@ -290,11 +293,11 @@ class DavRendezvousServer:
                     record.last_active = time.time()
                     record.pair_event.set()
 
-                    logger.info(f"Receptor pareado com PIN {pin} ({client_ip}:{public_port})")
+                    logger.info(f"Receptor pareado com PIN {raw_pin} ({client_ip}:{public_port})")
 
                     resp_data = {
                         "status": "paired",
-                        "pin": pin,
+                        "pin": raw_pin,
                         "token": record.token,
                         "session_seed": record.session_seed,
                         "your_public_ip": client_ip,
@@ -309,14 +312,15 @@ class DavRendezvousServer:
 
             # ── 4. POST /p2p/poll (Sender checks if Receiver has paired) ──
             elif method == "POST" and (raw_path == "/p2p/poll" or raw_path.endswith("/poll")):
-                pin = body_json.get("pin", "").strip()
+                raw_pin = body_json.get("pin", "").strip()
+                clean_pin = raw_pin.replace("-", "").replace(" ", "")
                 token = body_json.get("token", "")
 
-                if pin not in self.sessions:
+                if clean_pin not in self.sessions:
                     status_code = 404
                     resp_data = {"error": "Sessao nao encontrada"}
                 else:
-                    record = self.sessions[pin]
+                    record = self.sessions[clean_pin]
                     if record.token != token:
                         status_code = 403
                         resp_data = {"error": "Token invalido"}
@@ -338,9 +342,10 @@ class DavRendezvousServer:
 
             # ── 5. POST /p2p/relay_init (Fallback for Symmetric NAT) ──
             elif method == "POST" and (raw_path == "/p2p/relay_init" or raw_path.endswith("/relay_init")):
-                pin = body_json.get("pin", "").strip()
-                if pin in self.sessions:
-                    record = self.sessions[pin]
+                raw_pin = body_json.get("pin", "").strip()
+                clean_pin = raw_pin.replace("-", "").replace(" ", "")
+                if clean_pin in self.sessions:
+                    record = self.sessions[clean_pin]
                     record.relay_mode = True
                     record.last_active = time.time()
                     resp_data = {

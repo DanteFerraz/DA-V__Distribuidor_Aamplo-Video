@@ -248,20 +248,52 @@ class DavMainWindow(QMainWindow):
             target_ip = self.view_viewer.txt_recv_ip.text().strip()
             port = self.view_viewer.spn_recv_port.value()
             pin = self.view_viewer.txt_recv_pin.text().strip()
+            clean_pin = pin.replace("-", "").replace(" ", "").strip()
+
+            def _is_valid_ipv4(ip_str: str) -> bool:
+                parts = ip_str.split('.')
+                return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+            # Auto-sanitização resiliente: Se digitou IP incompleto ou malformado (ex: '10.103')
+            if target_ip and not _is_valid_ipv4(target_ip):
+                if clean_pin:
+                    self._append_log("WARN", f"[P2P] IP '{target_ip}' é incompleto ou inválido. Alternando automaticamente para Modo PIN Universal ('{pin}')...")
+                    target_ip = ""
+                    self.view_viewer.txt_recv_ip.setText("")
+                else:
+                    self._append_log("ERROR", f"[ERRO] O IP '{target_ip}' é inválido. Digite um IPv4 completo (ex: 192.168.10.103) ou deixe o campo vazio e use o PIN.")
+                    return
 
             target_peer = None
             # P2P Universal PIN Mode: If IP is omitted, resolve peer via Rendezvous
             if not target_ip:
+                if not clean_pin:
+                    self._append_log("ERROR", "Informe o PIN de Acesso (6 dígitos) ou o IP do transmissor.")
+                    return
+
                 self._append_log("INFO", f"[P2P] Modo PIN Universal ativo: Resolvendo '{pin}' no Rendezvous...")
                 try:
                     p2p = P2PChannelClient()
-                    res = p2p.resolve_receiver_target(pin, port, node_name=self.hostname)
+                    res = p2p.resolve_receiver_target(clean_pin, port, node_name=self.hostname)
                     if res and res.get("status") == "paired":
                         peer = res["peer"]
-                        peer_target_ip = peer.get("public_ip") or peer.get("local_ip")
-                        peer_target_port = int(peer.get("public_port") or peer.get("local_port"))
+                        your_pub_ip = res.get("your_public_ip")
+                        peer_pub_ip = peer.get("public_ip")
+
+                        # Roteamento inteligente LAN vs WAN:
+                        # Se ambos compartilham o mesmo IP público, prioriza rede local para contornar bloqueio de NAT Hairpinning
+                        is_same_lan = bool(your_pub_ip and peer_pub_ip and your_pub_ip == peer_pub_ip)
+                        if is_same_lan and peer.get("local_ip"):
+                            peer_target_ip = peer.get("local_ip")
+                            peer_target_port = int(peer.get("local_port") or port)
+                            mode_label = "LAN Local"
+                        else:
+                            peer_target_ip = peer.get("public_ip") or peer.get("local_ip")
+                            peer_target_port = int(peer.get("public_port") or peer.get("local_port") or port)
+                            mode_label = "P2P WAN"
+
                         target_peer = (peer_target_ip, peer_target_port)
-                        self._append_log("SUCCESS", f"[P2P WAN] Transmissor localizado: {peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
+                        self._append_log("SUCCESS", f"[{mode_label}] Transmissor localizado: {peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
                     else:
                         self._append_log("WARN", f"[P2P] Não foi possível parear o PIN '{pin}' no Rendezvous. Verifique se o Transmissor está ativo.")
                         return
@@ -354,18 +386,30 @@ class DavMainWindow(QMainWindow):
                 def _bg_register_sender():
                     try:
                         p2p = P2PChannelClient()
+                        clean_pin = pin.replace("-", "").replace(" ", "").strip()
                         def _on_receiver_paired(peer):
-                            recv_ip = peer.get("public_ip") or peer.get("local_ip")
-                            recv_port = int(peer.get("public_port") or peer.get("local_port") or target_port)
+                            my_pub_ip = reg.get("your_public_ip") if reg else None
+                            peer_pub_ip = peer.get("public_ip")
+                            is_same_lan = bool(my_pub_ip and peer_pub_ip and my_pub_ip == peer_pub_ip)
+
+                            if is_same_lan and peer.get("local_ip"):
+                                recv_ip = peer.get("local_ip")
+                                recv_port = int(peer.get("local_port") or target_port)
+                                mode_str = "LAN Local"
+                            else:
+                                recv_ip = peer.get("public_ip") or peer.get("local_ip")
+                                recv_port = int(peer.get("public_port") or peer.get("local_port") or target_port)
+                                mode_str = "P2P WAN"
+
                             node_name = peer.get("node_name", "Receptor Remoto")
                             self.bridge.log_message.emit(
                                 "SUCCESS",
-                                f"[P2P WAN] Receptor conectado ({node_name} em {recv_ip}:{recv_port})! Transmitindo vídeo..."
+                                f"[{mode_str}] Receptor conectado ({node_name} em {recv_ip}:{recv_port})! Transmitindo vídeo..."
                             )
                             self.engine.update_sender_target(recv_ip, recv_port)
                             self.target_updated_signal.emit(recv_ip, recv_port, node_name)
 
-                        reg = p2p.register_as_sender(pin, target_port, node_name=self.hostname, on_paired_callback=_on_receiver_paired)
+                        reg = p2p.register_as_sender(clean_pin, target_port, node_name=self.hostname, on_paired_callback=_on_receiver_paired)
                         if reg:
                             self.bridge.log_message.emit("SUCCESS", f"[P2P] PIN '{pin}' registrado no Rendezvous (Aguardando Receptor remoto).")
                     except Exception as e:

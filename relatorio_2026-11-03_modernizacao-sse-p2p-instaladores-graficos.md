@@ -66,6 +66,19 @@ Principais objetivos atingidos:
 - **`set(CMAKE_CXX_SCAN_FOR_MODULES OFF)`:** Desativada a varredura experimental de módulos C++20 do GCC 15, garantindo compilação ágil e limpa baseada em headers.
 - **`build_linux.sh`:** Adicionado suporte ao parâmetro `--clean` para limpeza de cache anterior (`./build_linux.sh --clean`).
 
+### G. Resiliência de Pareamento P2P, Sanitização de IP e Roteamento Híbrido LAN/WAN
+- **Diagnóstico do Teste Prático (Windows Dante-pc vs Ubuntu Gomes):**
+  - Identificada falha de conexão provocada por digitação incompleta do endereço IP no receptor (`10.103` em vez de vazio ou `192.168.10.103`).
+  - Como o campo continha texto, o DA-V interpretou como conexão direta, ignorando o pareamento automático por PIN no Rendezvous.
+- **`src/ui/main_window.py`:**
+  - Implementada validação estrita de IPv4 (`_is_valid_ipv4`). Se o usuário inserir um IP incompleto/inválido (como `10.103`) tendo um PIN preenchido, o sistema loga um aviso amigável, limpa o campo e aciona automaticamente o pareamento via PIN Universal no Rendezvous.
+  - Implementada inteligência de roteamento híbrido LAN vs WAN: Se o transmissor e o receptor compartilham o mesmo IP público reflexivo perante o Rendezvous (ambos sob o mesmo NAT/roteador), o tráfego é roteado automaticamente com prioridade para a rede local (`local_ip:local_port`). Isso contorna o problema crônico de bloqueio de *NAT Hairpinning* / Loopback presente na grande maioria dos modems domésticos.
+- **`src/discovery/p2p_channel.py` & `src/signaling/server/dav_rendezvous.py`:**
+  - Inclusão do IP local real da placa de rede (`get_local_ip()`) no payload de registro e resolução de peers.
+  - Normalização universal de PIN (`clean_pin = pin.replace("-", "").replace(" ", "").strip()`), garantindo pareamento instantâneo mesmo com variações de digitação (`845-747` vs `845747`).
+- **`src/ui/views/viewer_view.py`:**
+  - Atualizado o placeholder do campo IP para *"Deixe VAZIO para PIN P2P ou IP LAN"* e ajustado o layout horizontal para evitar truncamento do checkbox de telemetria no Linux.
+
 ---
 
 ## 3. Validação e Testes de Benchmark
