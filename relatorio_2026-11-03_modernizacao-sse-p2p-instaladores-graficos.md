@@ -79,6 +79,11 @@ Principais objetivos atingidos:
 - **`src/ui/views/viewer_view.py`:**
   - Atualizado o placeholder do campo IP para *"Deixe VAZIO para PIN P2P ou IP LAN"* e ajustado o layout horizontal para evitar truncamento do checkbox de telemetria no Linux.
 
+- **`scripts/dav_sender_worker.py`:**
+  - Adicionado `SO_REUSEADDR` e tratamento de fallback no socket UDP do sender, garantindo bind imediato na porta alvo sem conflito de portas residuais do SO.
+- **Diagnóstico do Status da Nuvem Rendezvous (`129.148.26.150`):**
+  - Identificado que o microserviço Rendezvous remoto na VPS Oracle Cloud não estava respondendo no momento do teste. Portanto, a troca de sinalização puramente por PIN pela WAN exige que o serviço esteja online ou que os nós na mesma rede local se conectem via LAN direta (`192.168.10.103`) ou via aba `Dispositivos LAN` (Beacon UDP).
+
 ---
 
 ## 3. Validação e Testes de Benchmark

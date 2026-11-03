@@ -572,10 +572,13 @@ def _sender_subprocess(
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.setblocking(False)
             try:
                 sock.bind(('0.0.0.0', target_port))
-            except Exception:
+                print(f"[DA-V Sender] Socket UDP ouvindo com sucesso na porta {target_port}")
+            except Exception as e_bind:
+                print(f"[DA-V Sender] Falha ao dar bind na porta {target_port}: {e_bind}")
                 try:
                     sock.bind(('0.0.0.0', 0))
                 except Exception:
@@ -697,10 +700,13 @@ def _sender_subprocess(
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setblocking(False)
         try:
             sock.bind(('0.0.0.0', target_port))
-        except Exception:
+            print(f"[DA-V Sender WGC] Socket UDP ouvindo com sucesso na porta {target_port}")
+        except Exception as e_bind_wgc:
+            print(f"[DA-V Sender WGC] Falha ao dar bind na porta {target_port}: {e_bind_wgc}")
             try:
                 sock.bind(('0.0.0.0', 0))
             except Exception:
