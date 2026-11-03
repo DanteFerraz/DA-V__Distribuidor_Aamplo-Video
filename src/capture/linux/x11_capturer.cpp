@@ -20,9 +20,7 @@ namespace dav {
 
 X11Capturer::X11Capturer(const CaptureConfig& config)
     : config_(config), current_resolution_(config.target_resolution) {
-#if !defined(DAV_PLATFORM_LINUX)
     synthetic_buffer_.resize(current_resolution_.width * current_resolution_.height * 4, 128);
-#endif
 }
 
 X11Capturer::~X11Capturer() {
@@ -202,18 +200,17 @@ void X11Capturer::capture_loop() {
 #if defined(DAV_PLATFORM_LINUX)
         if (display_ && ximage_ && shm_attached_) {
             XShmGetImage(display_, root_window_, ximage_, 0, 0, AllPlanes);
-            frame.raw_data = reinterpret_cast<const uint8_t*>(ximage_->data);
-            frame.data_size = static_cast<size_t>(ximage_->bytes_per_line * ximage_->height);
             frame.pitch_stride = static_cast<uint32_t>(ximage_->bytes_per_line);
+            size_t sz = static_cast<size_t>(ximage_->bytes_per_line * ximage_->height);
+            frame.data.resize(sz);
+            std::memcpy(frame.data.data(), ximage_->data, sz);
         } else {
-            frame.raw_data = synthetic_buffer_.data();
-            frame.data_size = synthetic_buffer_.size();
             frame.pitch_stride = current_resolution_.width * 4;
+            frame.data = synthetic_buffer_;
         }
 #else
-        frame.raw_data = synthetic_buffer_.data();
-        frame.data_size = synthetic_buffer_.size();
         frame.pitch_stride = current_resolution_.width * 4;
+        frame.data = synthetic_buffer_;
 #endif
 
         if (frame_callback_) {

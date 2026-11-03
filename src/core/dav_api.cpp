@@ -166,12 +166,12 @@ DAV_API int dav_start_sender(
 
     // 4. Setup Video Encoder (NVENC GPU accelerated with SW fallback)
     dav::EncoderParams enc_params{
-        .codec = dav::VideoCodec::H264,
+        .codec = dav::CodecType::H264,
         .resolution = cap_cfg.target_resolution,
         .target_fps = cap_cfg.target_fps,
         .target_bitrate_kbps = g_ctx.config.codec.target_bitrate_kbps,
         .gop_size = 30,
-        .preset = dav::EncoderPreset::UltraFast,
+        .preset = "ultrafast",
         .enable_zero_copy = false
     };
 

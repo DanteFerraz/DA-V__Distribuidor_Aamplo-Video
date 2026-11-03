@@ -54,9 +54,8 @@ private:
 
     bool init_x11_shm();
     void cleanup_x11_shm();
-#else
-    std::vector<uint8_t> synthetic_buffer_;
 #endif
+    std::vector<uint8_t> synthetic_buffer_;
 };
 
 } // namespace dav
