@@ -61,6 +61,8 @@ Principais objetivos atingidos:
 - **`CMakeLists.txt` & `cmake/dependencies.cmake`:** Adicionado `${CMAKE_CURRENT_SOURCE_DIR}` às diretivas `target_include_directories` dos alvos `dav_core` e `dav_shared`. No GCC 15 / Ninja, os arquivos de código-fonte que importam com prefixo `"src/..."` falhavam na varredura de dependências sem o diretório raiz nos caminhos de busca (`-I`).
 - **`src/core/result.hpp`:** Ajustado `make_error()` para retornar `std::unexpected<Error>` em vez de `Error`. No C++23, `std::expected<T, E>` e `std::expected<void, E>` exigem `std::unexpected` para representar o estado de erro, eliminando o erro de conversão `could not convert 'dav::Error' to 'std::expected'`.
 - **`src/core/config.cpp`:** Corrigido *Most Vexing Parse* em `std::ifstream file{std::string(filepath)}`, evitando que o compilador interprete a abertura de arquivo como uma declaração de função.
+- **`src/core/dav_api.cpp`:** Harmonizado o tipo de codec e preset com a definição de `EncoderParams` (`dav::CodecType::H264` e `preset = "ultrafast"`).
+- **`src/capture/linux/x11_capturer.cpp` & `.hpp`:** Alinhada a captura X11 ao modelo unificado `frame.data` (`dav::Buffer`) e disponibilizado o `synthetic_buffer_` como fallback resiliente mesmo sob a macro Linux.
 - **`set(CMAKE_CXX_SCAN_FOR_MODULES OFF)`:** Desativada a varredura experimental de módulos C++20 do GCC 15, garantindo compilação ágil e limpa baseada em headers.
 - **`build_linux.sh`:** Adicionado suporte ao parâmetro `--clean` para limpeza de cache anterior (`./build_linux.sh --clean`).
 
