@@ -113,12 +113,18 @@ flowchart TD
 
 ---
 
-### No Linux
+### No Linux (Ubuntu 24.04 / 26.04 LTS, Debian, Fedora, Arch)
 
-#### 1. Instalar dependências do sistema
+> [!TIP]
+> Para o guia detalhado e aprofundado de implantação em Linux, consulte o [LEIA-ME_LINUX.md](LEIA-ME_LINUX.md).
+
+#### 1. Instalar dependências do sistema (Ubuntu 24.04 / 26.04 LTS)
 ```bash
-# Ubuntu / Debian
-sudo apt update && sudo apt install -y build-essential cmake ninja-build libx11-dev libxext-dev python3-venv python3-pip
+sudo apt update && sudo apt install -y \
+    build-essential cmake ninja-build python3 python3-venv python3-pip python3-dev \
+    libx11-dev libxext-dev libxfixes-dev libxrandr-dev libgl1-mesa-dev libglib2.0-0 libegl1 \
+    libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxkbcommon-x11-0 ffmpeg ufw git
 ```
 
 #### 2. Compilar o Core C++23
@@ -133,9 +139,10 @@ chmod +x launch_dav.sh
 ./launch_dav.sh
 ```
 
-*Dica: Para rodar em servidores headless sem interface gráfica, utilize:*
+*Ou instale no sistema criando ícone no Dock e associando convites `dav://`:*
 ```bash
-./launch_dav.sh --daemon --port 9200 --monitor 0 --fps 60
+source .venv/bin/activate
+python3 scripts/dav_installer_linux.py
 ```
 
 ---
