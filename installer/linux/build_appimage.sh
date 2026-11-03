@@ -70,3 +70,4 @@ else
     echo "AVISO: 'appimagetool' não encontrado no PATH. Estrutura ${APP_DIR} preparada com sucesso."
     echo "Para gerar o arquivo final, execute: appimagetool AppDir DA-V-x86_64.AppImage"
 fi
+

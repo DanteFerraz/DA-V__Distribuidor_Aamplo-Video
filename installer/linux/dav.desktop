@@ -11,3 +11,4 @@ Categories=AudioVideo;Video;Network;RemoteAccess;
 MimeType=x-scheme-handler/dav;
 Keywords=video;stream;p2p;screen;sharing;anydesk;parsec;
 StartupWMClass=dav-desktop
+

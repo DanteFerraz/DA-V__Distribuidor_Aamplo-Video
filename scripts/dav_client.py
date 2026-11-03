@@ -15,7 +15,7 @@ from ctypes import (
     c_int, c_uint16, c_uint32, c_uint64, c_float, c_size_t,
     c_char_p, c_void_p, POINTER, Structure, CFUNCTYPE
 )
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 import time
 import socket
 import struct

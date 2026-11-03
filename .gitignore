@@ -25,6 +25,8 @@ htmlcov/
 # C++ / CMake Build Artifacts
 build/
 build_linux/
+dist_installer/
+*.spec
 out/
 bin/
 CMakeCache.txt

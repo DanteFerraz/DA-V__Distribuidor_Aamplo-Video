@@ -14,7 +14,8 @@ try:
         QGridLayout, QTabWidget, QLabel, QPushButton, QLineEdit,
         QSpinBox, QComboBox, QCheckBox, QGroupBox, QTableWidget,
         QTableWidgetItem, QHeaderView, QTextEdit, QProgressBar,
-        QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget
+        QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget,
+        QWizard, QWizardPage
     )
     from PySide6.QtCore import (
         Qt, QTimer, QThread, Signal, Slot, QSize, QPoint, QRect, QByteArray,
@@ -33,7 +34,8 @@ except ImportError:
             QGridLayout, QTabWidget, QLabel, QPushButton, QLineEdit,
             QSpinBox, QComboBox, QCheckBox, QGroupBox, QTableWidget,
             QTableWidgetItem, QHeaderView, QTextEdit, QProgressBar,
-            QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget
+            QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget,
+            QWizard, QWizardPage
         )
         from PyQt6.QtCore import (
             Qt, QTimer, QThread, pyqtSignal as Signal, pyqtSlot as Slot,

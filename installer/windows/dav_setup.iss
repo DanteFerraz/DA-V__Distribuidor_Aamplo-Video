@@ -63,3 +63,4 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 ; Remove regras do Firewall ao desinstalar
 Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=""DA-V Video Streaming"""; Flags: runhidden
 Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=""DA-V LAN Beacon"""; Flags: runhidden
+

@@ -49,11 +49,13 @@ Principais objetivos atingidos:
 - **`src/ui/main_window.py`:** O clique no botão "Conectar" de um peer na aba LAN agora dispara automaticamente a conexão direta (*1-Click Connect*).
 - **`scripts/gui_app.py`:** Tratamento de argumentos URI para abrir o DA-V e conectar instantaneamente via links `dav://connect/PIN`.
 
-### E. Instaladores Gráficos Multiplataforma
-- **`installer/windows/dav_setup.iss`:** Instalador profissional do Windows com suporte a tema moderno, atalhos, liberação de firewall e registro de protocolo URI.
+### E. Instaladores Gráficos Multiplataforma e Pré-Compilação Windows
+- **`installer/windows/dav_setup.iss`:** Instalador profissional do Windows (Inno Setup) com suporte a tema moderno, atalhos, liberação de firewall e registro de protocolo URI.
 - **`scripts/dav_installer_win.py`:** Assistente gráfico em PySide6 para setup direto em ambiente Windows.
 - **`installer/linux/dav.desktop` & `installer/linux/build_appimage.sh`:** Lançador XDG com ícone e script gerador de AppImage portátil autocontido.
 - **`scripts/dav_installer_linux.py`:** Assistente gráfico em PySide6 para instalação em distros Linux com detecção de sessão X11/Wayland e GPU.
+- **`dist_installer/DA-V_Instalador.exe`:** Executável binário autocontido para Windows (~130 MB) gerado com PyInstaller. Inclui todas as dependências gráficas do PySide6, OpenCV e suporte a aceleração gráfica. Validado em execução direta com interface nativa interativa.
+- **`instalar_windows.bat`:** Script facilitador para execução com um clique no Windows.
 
 ---
 
@@ -83,3 +85,4 @@ py -m pytest tests/test_dav_rendezvous.py tests/test_p2p_e2e.py -v -s
 - **Autor:** `Dante Ferraz <danteferraz06@gmail.com>`
 - **Padrão Semântico:** `feat(p2p): real-time SSE push signaling, on-demand GPU standby and graphical installers`
 - **Artefato de Planejamento:** [`plano_atualizacao_dav_v3.md`](file:///C:/Users/Dante/.gemini/antigravity/brain/a245e8c8-6bf6-49e9-a8e2-81c640f1f192/plano_atualizacao_dav_v3.md)
+
