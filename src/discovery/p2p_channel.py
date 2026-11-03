@@ -194,27 +194,51 @@ class P2PChannelClient:
             if not token:
                 return None
 
-            # Start background poller to wait for receiver match
+            # Start real-time SSE listener with resilient polling fallback
             if on_paired_callback:
-                def _poller():
-                    for _ in range(90):  # poll every 2s for 180s
-                        time.sleep(2.0)
-                        try:
-                            p_req = urllib.request.Request(
-                                f"{self.base_url}/p2p/poll",
-                                data=json.dumps({"pin": pin, "token": token}).encode("utf-8"),
-                                headers={"Content-Type": "application/json"}
-                            )
-                            with urllib.request.urlopen(p_req, timeout=3) as p_resp:
-                                p_data = json.loads(p_resp.read().decode("utf-8"))
-                                if p_data.get("status") == "paired":
-                                    peer = p_data["peer"]
-                                    on_paired_callback(peer)
-                                    break
-                        except Exception:
-                            continue
+                def _sse_or_poll_worker():
+                    paired = False
+                    # 1. Real-time push via Server-Sent Events (SSE) (< 50ms)
+                    try:
+                        sse_url = f"{self.base_url}/p2p/events?pin={pin}&token={token}"
+                        sse_req = urllib.request.Request(sse_url, headers={"Accept": "text/event-stream"})
+                        with urllib.request.urlopen(sse_req, timeout=120) as sse_resp:
+                            for raw_line in sse_resp:
+                                line = raw_line.decode("utf-8", errors="ignore").strip()
+                                if line.startswith("data:"):
+                                    data_str = line[5:].strip()
+                                    try:
+                                        evt_data = json.loads(data_str)
+                                        if evt_data.get("status") == "paired":
+                                            peer = evt_data["peer"]
+                                            paired = True
+                                            on_paired_callback(peer)
+                                            return
+                                    except Exception:
+                                        pass
+                    except Exception as sse_err:
+                        logger.debug(f"SSE stream closed/unsupported ({sse_err}), falling back to poll...")
 
-                t = threading.Thread(target=_poller, daemon=True, name=f"P2P-Poller-{pin}")
+                    if not paired:
+                        # 2. Resilient Polling Fallback
+                        for _ in range(60):
+                            time.sleep(1.5)
+                            try:
+                                p_req = urllib.request.Request(
+                                    f"{self.base_url}/p2p/poll",
+                                    data=json.dumps({"pin": pin, "token": token}).encode("utf-8"),
+                                    headers={"Content-Type": "application/json"}
+                                )
+                                with urllib.request.urlopen(p_req, timeout=3) as p_resp:
+                                    p_data = json.loads(p_resp.read().decode("utf-8"))
+                                    if p_data.get("status") == "paired":
+                                        peer = p_data["peer"]
+                                        on_paired_callback(peer)
+                                        break
+                            except Exception:
+                                continue
+
+                t = threading.Thread(target=_sse_or_poll_worker, daemon=True, name=f"P2P-SSE-{pin}")
                 t.start()
 
             return reg_data

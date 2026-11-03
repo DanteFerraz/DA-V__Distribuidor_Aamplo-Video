@@ -195,6 +195,24 @@ class DavCoreEngine:
             except Exception as e:
                 print(f"[DAV-Client] Erro ao atualizar alvo: {e}")
 
+    def pause_sender(self):
+        """Coloca o transmissor em modo Standby (0% de uso de GPU/captura)."""
+        if hasattr(self, "_sender_cmd_queue") and self._sender_cmd_queue is not None:
+            try:
+                self._sender_cmd_queue.put(("PAUSE_STREAM",))
+                print("[DAV-Client] Transmissor colocado em Standby.")
+            except Exception as e:
+                print(f"[DAV-Client] Erro ao pausar transmissor: {e}")
+
+    def resume_sender(self, ip: str, port: int):
+        """Retoma o envio ativo de vídeo para o alvo."""
+        if hasattr(self, "_sender_cmd_queue") and self._sender_cmd_queue is not None:
+            try:
+                self._sender_cmd_queue.put(("START_STREAM", str(ip), int(port)))
+                print(f"[DAV-Client] Transmissor ativado para {ip}:{port}")
+            except Exception as e:
+                print(f"[DAV-Client] Erro ao retomar transmissor: {e}")
+
     def start_receiver(
         self,
         bind_port: int,

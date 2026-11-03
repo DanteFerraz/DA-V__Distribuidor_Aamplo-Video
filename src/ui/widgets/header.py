@@ -89,6 +89,13 @@ class TopHeaderBar(QFrame):
         self.btn_copy_pin.clicked.connect(self._copy_pin_to_clipboard)
         layout.addWidget(self.btn_copy_pin)
 
+        # Copy Invite Link Button
+        self.btn_copy_link = QPushButton("Copiar Convite")
+        self.btn_copy_link.setObjectName("secondaryBtn")
+        self.btn_copy_link.setFixedHeight(30)
+        self.btn_copy_link.clicked.connect(self._copy_link_to_clipboard)
+        layout.addWidget(self.btn_copy_link)
+
         # New PIN Button
         self.btn_new_pin = QPushButton("Novo PIN")
         self.btn_new_pin.setObjectName("secondaryBtn")
@@ -116,3 +123,12 @@ class TopHeaderBar(QFrame):
             self.btn_copy_pin.setText("Copiado! ✓")
             from scripts.qt_compat import QTimer
             QTimer.singleShot(1500, lambda: self.btn_copy_pin.setText("Copiar PIN"))
+
+    def _copy_link_to_clipboard(self):
+        clipboard = QApplication.clipboard()
+        if clipboard:
+            link = f"dav://connect/{self.current_pin}"
+            clipboard.setText(link)
+            self.btn_copy_link.setText("Link Copiado! ✓")
+            from scripts.qt_compat import QTimer
+            QTimer.singleShot(1500, lambda: self.btn_copy_link.setText("Copiar Convite"))

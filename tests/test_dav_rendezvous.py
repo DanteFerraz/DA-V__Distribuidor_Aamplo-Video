@@ -120,7 +120,7 @@ def test_rendezvous():
             print("  [OK] Sender Polling PASSED")
 
         # 5. Test UDP STUN Probe
-        print("[5/5] Testing UDP STUN Reflexive Socket ...")
+        print("[5/6] Testing UDP STUN Reflexive Socket ...")
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(2.0)
         sock.sendto(b"DAV_STUN_REQ", ("127.0.0.1", TEST_STUN_PORT))
@@ -132,8 +132,60 @@ def test_rendezvous():
         sock.close()
         print(f"  [OK] STUN Reflexive PASSED -> {stun_res['reflexive_ip']}:{stun_res['reflexive_port']}")
 
+        # 6. Test Real-time Push via SSE (/p2p/events)
+        print("[6/6] Testing Real-Time Push via SSE (/p2p/events) ...")
+        sse_reg_payload = json.dumps({
+            "pin": "999-111",
+            "node_name": "SSE-Sender",
+            "local_ip": "192.168.10.104",
+            "local_port": 9100
+        }).encode("utf-8")
+        req_sse_reg = urllib.request.Request(
+            f"{base_url}/p2p/register",
+            data=sse_reg_payload,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_sse_reg, timeout=3) as resp:
+            sse_reg_data = json.loads(resp.read().decode())
+            sse_token = sse_reg_data["token"]
+
+        sse_received = {}
+        def _sse_reader():
+            req_sse = urllib.request.Request(
+                f"{base_url}/p2p/events?pin=999-111&token={sse_token}",
+                headers={"Accept": "text/event-stream"}
+            )
+            with urllib.request.urlopen(req_sse, timeout=5) as s_resp:
+                for line_b in s_resp:
+                    line_s = line_b.decode("utf-8", errors="ignore").strip()
+                    if line_s.startswith("data:"):
+                        payload_data = json.loads(line_s[5:].strip())
+                        if payload_data.get("status") == "paired":
+                            sse_received.update(payload_data)
+                            break
+
+        th_sse = threading.Thread(target=_sse_reader, daemon=True)
+        th_sse.start()
+        time.sleep(0.3)  # Let SSE connect
+
+        t0 = time.perf_counter()
+        # Trigger resolve
+        req_sse_resolve = urllib.request.Request(
+            f"{base_url}/p2p/resolve",
+            data=json.dumps({"pin": "999-111", "node_name": "SSE-Receiver", "local_port": 9102}).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_sse_resolve, timeout=3) as resp:
+            pass
+
+        th_sse.join(timeout=2.0)
+        t_elapsed = (time.perf_counter() - t0) * 1000.0
+        assert sse_received.get("status") == "paired", "SSE push não recebeu o evento de pareamento!"
+        assert sse_received["peer"]["node_name"] == "SSE-Receiver"
+        print(f"  [OK] SSE Real-time Push recebido com sucesso em {t_elapsed:.2f} ms (< 50ms)!")
+
         print("\n=======================================================")
-        print("  TODOS OS 5 TESTES DO RENDEZVOUS APROVADOS (100% OK!)")
+        print("  TODOS OS 6 TESTES DO RENDEZVOUS APROVADOS (100% OK!)")
         print("=======================================================")
 
     finally:

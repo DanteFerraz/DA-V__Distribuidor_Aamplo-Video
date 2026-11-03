@@ -57,6 +57,7 @@ class SessionRecord:
         self.receiver_public_ip: Optional[str] = None
         self.receiver_public_port: Optional[int] = None
         self.is_paired = False
+        self.pair_event = asyncio.Event()
         self.relay_mode = False
         self.relay_port: Optional[int] = None
 
@@ -117,6 +118,17 @@ class DavRendezvousServer:
 
             method, path = parts[0], parts[1]
 
+            # Parse path and query parameters
+            query_params = {}
+            if "?" in path:
+                raw_path, query_str = path.split("?", 1)
+                for pair in query_str.split("&"):
+                    if "=" in pair:
+                        qk, qv = pair.split("=", 1)
+                        query_params[qk.strip()] = qv.strip()
+            else:
+                raw_path = path
+
             # Read headers
             headers = {}
             content_length = 0
@@ -157,7 +169,7 @@ class DavRendezvousServer:
             resp_data = {}
 
             # ── 1. GET /health or /status ──
-            if method == "GET" and (path in ("/health", "/status", "/", "/p2p/health", "/p2p/status", "/p2p/", "/p2p") or path.endswith("/health") or path.endswith("/status")):
+            if method == "GET" and (raw_path in ("/health", "/status", "/", "/p2p/health", "/p2p/status", "/p2p/", "/p2p") or raw_path.endswith("/health") or raw_path.endswith("/status")):
                 resp_data = {
                     "service": "DAV-Rendezvous",
                     "status": "online",
@@ -168,8 +180,64 @@ class DavRendezvousServer:
                     "client_ip": client_ip
                 }
 
+            # ── 1.5. GET /p2p/events (Server-Sent Events for instant pairing push) ──
+            elif method == "GET" and (raw_path in ("/p2p/events", "/events") or raw_path.endswith("/events")):
+                pin = query_params.get("pin", "").strip()
+                token = query_params.get("token", "").strip()
+
+                if not pin or pin not in self.sessions:
+                    status_code = 404
+                    resp_data = {"error": "Sessao nao encontrada"}
+                else:
+                    record = self.sessions[pin]
+                    if record.token != token:
+                        status_code = 403
+                        resp_data = {"error": "Token invalido"}
+                    else:
+                        # Stream SSE directly to client
+                        sse_headers = (
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: text/event-stream; charset=utf-8\r\n"
+                            "Cache-Control: no-cache, no-transform\r\n"
+                            "Connection: keep-alive\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "X-Accel-Buffering: no\r\n\r\n"
+                        ).encode("utf-8")
+                        writer.write(sse_headers)
+                        await writer.drain()
+
+                        # Initial keepalive
+                        writer.write(b": connected\n\n")
+                        await writer.drain()
+
+                        t_deadline = time.time() + SESSION_TTL_SEC
+                        while time.time() < t_deadline and not writer.is_closing():
+                            if record.is_paired:
+                                peer_payload = {
+                                    "status": "paired",
+                                    "peer": {
+                                        "node_name": record.receiver_node,
+                                        "public_ip": record.receiver_public_ip,
+                                        "public_port": record.receiver_public_port,
+                                        "local_ip": record.receiver_local_ip,
+                                        "local_port": record.receiver_local_port
+                                    }
+                                }
+                                evt_bytes = f"event: paired\ndata: {json.dumps(peer_payload)}\n\n".encode("utf-8")
+                                writer.write(evt_bytes)
+                                await writer.drain()
+                                break
+
+                            try:
+                                await asyncio.wait_for(record.pair_event.wait(), timeout=10.0)
+                            except asyncio.TimeoutError:
+                                writer.write(b": keepalive\n\n")
+                                await writer.drain()
+
+                        return
+
             # ── 2. POST /p2p/register (Sender creates/registers PIN) ──
-            elif method == "POST" and path == "/p2p/register":
+            elif method == "POST" and (raw_path == "/p2p/register" or raw_path.endswith("/register")):
                 pin = body_json.get("pin", "").strip()
                 node_name = body_json.get("node_name", "Unknown-Sender")
                 local_ip = body_json.get("local_ip", client_ip)
@@ -201,7 +269,7 @@ class DavRendezvousServer:
                     }
 
             # ── 3. POST /p2p/resolve (Receiver pairs using PIN) ──
-            elif method == "POST" and path == "/p2p/resolve":
+            elif method == "POST" and (raw_path == "/p2p/resolve" or raw_path.endswith("/resolve")):
                 pin = body_json.get("pin", "").strip()
                 node_name = body_json.get("node_name", "Unknown-Receiver")
                 local_ip = body_json.get("local_ip", client_ip)
@@ -220,6 +288,7 @@ class DavRendezvousServer:
                     record.receiver_public_port = public_port
                     record.is_paired = True
                     record.last_active = time.time()
+                    record.pair_event.set()
 
                     logger.info(f"Receptor pareado com PIN {pin} ({client_ip}:{public_port})")
 
@@ -239,7 +308,7 @@ class DavRendezvousServer:
                     }
 
             # ── 4. POST /p2p/poll (Sender checks if Receiver has paired) ──
-            elif method == "POST" and path == "/p2p/poll":
+            elif method == "POST" and (raw_path == "/p2p/poll" or raw_path.endswith("/poll")):
                 pin = body_json.get("pin", "").strip()
                 token = body_json.get("token", "")
 
@@ -268,7 +337,7 @@ class DavRendezvousServer:
                             resp_data = {"status": "waiting"}
 
             # ── 5. POST /p2p/relay_init (Fallback for Symmetric NAT) ──
-            elif method == "POST" and path == "/p2p/relay_init":
+            elif method == "POST" and (raw_path == "/p2p/relay_init" or raw_path.endswith("/relay_init")):
                 pin = body_json.get("pin", "").strip()
                 if pin in self.sessions:
                     record = self.sessions[pin]

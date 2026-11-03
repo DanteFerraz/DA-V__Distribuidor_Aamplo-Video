@@ -308,6 +308,11 @@ def _sender_subprocess(
     latest_payload_kb = 32
     latest_lat_ms = 0.0
 
+    # Standby & On-Demand Streaming Activation Event
+    is_streaming_active = threading.Event()
+    if target_ip and str(target_ip).strip():
+        is_streaming_active.set()
+
     # Telemetry broadcast socket (feeds dav_live_benchmark.py)
     _tel_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     _tel_sock.setblocking(False)
@@ -438,6 +443,10 @@ def _sender_subprocess(
                 cap_id_gdi = 0
 
                 while not stop_event.is_set():
+                    if not is_streaming_active.is_set():
+                        time.sleep(0.04)
+                        continue
+
                     try:
                         buf_idx = free_buffers.get(timeout=0.05)
                     except queue.Empty:
@@ -496,6 +505,10 @@ def _sender_subprocess(
                     sct = None
 
                 while not stop_event.is_set():
+                    if not is_streaming_active.is_set():
+                        time.sleep(0.04)
+                        continue
+
                     try:
                         buf_idx = free_buffers.get(timeout=0.05)
                     except queue.Empty:
@@ -577,9 +590,14 @@ def _sender_subprocess(
                     try:
                         while True:
                             cmd = cmd_queue.get_nowait()
-                            if cmd[0] == "UPDATE_TARGET":
+                            if cmd[0] in ("UPDATE_TARGET", "START_STREAM"):
                                 target_ip, target_port = cmd[1], cmd[2]
+                                if target_ip and str(target_ip).strip():
+                                    is_streaming_active.set()
                                 print(f"[DA-V Sender] Alvo redirecionado para {target_ip}:{target_port}")
+                            elif cmd[0] in ("PAUSE_STREAM", "STOP_STREAM"):
+                                is_streaming_active.clear()
+                                print("[DA-V Sender] Streaming pausado (Standby ativo).")
                     except Exception:
                         pass
 
@@ -589,6 +607,7 @@ def _sender_subprocess(
                     if in_pkt.startswith(b"DAV_"):
                         if in_addr != (target_ip, target_port):
                             target_ip, target_port = in_addr[0], in_addr[1]
+                            is_streaming_active.set()
                             print(f"[DA-V Sender P2P] Hole-Punch recebido! Alvo ajustado para {target_ip}:{target_port}")
                         try:
                             sock.sendto(b"DAV_P2P_ACK", in_addr)
@@ -596,6 +615,10 @@ def _sender_subprocess(
                             pass
                 except (BlockingIOError, OSError):
                     pass
+
+                if not is_streaming_active.is_set():
+                    time.sleep(0.04)
+                    continue
                 try:
                     buf_idx, frame_id, _t_cap_start, _t_cap_end = ready_buffers.get(timeout=0.05)
                 except queue.Empty:
@@ -694,14 +717,19 @@ def _sender_subprocess(
         t_target = time.perf_counter() + frame_interval
 
         while not stop_event.is_set():
-            # Process command queue (dynamic target redirect)
+            # Process command queue (dynamic target redirect & standby controls)
             if cmd_queue is not None:
                 try:
                     while True:
                         cmd = cmd_queue.get_nowait()
-                        if cmd[0] == "UPDATE_TARGET":
+                        if cmd[0] in ("UPDATE_TARGET", "START_STREAM"):
                             target_ip, target_port = cmd[1], cmd[2]
+                            if target_ip and str(target_ip).strip():
+                                is_streaming_active.set()
                             print(f"[DA-V Sender] Alvo redirecionado para {target_ip}:{target_port}")
+                        elif cmd[0] in ("PAUSE_STREAM", "STOP_STREAM"):
+                            is_streaming_active.clear()
+                            print("[DA-V Sender] Streaming pausado (Standby ativo).")
                 except Exception:
                     pass
 
@@ -711,6 +739,7 @@ def _sender_subprocess(
                 if in_pkt.startswith(b"DAV_"):
                     if in_addr != (target_ip, target_port):
                         target_ip, target_port = in_addr[0], in_addr[1]
+                        is_streaming_active.set()
                         print(f"[DA-V Sender P2P] Hole-Punch recebido! Alvo ajustado para {target_ip}:{target_port}")
                     try:
                         sock.sendto(b"DAV_P2P_ACK", in_addr)
@@ -718,6 +747,10 @@ def _sender_subprocess(
                         pass
             except (BlockingIOError, OSError):
                 pass
+
+            if not is_streaming_active.is_set():
+                time.sleep(0.04)
+                continue
 
             # 1. Grab latest frame under lock (< 1ms copy)
             with buf_lock:

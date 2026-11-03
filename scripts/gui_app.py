@@ -74,7 +74,16 @@ def main():
     parser.add_argument("--auto-send", action="store_true", help="Inicia automaticamente a transmissao ao abrir")
     parser.add_argument("--monitor", type=int, default=1, help="Indice do monitor de origem (0=Mon1, 1=Mon2)")
     parser.add_argument("--pin", type=str, default=None, help="PIN de autenticacao compartilhado")
+    parser.add_argument("uri", nargs="?", default=None, help="URI de convite direto (ex: dav://connect/415-759)")
     args, _ = parser.parse_known_args()
+
+    pin_arg = args.pin
+    auto_recv_arg = args.auto_recv
+    if args.uri and ("dav" in args.uri or "/" in args.uri):
+        extracted_pin = args.uri.split("/")[-1].strip().replace("dav:", "").strip(":/ ")
+        if extracted_pin:
+            pin_arg = extracted_pin
+            auto_recv_arg = True
 
     try:
         from PySide6.QtGui import QSurfaceFormat
@@ -89,10 +98,10 @@ def main():
     window = DavMainWindow(
         custom_port=args.port,
         custom_target_port=args.target_port,
-        auto_recv=args.auto_recv,
+        auto_recv=auto_recv_arg,
         auto_send=args.auto_send,
         monitor_idx=args.monitor,
-        custom_pin=args.pin
+        custom_pin=pin_arg
     )
     window.show()
     sys.exit(app.exec())

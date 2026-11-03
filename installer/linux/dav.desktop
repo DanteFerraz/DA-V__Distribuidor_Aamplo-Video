@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DA-V · Distribuidor Amplo de Vídeo
+GenericName=Transmissão de Vídeo 60 FPS P2P
+Comment=Motor de compartilhamento de tela P2P de ultra-baixa latência com hardware NVENC/SIMD
+Exec=dav %u
+Icon=dav
+Terminal=false
+Categories=AudioVideo;Video;Network;RemoteAccess;
+MimeType=x-scheme-handler/dav;
+Keywords=video;stream;p2p;screen;sharing;anydesk;parsec;
+StartupWMClass=dav-desktop

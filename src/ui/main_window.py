@@ -472,7 +472,8 @@ class DavMainWindow(QMainWindow):
         self.view_viewer.set_target(ip, port)
         self.sidebar.set_active_page(0)
         self._on_page_changed(0)
-        self._append_log("INFO", f"Parâmetros de {ip}:{port} carregados no visualizador.")
+        self._append_log("INFO", f"Conectando com 1 clique a {ip}:{port} na rede local...")
+        QTimer.singleShot(150, self._toggle_receiver)
 
     def _manual_refresh_peers(self):
         self._append_log("INFO", "Disparando varredura ativa de rede (Subnet Sweep & Broadcast)...")

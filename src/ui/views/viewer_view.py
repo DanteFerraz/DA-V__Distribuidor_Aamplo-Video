@@ -49,7 +49,9 @@ class ViewerView(QWidget):
 
         ctrl_layout.addWidget(QLabel("PIN de Acesso:"))
         self.txt_recv_pin = QLineEdit(self.initial_pin)
-        self.txt_recv_pin.setFixedWidth(110)
+        self.txt_recv_pin.setPlaceholderText("PIN ou Link dav://")
+        self.txt_recv_pin.setFixedWidth(140)
+        self.txt_recv_pin.textChanged.connect(self._on_pin_changed)
         ctrl_layout.addWidget(self.txt_recv_pin)
 
         self.btn_recv_toggle = QPushButton("Conectar e Assistir")
@@ -88,3 +90,11 @@ class ViewerView(QWidget):
         self.spn_recv_port.setValue(port)
         if pin:
             self.txt_recv_pin.setText(pin)
+
+    def _on_pin_changed(self, text: str):
+        if "/" in text or "dav:" in text:
+            extracted = text.split("/")[-1].strip()
+            if extracted and extracted != text:
+                self.txt_recv_pin.blockSignals(True)
+                self.txt_recv_pin.setText(extracted)
+                self.txt_recv_pin.blockSignals(False)
