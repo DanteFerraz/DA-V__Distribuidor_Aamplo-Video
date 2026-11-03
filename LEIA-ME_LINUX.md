@@ -22,9 +22,8 @@ O DA-V foi projetado com arquitetura modular desacoplada:
 
 ---
 
-## 2. Pré-Requisitos do Sistema
+## 2. Pré-Requisitos do Sistema (Ubuntu 24.04 / 26.04 LTS & Debian 12)
 
-### Ubuntu 22.04 / 24.04 LTS & Debian 12
 ```bash
 sudo apt update && sudo apt install -y \
     build-essential \
@@ -32,11 +31,25 @@ sudo apt update && sudo apt install -y \
     ninja-build \
     libx11-dev \
     libxext-dev \
-    libgl1-mesa-glx \
+    libxfixes-dev \
+    libxrandr-dev \
+    libgl1-mesa-dev \
     libglib2.0-0 \
+    libegl1 \
+    libxcb-cursor0 \
+    libxcb-xinerama0 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-shape0 \
+    libxcb-xkb1 \
+    libxkbcommon-x11-0 \
+    ffmpeg \
     python3 \
     python3-venv \
     python3-pip \
+    python3-dev \
     ufw
 ```
 
@@ -98,16 +111,16 @@ O `launch_dav.sh` gerencia automaticamente o ambiente virtual Python (`.venv`), 
 
 ## 5. Portas de Rede e Firewall
 
-O DA-V opera utilizando as seguintes portas padrão:
-- **Porta UDP 9200**: Transporte de vídeo em tempo real (KCP / UDP de baixa latência).
-- **Porta TCP 8799**: Sinalização WAN / P2P Rendezvous e troca de candidatos ICE.
-- **Porta TCP 9100**: Exposição de telemetria e métricas padrão Prometheus.
+O DA-V opera utilizando as seguintes portas padrão na arquitetura moderna P2P:
+- **Portas UDP 19000-19010**: Transporte de pacotes de vídeo de ultra-baixa latência (60 FPS P2P hole-punching).
+- **Porta UDP 9005**: Descoberta e anúncios de peers na Rede Local (LAN Beacon multicast/broadcast).
+- **Sinalização WAN**: HTTPS/SSE direto no servidor Rendezvous (Oracle Cloud VPS `129.148.26.150:5000/p2p/`).
 
-Para liberar o tráfego via UFW:
+Para liberar o tráfego via UFW no Ubuntu:
 ```bash
-sudo ufw allow 9200/udp comment 'DAV Video Stream'
-sudo ufw allow 8799/tcp comment 'DAV Signaling'
-sudo ufw allow 9100/tcp comment 'DAV Prometheus'
+sudo ufw allow 19000:19010/udp comment 'DAV Video Stream P2P'
+sudo ufw allow 9005/udp comment 'DAV LAN Beacon'
+sudo ufw reload
 ```
 
 ---
