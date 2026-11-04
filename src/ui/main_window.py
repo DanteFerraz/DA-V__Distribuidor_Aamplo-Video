@@ -295,11 +295,27 @@ class DavMainWindow(QMainWindow):
                         target_peer = (peer_target_ip, peer_target_port)
                         self._append_log("SUCCESS", f"[{mode_label}] Transmissor localizado: {peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
                     else:
-                        self._append_log("WARN", f"[P2P] Não foi possível parear o PIN '{pin}' no Rendezvous. Verifique se o Transmissor está ativo.")
-                        return
+                        # Fallback P2P inteligente: se a nuvem falhar, busca pelo PIN na rede local via Beacon
+                        local_peer = self.beacon_service.find_peer_by_pin(clean_pin)
+                        if local_peer:
+                            peer_target_ip = local_peer["ip"]
+                            peer_target_port = int(local_peer.get("port", port))
+                            target_peer = (peer_target_ip, peer_target_port)
+                            self._append_log("SUCCESS", f"[P2P Local] Transmissor localizado via PIN ('{pin}') na rede local: {local_peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
+                        else:
+                            self._append_log("WARN", f"[P2P] Não foi possível parear o PIN '{pin}' no Rendezvous nem na rede local. Verifique se o Transmissor está ativo.")
+                            return
                 except Exception as e:
-                    self._append_log("WARN", f"[P2P] Falha ao consultar Rendezvous: {e}")
-                    return
+                    # Fallback em caso de indisponibilidade da nuvem
+                    local_peer = self.beacon_service.find_peer_by_pin(clean_pin)
+                    if local_peer:
+                        peer_target_ip = local_peer["ip"]
+                        peer_target_port = int(local_peer.get("port", port))
+                        target_peer = (peer_target_ip, peer_target_port)
+                        self._append_log("SUCCESS", f"[P2P Local] Transmissor localizado via PIN ('{pin}') na rede local: {local_peer.get('node_name')} em {peer_target_ip}:{peer_target_port}")
+                    else:
+                        self._append_log("WARN", f"[P2P] Falha ao consultar Rendezvous: {e}")
+                        return
             else:
                 target_peer = (target_ip, port)
 
@@ -378,7 +394,7 @@ class DavMainWindow(QMainWindow):
                 else:
                     details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}] (Aguardando Receptor PIN {pin})"
                 self.view_sender.set_sending_state(True, details)
-                self.beacon_service.update_status(True)
+                self.beacon_service.update_status(True, pin=pin)
                 dest_str = f"{target_ip}:{target_port}" if target_ip else f"P2P WAN (PIN: {pin})"
                 self._append_log("INFO", f"Transmissão iniciada ({dest_str} - {details})")
 

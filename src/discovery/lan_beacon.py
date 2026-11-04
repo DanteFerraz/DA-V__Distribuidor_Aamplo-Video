@@ -126,6 +126,7 @@ class LanBeaconService:
             "node_name": self.node_name,
             "ip": self.local_ip,
             "port": self.stream_port,
+            "pin": self.pin,
             "is_sharing": self.is_sharing
         }).encode('utf-8')
 
@@ -168,6 +169,7 @@ class LanBeaconService:
                     "node_name": self.node_name,
                     "ip": self.local_ip,
                     "port": self.stream_port,
+                    "pin": self.pin,
                     "is_sharing": self.is_sharing,
                     "timestamp": time.time()
                 }).encode('utf-8')
@@ -212,6 +214,7 @@ class LanBeaconService:
                 if peer_ip in all_local_ips and peer_port == self.stream_port:
                     continue
 
+                peer_pin = obj.get("pin", "")
                 peer_key = f"{peer_ip}:{peer_port}"
                 now = time.time()
                 is_sharing = obj.get("is_sharing", False)
@@ -222,13 +225,14 @@ class LanBeaconService:
                     prev = self.discovered_peers.get(peer_key)
                     if prev is None:
                         changed = True
-                    elif prev.get("is_sharing") != is_sharing or prev.get("node_name") != node_name:
+                    elif prev.get("is_sharing") != is_sharing or prev.get("node_name") != node_name or prev.get("pin") != peer_pin:
                         changed = True
 
                     self.discovered_peers[peer_key] = {
                         "node_name": node_name,
                         "ip": peer_ip,
                         "port": peer_port,
+                        "pin": peer_pin,
                         "is_sharing": is_sharing,
                         "last_seen": now
                     }
@@ -243,6 +247,7 @@ class LanBeaconService:
                         "node_name": self.node_name,
                         "ip": self.local_ip,
                         "port": self.stream_port,
+                        "pin": self.pin,
                         "is_sharing": self.is_sharing,
                         "timestamp": now
                     }).encode('utf-8')
@@ -272,6 +277,16 @@ class LanBeaconService:
     def get_peers(self) -> list:
         with self._lock:
             return list(self.discovered_peers.values())
+
+    def find_peer_by_pin(self, pin: str) -> Optional[dict]:
+        """Localiza um peer na rede local pelo código PIN (ignora hífens/espaços)."""
+        clean = pin.replace("-", "").replace(" ", "").strip()
+        with self._lock:
+            for p in self.discovered_peers.values():
+                peer_pin = str(p.get("pin", "")).replace("-", "").replace(" ", "").strip()
+                if peer_pin and peer_pin == clean:
+                    return p
+        return None
 
     def _notify_update(self):
         if self.on_peers_updated:
