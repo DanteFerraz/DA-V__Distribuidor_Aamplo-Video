@@ -25,6 +25,8 @@ htmlcov/
 # C++ / CMake Build Artifacts
 build/
 build_linux/
+build_payload/
+dist/
 dist_installer/
 *.spec
 out/
