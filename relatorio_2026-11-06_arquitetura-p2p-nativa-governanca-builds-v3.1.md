@@ -47,7 +47,7 @@ Além da reconstrução do motor de transporte P2P, todo o repositório passou p
 - `CMakeLists.txt`, `include/dav/dav_api.h`, `src/core/dav_api.cpp`, `src/capture/windows/dxgi_capturer.cpp`, `src/codec/sw_encoder.cpp`, `src/qos/qos_engine.cpp`, `launch_dav.sh`: Atualização de versão para `3.1.0`, separação de `ARCHIVE_OUTPUT_NAME` (`dav_core_static`) e macro `DAV_STATIC_LIB` para linkagem limpa no MSVC C++23 e GCC 14/15, e inclusão explícita de `<cstring>` e `<algorithm>`.
 
 ### Documentação Arquitetural, Testes, Governança e CI/CD
-- `README.md` e `LEIA-ME_LINUX.md`: Reescritos com prosa técnica autoral, diagramas Mermaid da arquitetura multiprocesso e do fluxo Single-Socket STUN / Blind Relay, especificação binária do cabeçalho de 32 bytes, benchmarks reais e guia operacional Windows/Linux/Cloud.
+- `README.md` e `LEIA-ME_LINUX.md`: Reescritos com prosa técnica autoral, diagramas Mermaid da arquitetura multiprocesso e do fluxo Single-Socket STUN / Blind Relay (com setas `->>` / `-->>` e rótulos pipe `|...|` validados contra o parser oficial MermaidJS e âncoras de navegação alinhadas ao GitHub), especificação binária do cabeçalho de 32 bytes, benchmarks reais e guia operacional Windows/Linux/Cloud.
 - `tests/test_p2p_e2e.py`, `tests/test_codec_encoder.py`, `tests/test_packetizer_crypto.py`, `tests/test_qos_engine.py`: Suíte E2E cobrindo preservação do descritor STUN, transmissão/decodificação H.264 via P2P direto e simulação estrita de CGNAT Simétrico com fallback `DAV_RLY1`, além de limpeza integral de avisos do `pytest`.
 - `VERSION`, `CHANGELOG.md`, `.gitattributes`, `deploy/dav-rendezvous.service`, `.github/workflows/release.yml`: Governança SemVer `3.1.0`, normalização `LF` para scripts POSIX, unidade `systemd` oficial para a VPS de sinalização/relay e pipeline multiplataforma GitHub Actions compilando e publicando builds nativos Windows (`x64`) e Linux (`x86_64`) automaticamente no GitHub Releases.
 
@@ -61,3 +61,4 @@ Além da reconstrução do motor de transporte P2P, todo o repositório passou p
    - Descoberta Single-Socket STUN mapeando portas externas reais (`Cone NAT`), pareamento via PIN na nuvem Oracle e decodificação contínua de **42 quadros reais 720p H.264 NVENC em `0.70 s` (`60.0 FPS`)**.
 3. **Builds Gerados e Pipeline de Release:**
    - Pacote local Windows (`DA-V_Instalador_Windows_x64.exe` + `DA-V_v3.1.0_Windows_x64.zip`) e pacote Linux (`DA-V_v3.1.0_Linux_x86_64.tar.gz` com scripts `LF` e permissões `0755`) gerados em `dist_installer/`, acompanhados do workflow `.github/workflows/release.yml` disparado pela tag `v3.1.0`.
+

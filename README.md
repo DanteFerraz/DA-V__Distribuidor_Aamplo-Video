@@ -10,10 +10,10 @@
 
 **Compartilhamento de tela ponto a ponto de baixa latência a 60 FPS reais entre Windows e Linux — com pareamento universal por PIN, perfuração direta de NAT e fallback automático para CGNAT.**
 
-[Arquitetura de Software](#-arquitetura-de-software) •
-[Protocolo P2P e Travessia de NAT](#-engenharia-p2p-stun-single-socket-e-blind-relay) •
-[Formato de Pacote na Rede](#-protocolo-binário-de-transporte) •
-[Como Executar](#-instalação-e-execução) •
+[Arquitetura de Software](#arquitetura-de-software) •
+[Protocolo P2P e Travessia de NAT](#engenharia-p2p-stun-single-socket-e-blind-relay) •
+[Formato de Pacote na Rede](#protocolo-binário-de-transporte) •
+[Como Executar](#instalação-e-execução) •
 [Releases & Builds](https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video/releases)
 
 </div>
@@ -38,41 +38,44 @@ O projeto adota uma **arquitetura multiprocesso desacoplada** com protocolo de r
 flowchart TB
     subgraph TX_HOST ["Nó Transmissor (Windows / Linux)"]
         direction TB
-        UI_TX["Interface PySide6\n(Controle, Standby & Telemetria TUPÃ)"]
+        UI_TX["Interface PySide6 (Controle, Standby e Telemetria TUPÃ)"]
         subgraph TX_PROC ["Processo Isolado OS (DAV-Sender-Engine · Sem Contenção GIL)"]
-            CAP["Captura de Tela\n• Win11: WGC Direct3D / GDI DIBSection\n• Linux: X11 MIT-SHM / MSS"]
-            ENC["HybridEncoder (Zero-B-Frames)\n• GPU: NVIDIA NVENC (p1 ULL + Repeat SPS/PPS)\n• CPU: libx264 (ultrafast + zerolatency)"]
-            CIPHER_TX["Cifragem Vetorizada SIMD\n+ Fragmentador MTU 1320 B"]
-            SOCK_TX["SenderTransportEndpoint\n(Descritor Único UDP · SO_SNDBUF 32 MB)"]
+            direction TB
+            CAP["Captura de Tela (Win11: WGC Direct3D / GDI · Linux: X11 MIT-SHM / MSS)"]
+            ENC["HybridEncoder Zero-B-Frames (GPU: NVENC p1 ULL · CPU: libx264 zerolatency)"]
+            CIPHER_TX["Cifragem Vetorizada SIMD + Fragmentador MTU 1320 B"]
+            SOCK_TX["SenderTransportEndpoint (Descritor Único UDP · SO_SNDBUF 32 MB)"]
             CAP --> ENC --> CIPHER_TX --> SOCK_TX
         end
-        UI_TX <-- "IPC Filas (Comandos / Métricas)" --> TX_PROC
+        UI_TX <-->|"IPC Filas (Comandos / Métricas)"| TX_PROC
     end
 
-    subgraph CLOUD ["Camada de Descoberta & Contingência"]
+    subgraph CLOUD ["Camada de Descoberta e Contingência"]
         direction TB
-        BEACON["LAN Beacon UDP :9005\n(Broadcast + Subnet Sweep Zero-Cloud)"]
-        STUN_PUB["STUN Público RFC 5389\n(Google / Cloudflare)"]
-        RDV["Servidor DAV-Rendezvous\n• HTTP/SSE Push (:80 / :8765)\n• Blind Encrypted UDP Relay (:8768)"]
+        BEACON["LAN Beacon UDP :9005 (Broadcast + Subnet Sweep Zero-Cloud)"]
+        STUN_PUB["STUN Público RFC 5389 (Google / Cloudflare)"]
+        RDV["Servidor DAV-Rendezvous (HTTP/SSE :80/:8765 + Blind Relay UDP :8768)"]
     end
 
     subgraph RX_HOST ["Nó Receptor (Windows / Linux)"]
         direction TB
-        SOCK_RX["Loop Receptor Assíncrono\n(Descritor Único UDP + Janela 40 Quadros)"]
-        DEC_W["DecodeWorker (Thread Dedicada)\nFFmpeg/PyAV Slice Low-Delay (4 Threads)"]
-        CANVAS["VideoCanvasWidget\n(Zero-Copy QImage · VSync Off)"]
+        SOCK_RX["Loop Receptor Assíncrono (Descritor Único UDP + Janela 40 Quadros)"]
+        DEC_W["DecodeWorker Thread Dedicada (FFmpeg/PyAV Slice Low-Delay · 4 Threads)"]
+        CANVAS["VideoCanvasWidget (Zero-Copy QImage · VSync Off)"]
         SOCK_RX --> DEC_W --> CANVAS
     end
 
-    SOCK_TX -. "1. Binding Request (Mesmo Socket)" .-> STUN_PUB
-    SOCK_RX -. "1. Binding Request (Mesmo Socket)" .-> STUN_PUB
-    UI_TX -. "2. Registro PIN + Escuta SSE" .-> RDV
-    RX_HOST -. "2. Resolução PIN" .-> RDV
-    UI_TX <-. "Descoberta Local" .-> BEACON <-.-> RX_HOST
+    SOCK_TX -.->|"1. Binding Request (Mesmo Socket)"| STUN_PUB
+    SOCK_RX -.->|"1. Binding Request (Mesmo Socket)"| STUN_PUB
+    UI_TX -.->|"2. Registro PIN + Escuta SSE"| RDV
+    SOCK_RX -.->|"2. Resolução PIN"| RDV
+    UI_TX <-->|"Descoberta Local"| BEACON
+    BEACON <-->|"Varredura LAN"| SOCK_RX
 
-    SOCK_TX == "3a. Túnel Direto UDP (LAN / Overlay / WAN Hole-Punch)" ==> SOCK_RX
-    SOCK_RX -. "PLI (Pedido Instantâneo de Keyframe IDR)" .-> SOCK_TX
-    SOCK_TX -. "3b. Fallback CGNAT Simétrico (DAV_RLY1)" .-> RDV -. "Encaminhamento O(1) Cego" .-> SOCK_RX
+    SOCK_TX ==>|"3a. Túnel Direto UDP (LAN / Overlay / WAN Hole-Punch)"| SOCK_RX
+    SOCK_RX -.->|"PLI (Pedido Instantâneo de Keyframe IDR)"| SOCK_TX
+    SOCK_TX -.->|"3b. Fallback CGNAT Simétrico (DAV_RLY1)"| RDV
+    RDV -.->|"Encaminhamento O(1) Cego"| SOCK_RX
 ```
 
 ### Decisões de Projeto que Sustentam os 60 FPS
@@ -106,28 +109,28 @@ sequenceDiagram
 
     Note over TX: Keepalive STUN (15s) mantém porta aberta no roteador
 
-    RX->>RX: prepare_receiver_socket() -> bind(0.0.0.0:9002)
+    RX->>RX: prepare_receiver_socket() + bind(0.0.0.0:9002)
     RX->>STUN: STUN Binding Request (mesmo FD)
     STUN-->>RX: XOR-MAPPED-ADDRESS (IP_Pub_RX:Porta_NAT_RX)
     RX->>RDV: POST /p2p/resolve (PIN + Candidatos RX)
     RDV-->>RX: 200 OK (Candidatos TX + Endpoint Relay)
-    RDV-->>TX: Evento SSE "paired" (< 50 ms) com Candidatos RX
+    RDV-->>TX: Evento SSE paired (menos de 50 ms) com Candidatos RX
 
     par Corrida Multi-Candidato (Overlay + LAN + WAN)
-        TX->>RX: Rajada DAV_P2P_SYN:<PIN>
-        RX->>TX: Rajada DAV_P2P_SYN:<PIN>
+        TX->>RX: Rajada DAV_P2P_SYN (PIN)
+        RX->>TX: Rajada DAV_P2P_SYN (PIN)
     end
 
     alt NAT Cone / Mesma LAN / Malha Overlay (Rota Direta)
-        RX-->>TX: DAV_P2P_ACK:<PIN>
+        RX-->>TX: DAV_P2P_ACK (PIN)
         TX->>TX: Força IDR Keyframe (SPS/PPS) e ativa 60 FPS
-        TX==>>RX: Fluxo H.264 Criptografado Direto (Menor Latência)
+        TX->>RX: Fluxo H.264 Criptografado Direto (Menor Latência)
     else CGNAT Simétrico Estrito nos Dois Lados (Após 850 ms sem rota direta)
-        TX->>RDV: DAV_RLY1 + PIN + 'S' + BIND
-        RX->>RDV: DAV_RLY1 + PIN + 'R' + BIND
+        TX->>RDV: DAV_RLY1 + PIN + Role S + BIND
+        RX->>RDV: DAV_RLY1 + PIN + Role R + BIND
         RDV-->>TX: DAV_RLY_PEER_READY
-        TX==>>RDV: Envelope DAV_RLY1 + Pacote Criptografado
-        RDV==>>RX: Encaminhamento Cego O(1) em RAM (Zero-Knowledge)
+        TX->>RDV: Envelope DAV_RLY1 + Pacote Criptografado
+        RDV->>RX: Encaminhamento Cego O(1) em RAM (Zero-Knowledge)
     end
 ```
 
