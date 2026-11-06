@@ -4,6 +4,15 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [3.2.1] — 2026-11-06
+
+### Corrigido
+- **Renderização de Resoluções Não Múltiplas de 32 Bytes no Receptor (`1366x768`, `1600x900`, `3440x1440`):** Em resoluções cuja largura em bytes BGR24 (`width * 3`) não é divisível por 32 (como `1366 * 3 = 4098`, alinhado pelo FFmpeg/AVX2 para `linesize = 4128`), `AVFrame.to_ndarray(format="bgr24")` retornava uma visão NumPy não-contígua (`C_CONTIGUOUS = False`), disparando `BufferError: memoryview: underlying buffer is not C-contiguous` ao construir `QImage(bgr.data, ...)` em `DecodeWorker`. `HybridDecoder._convert_frame_to_bgr` e `DecodeWorker._decode_run` agora normalizam buffers não-contíguos via `np.ascontiguousarray` (operação zero-custo quando já contíguo).
+- **Atualização Segura com Aplicação Aberta (`dav_installer_win.py`):** O instalador Windows encerra automaticamente instâncias anteriores de `DA-V.exe` antes de extrair os novos binários, evitando bloqueio de DLLs em uso.
+- **Sincronia de Estado Conectado e Versão Empacotada:** `ViewerView` sincroniza `video_canvas.is_connected` ao conectar e o arquivo `VERSION` passa a ser embutido nos binários PyInstaller.
+
+---
+
 ## [3.2.0] — 2026-11-06
 
 ### Adicionado

@@ -682,6 +682,18 @@ class DavModernInstaller(QDialog):
 
         if payload_zip is not None:
             try:
+                # Encerra instância anterior em execução caso o usuário tenha deixado uma janela aberta
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", "DA-V.exe"],
+                        capture_output=True,
+                        creationflags=0x08000000,
+                    )
+                    import time as _time
+                    _time.sleep(0.4)
+                except Exception:
+                    pass
+
                 install_dir.mkdir(parents=True, exist_ok=True)
                 internal_dir = install_dir / "_internal"
                 if internal_dir.exists():

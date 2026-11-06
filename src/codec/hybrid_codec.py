@@ -262,21 +262,28 @@ class HybridDecoder:
         return self._hevc_dec
 
     def _convert_frame_to_bgr(self, frame) -> np.ndarray:
-        """Converte AVFrame decodificado para matriz BGR24 contígua pronta para QImage."""
+        """Converte AVFrame decodificado para matriz BGR24 C-contígua pronta para QImage."""
+        arr = None
         try:
-            return frame.to_ndarray(format="bgr24")
+            arr = frame.to_ndarray(format="bgr24")
         except Exception:
-            pass
-        if HAS_CV2:
-            try:
-                fmt = frame.format.name
-                if fmt == "yuv420p":
-                    return cv2.cvtColor(frame.to_ndarray(), cv2.COLOR_YUV2BGR_I420)
-                if fmt == "nv12":
-                    return cv2.cvtColor(frame.to_ndarray(), cv2.COLOR_YUV2BGR_NV12)
-            except Exception:
-                pass
-        return frame.to_ndarray()
+            if HAS_CV2:
+                try:
+                    fmt = frame.format.name
+                    if fmt == "yuv420p":
+                        arr = cv2.cvtColor(frame.to_ndarray(), cv2.COLOR_YUV2BGR_I420)
+                    elif fmt == "nv12":
+                        arr = cv2.cvtColor(frame.to_ndarray(), cv2.COLOR_YUV2BGR_NV12)
+                except Exception:
+                    arr = None
+            if arr is None:
+                arr = frame.to_ndarray()
+
+        # Resoluções cuja largura*3 não é múltipla de 32 bytes (ex.: 1366x768 -> 4098 B -> linesize SIMD 4128 B)
+        # produzem visões não-contíguas no PyAV, o que levantaria BufferError em memoryview / QImage(bgr.data).
+        if arr is not None and not arr.flags["C_CONTIGUOUS"]:
+            arr = np.ascontiguousarray(arr)
+        return arr
 
     def decode_all(self, payload: bytes, width: int = 1920, height: int = 1080) -> list:
         """Decodifica todos os quadros contidos no pacote remontado."""

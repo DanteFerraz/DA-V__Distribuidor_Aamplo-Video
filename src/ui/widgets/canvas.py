@@ -76,6 +76,8 @@ class VideoCanvasWidget(QWidget):
         self.latency_ms = latency
         self.packets_count = packets
         self.frames_count = frames
+        if packets > 0:
+            self.is_connected = True
         self.update()
 
     def clear_display(self):

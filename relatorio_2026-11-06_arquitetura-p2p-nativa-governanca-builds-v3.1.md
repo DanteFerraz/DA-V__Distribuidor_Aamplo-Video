@@ -3,7 +3,7 @@
 **Projeto:** DA-V (*Distribuidor Amplo de Vídeo*)  
 **Autoria:** Dante Ferraz (MonoTech)  
 **Data:** 06 de Novembro de 2026  
-**Versão Consolidada:** `v3.2.0` (evoluída a partir de `v3.1.0` / `v3.1.1`)  
+**Versão Consolidada:** `v3.2.1` (evoluída a partir de `v3.1.0` / `v3.1.1` / `v3.2.0`)  
 
 ---
 
@@ -98,6 +98,12 @@ Após a publicação da release `v3.1.1`, foi realizado teste WAN real entre doi
 6. **Governança, CI Multiplataforma e Testes Automatizados:**
    - Adicionada suíte de testes `tests/test_linux_wayland_capture.py`.
    - Atualizados `VERSION` (`3.2.0`), `CHANGELOG.md`, `launch_dav.sh`, `scripts/dav_installer_linux.py`, `LEIA-ME_LINUX.md` e `.github/workflows/release.yml`.
-   - Validação com `10/10 testes unitários e E2E aprovados` sem erros.
+   - Validação com `11/11 testes unitários e E2E aprovados` sem erros.
+
+### 5.4 Hotfix `v3.2.1` — Diagnóstico e Correção de Alinhamento SIMD (`1366x768` Non-Contiguous Stride) no Receptor
+- **Evidência em Campo:** No teste WAN `Linux Wayland v3.2.0 (1366x768) -> Windows`, o motor Wayland PipeWire atingiu **62.0–63.7 FPS** com vazão real de **5.6–8.85 Mbps** (`7.479 quadros` recebidos no Windows), porém o canvas do Receptor permanecia sem exibir imagem. Além disso, a janela aberta do `DA-V.exe` durante a recompilação anterior havia mantido as DLLs antigas travadas em `%LOCALAPPDATA%\Programs\DA-V`.
+- **Causa-Raiz Matemática:** Para `width = 1366`, `1366 * 3 = 4098 bytes` não é múltiplo do alinhamento SIMD de 32 bytes do FFmpeg (`linesize = 4128 bytes`). Consequentemente, `frame.to_ndarray(format="bgr24")` retornava `strides = (4128, 3, 1)` com `C_CONTIGUOUS = False`, levantando `BufferError: memoryview: underlying buffer is not C-contiguous` em `QImage(bgr.data, ...)` dentro de `src/ui/bridge.py`.
+- **Correção Aplicada (`v3.2.1`):** Normalização `np.ascontiguousarray()` em `src/codec/hybrid_codec.py` e `src/ui/bridge.py`, sincronização imediata de `video_canvas.is_connected` em `src/ui/views/viewer_view.py`, encerramento automático de instâncias abertas no instalador `scripts/dav_installer_win.py`, inclusão de `VERSION` no bundle PyInstaller e teste de regressão `test_non_32_aligned_1366x768_decode_to_qimage`.
+
 
 

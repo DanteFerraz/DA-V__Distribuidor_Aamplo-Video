@@ -80,3 +80,37 @@ def test_hybrid_encoder_single_pass_rescale():
     assert len(payload) > 100
     assert payload.startswith(b"DAV_H264:")
     enc.close()
+
+
+def test_non_32_aligned_1366x768_decode_to_qimage():
+    """Garante que resoluções não múltiplas de 32 bytes (ex.: 1366x768) geram buffer C-contíguo e QImage válido."""
+    try:
+        import av  # noqa: F401
+    except ImportError:
+        pytest.skip("PyAV não instalado no ambiente de teste")
+
+    from src.codec.hybrid_codec import HybridDecoder
+    from scripts.qt_compat import QImage
+
+    enc = HybridEncoder(codec_type="libx264", width=1366, height=768, fps=60, bitrate_kbps=8000)
+    src = np.zeros((768, 1366, 4), dtype=np.uint8)
+    src[:, :, 0] = 25
+    src[:, :, 1] = 205
+    src[:, :, 2] = 65
+    src[:, :, 3] = 255
+
+    pkt = enc.encode(src)
+    enc.close()
+    assert pkt.startswith(b"DAV_H264:")
+
+    dec = HybridDecoder()
+    frames = dec.decode_all(pkt, 1920, 1080)
+    assert len(frames) == 1
+    bgr = frames[0]
+    assert bgr.shape == (768, 1366, 3)
+    assert bgr.flags["C_CONTIGUOUS"] is True
+
+    img = QImage(bgr.data, bgr.shape[1], bgr.shape[0], bgr.strides[0], QImage.Format.Format_BGR888)
+    assert not img.isNull()
+    assert img.width() == 1366
+    assert img.height() == 768

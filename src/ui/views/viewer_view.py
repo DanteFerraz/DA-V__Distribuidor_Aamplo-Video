@@ -80,6 +80,8 @@ class ViewerView(QWidget):
         if connected:
             self.btn_recv_toggle.setText("Desconectar")
             self.btn_recv_toggle.setObjectName("stopBtn")
+            self.video_canvas.is_connected = True
+            self.video_canvas.update()
         else:
             self.btn_recv_toggle.setText("Conectar e Assistir")
             self.btn_recv_toggle.setObjectName("")

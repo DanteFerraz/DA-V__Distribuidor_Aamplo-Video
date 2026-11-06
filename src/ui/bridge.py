@@ -13,6 +13,7 @@ import queue as _queue
 from typing import Optional, Tuple
 
 import ctypes
+import numpy as np
 from scripts.qt_compat import QObject, Signal, QImage
 from src.codec.hybrid_codec import HybridDecoder
 
@@ -83,6 +84,7 @@ class DecodeWorker(QObject):
             except Exception:
                 pass
 
+        logged_err = False
         while self._running:
             try:
                 item = self._q.get(timeout=0.15)
@@ -103,6 +105,8 @@ class DecodeWorker(QObject):
 
                 for bgr in bgr_list:
                     if bgr is not None:
+                        if not bgr.flags["C_CONTIGUOUS"]:
+                            bgr = np.ascontiguousarray(bgr)
                         img = QImage(
                             bgr.data, bgr.shape[1], bgr.shape[0],
                             bgr.strides[0], QImage.Format.Format_BGR888
@@ -110,8 +114,13 @@ class DecodeWorker(QObject):
                         img._holder = bgr  # Zero-copy reference holder prevents premature GC
                         if not img.isNull():
                             self.decoded.emit(img)
-            except Exception:
-                pass
+            except Exception as exc:
+                if not logged_err:
+                    logged_err = True
+                    try:
+                        self._bridge.log_message.emit("ERROR", f"[Decode] Falha ao renderizar quadro decodificado: {exc}")
+                    except Exception:
+                        pass
 
 
 def find_available_port(start_port: int = 9000, max_tries: int = 20) -> int:

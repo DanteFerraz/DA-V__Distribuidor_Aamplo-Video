@@ -87,6 +87,7 @@ jobs:
             --paths "$ROOT_DIR" \
             --add-data "$ROOT_DIR/installer/dav_icon.png:." \
             --add-data "$ROOT_DIR/installer/dav_icon.ico:." \
+            --add-data "$ROOT_DIR/VERSION:." \
             --collect-all av \
             --hidden-import scripts.dav_sender_worker \
             --hidden-import scripts.dav_client \
@@ -181,6 +182,7 @@ jobs:
             --paths "$Root" `
             --add-data "$Root\installer\dav_icon.ico;." `
             --add-data "$Root\installer\dav_icon.png;." `
+            --add-data "$Root\VERSION;." `
             --collect-all av `
             --hidden-import scripts.dav_sender_worker `
             --hidden-import scripts.dav_client `

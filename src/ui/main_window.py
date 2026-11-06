@@ -73,14 +73,17 @@ class DavMainWindow(QMainWindow):
         parent=None,
     ):
         super().__init__(parent)
-        version_str = "3.2.0"
+        version_str = "3.2.1"
         try:
-            ver_file = os.path.join(_PROJECT_ROOT, "VERSION")
-            if os.path.exists(ver_file):
-                with open(ver_file, "r", encoding="utf-8") as vf:
-                    v = vf.read().strip()
-                    if v:
-                        version_str = v
+            base_root = getattr(sys, "_MEIPASS", _PROJECT_ROOT)
+            for cand_root in (base_root, _PROJECT_ROOT):
+                ver_file = os.path.join(cand_root, "VERSION")
+                if os.path.exists(ver_file):
+                    with open(ver_file, "r", encoding="utf-8") as vf:
+                        v = vf.read().strip()
+                        if v:
+                            version_str = v
+                            break
         except Exception:
             pass
         self.setWindowTitle(f"DA-V v{version_str} — Distribuidor Amplo de Vídeo")
