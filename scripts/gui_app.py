@@ -12,61 +12,63 @@ e formatação de superfície gráfica sem bloqueio de VSync antes de inicializa
 import sys
 import os
 import argparse
+import multiprocessing
 
-# ── Otimizações de Baixo Nível do SO ──────────────────────────────────────────
-# O Windows por padrão usa granularidade de timer de ~15.6ms. Para sustentar
-# 60 FPS com precisão milimétrica sem jitter, forçamos o kernel NT a 1ms
-# e elevamos a prioridade do processo para prevenir preempção por outras tarefas.
-if sys.platform == "win32":
+
+def _configure_os_realtime_priority():
+    """Eleva prioridade de escalonamento e reduz granularidade do timer do SO para 1ms."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            _k32 = ctypes.windll.kernel32
+            _k32.GetCurrentProcessId.restype = wintypes.DWORD
+            _k32.OpenProcess.restype = wintypes.HANDLE
+            _k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            _k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            _k32.SetPriorityClass.restype = wintypes.BOOL
+            _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            _k32.CloseHandle.restype = wintypes.BOOL
+            _pid = _k32.GetCurrentProcessId()
+            _h = _k32.OpenProcess(0x1F0FFF, False, _pid)
+            if _h:
+                _k32.SetPriorityClass(_h, 0x8000)  # ABOVE_NORMAL_PRIORITY_CLASS
+                _k32.CloseHandle(_h)
+
+            _u32 = ctypes.windll.user32
+            _h_desk = _u32.OpenDesktopW("Default", 0, False, 0x01FF)
+            if _h_desk:
+                _u32.SetThreadDesktop(_h_desk)
+        except Exception:
+            pass
+    else:
+        try:
+            os.nice(-10)
+        except Exception:
+            pass
+
     try:
-        import ctypes
-        from ctypes import wintypes
-        ctypes.windll.winmm.timeBeginPeriod(1)
-        _k32 = ctypes.windll.kernel32
-        _k32.GetCurrentProcessId.restype = wintypes.DWORD
-        _k32.OpenProcess.restype = wintypes.HANDLE
-        _k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        _k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        _k32.SetPriorityClass.restype = wintypes.BOOL
-        _k32.CloseHandle.argtypes = [wintypes.HANDLE]
-        _k32.CloseHandle.restype = wintypes.BOOL
-        _pid = _k32.GetCurrentProcessId()
-        _h = _k32.OpenProcess(0x1F0FFF, False, _pid)
-        if _h:
-            _k32.SetPriorityClass(_h, 0x8000)  # ABOVE_NORMAL_PRIORITY_CLASS
-            _k32.CloseHandle(_h)
-
-        # Garante vínculo da thread principal ao desktop interativo WinSta0\Default
-        _u32 = ctypes.windll.user32
-        _h_desk = _u32.OpenDesktopW("Default", 0, False, 0x01FF)
-        if _h_desk:
-            _u32.SetThreadDesktop(_h_desk)
+        sys.setswitchinterval(0.001)
     except Exception:
         pass
+
+
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
 else:
-    # No Linux, reduzimos o nice value para elevar a prioridade de agendamento POSIX
-    try:
-        os.nice(-10)
-    except Exception:
-        pass
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Ajuste do GIL switch interval para 1ms (padrão é 5ms) para alternância rápida
-# entre o loop de eventos Qt e as threads de decodificação e streaming
-try:
-    sys.setswitchinterval(0.001)
-except Exception:
-    pass
-
-# Add project root to sys.path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from scripts.qt_compat import QApplication
-from src.ui.main_window import DavMainWindow
-
 
 def main():
+    _configure_os_realtime_priority()
+
+    from scripts.qt_compat import QApplication
+    from src.ui.main_window import DavMainWindow
+
     parser = argparse.ArgumentParser(description="DA-V Video Hub")
     parser.add_argument("--port", type=int, default=None, help="Porta UDP padrao para escuta do receptor")
     parser.add_argument("--target-port", type=int, default=None, help="Porta UDP alvo padrao para o transmissor")
@@ -74,6 +76,7 @@ def main():
     parser.add_argument("--auto-send", action="store_true", help="Inicia automaticamente a transmissao ao abrir")
     parser.add_argument("--monitor", type=int, default=1, help="Indice do monitor de origem (0=Mon1, 1=Mon2)")
     parser.add_argument("--pin", type=str, default=None, help="PIN de autenticacao compartilhado")
+    parser.add_argument("--self-check", action="store_true", help="Valida inicializacao do binario empacotado e encerra")
     parser.add_argument("uri", nargs="?", default=None, help="URI de convite direto (ex: dav://connect/415-759)")
     args, _ = parser.parse_known_args()
 
@@ -97,6 +100,17 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("DA-V Video Hub")
+
+    try:
+        from PySide6.QtGui import QIcon
+        for icon_rel in ("installer/dav_icon.ico", "installer/dav_icon.png", "dav_icon.ico", "dav_icon.png"):
+            icon_candidate = os.path.join(PROJECT_ROOT, icon_rel)
+            if os.path.isfile(icon_candidate):
+                app.setWindowIcon(QIcon(icon_candidate))
+                break
+    except Exception:
+        pass
+
     window = DavMainWindow(
         custom_port=args.port,
         custom_target_port=args.target_port,
@@ -106,9 +120,17 @@ def main():
         custom_pin=pin_arg,
         p2p_uri_mode=p2p_uri_mode,
     )
+
+    if args.self_check:
+        from PySide6.QtCore import QTimer
+        print("DAV_SELF_CHECK_OK")
+        QTimer.singleShot(150, window.close)
+        QTimer.singleShot(250, app.quit)
+
     window.show()
     sys.exit(app.exec())
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

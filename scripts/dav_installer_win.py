@@ -14,6 +14,7 @@ import os
 import subprocess
 import winreg
 import shutil
+import zipfile
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -496,10 +497,10 @@ class DavModernInstaller(QDialog):
         self.log_layout = QVBoxLayout(self.log_card)
         self.log_layout.setSpacing(8)
 
-        self.lbl_log1 = QLabel("• Verificando permissões de sistema...")
+        self.lbl_log1 = QLabel("• Instalando motor e binários do DA-V em AppData\\Local\\Programs\\DA-V...")
         self.lbl_log2 = QLabel("• Configurando regras do Firewall do Windows...")
         self.lbl_log3 = QLabel("• Registrando protocolo de deep-link dav://...")
-        self.lbl_log4 = QLabel("• Criando atalhos de inicialização...")
+        self.lbl_log4 = QLabel("• Criando atalhos na Área de Trabalho e Menu Iniciar...")
 
         for lbl in (self.lbl_log1, self.lbl_log2, self.lbl_log3, self.lbl_log4):
             lbl.setStyleSheet(f"font-size: 12px; color: {C_TEXT_MUTED};")
@@ -611,38 +612,109 @@ class DavModernInstaller(QDialog):
     @staticmethod
     def _get_proj_root() -> Path:
         if getattr(sys, "frozen", False):
-            base = Path(sys.executable).parent
-            if (base / "scripts" / "gui_app.py").exists():
-                return base
-            elif (base.parent / "scripts" / "gui_app.py").exists():
-                return base.parent
+            base = Path(sys.executable).resolve().parent
+            for cand in (base, base.parent, base.parent.parent):
+                if (cand / "DA-V.exe").exists() or (cand / "scripts" / "gui_app.py").exists():
+                    return cand
             return base
         return Path(__file__).resolve().parent.parent
 
     @staticmethod
+    def _find_bundled_payload() -> Path | None:
+        candidates = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "dav_app_payload.zip")
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "dav_app_payload.zip")
+        candidates.append(Path(__file__).resolve().parent.parent / "dist_installer" / "dav_app_payload.zip")
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
+    @staticmethod
+    def _get_default_install_dir() -> Path:
+        local_app = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(local_app) / "Programs" / "DA-V"
+
+    @staticmethod
     def _get_python_runtime() -> str:
-        for cmd in ("pyw", "pythonw", "python"):
-            found = shutil.which(cmd)
-            if found and "WindowsApps" not in found:
-                return found
+        if not getattr(sys, "frozen", False):
+            cand_same = Path(sys.executable).resolve().with_name("pythonw.exe")
+            if cand_same.is_file():
+                return str(cand_same)
         local_py = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
         if local_py.exists():
             for cand in sorted(local_py.glob("Python3*/pythonw.exe"), reverse=True):
-                return str(cand)
-        return "pyw"
+                if cand.is_file():
+                    return str(cand)
+        for cmd in ("pythonw", "pyw", "python"):
+            found = shutil.which(cmd)
+            if found and "WindowsApps" not in found:
+                return found
+        return "pythonw"
+
+    def _resolve_installed_target(self) -> tuple[Path, str, Path]:
+        """Retorna (executavel_alvo, argumentos_extras, diretorio_de_trabalho)."""
+        install_dir = self._get_default_install_dir()
+        installed_exe = install_dir / "DA-V.exe"
+        if installed_exe.is_file():
+            return installed_exe, "", install_dir
+
+        proj_root = self._get_proj_root()
+        sibling_exe = proj_root / "DA-V.exe"
+        if sibling_exe.is_file():
+            return sibling_exe, "", proj_root
+
+        launcher = proj_root / "scripts" / "gui_app.py"
+        pyw_exe = Path(self._get_python_runtime())
+        return pyw_exe, f'"{launcher}"', proj_root
 
     def _execute_installation(self):
-        """Aplica as configurações no Windows com feedback visual passo a passo."""
-        # Etapa 1: Permissões
-        self.progress_bar.setValue(20)
-        self.lbl_status.setText("Validando permissões de ambiente...")
-        self.lbl_log1.setText("✓ Permissões de sistema validadas com sucesso.")
-        self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+        """Extrai os binários autossuficientes do DA-V e aplica integrações no Windows."""
+        self.progress_bar.setValue(12)
+        self.lbl_status.setText("Instalando binários autossuficientes do DA-V...")
+        QApplication.processEvents()
+
+        payload_zip = self._find_bundled_payload()
+        install_dir = self._get_default_install_dir()
+
+        if payload_zip is not None:
+            try:
+                install_dir.mkdir(parents=True, exist_ok=True)
+                internal_dir = install_dir / "_internal"
+                if internal_dir.exists():
+                    shutil.rmtree(internal_dir, ignore_errors=True)
+
+                with zipfile.ZipFile(payload_zip, "r") as zf:
+                    members = zf.infolist()
+                    total = max(len(members), 1)
+                    for idx, m in enumerate(members, 1):
+                        zf.extract(m, install_dir)
+                        if idx % 25 == 0 or idx == total:
+                            pct = 12 + int((idx / total) * 33)
+                            self.progress_bar.setValue(min(pct, 45))
+                            QApplication.processEvents()
+
+                self.lbl_log1.setText(f"✓ Aplicação instalada em {install_dir}")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+            except Exception as e:
+                self.lbl_log1.setText(f"⚠ Falha ao extrair binários ({e}); usando modo local.")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_WARNING};")
+        else:
+            proj_root = self._get_proj_root()
+            if (proj_root / "DA-V.exe").is_file() or (proj_root / "scripts" / "gui_app.py").is_file():
+                self.lbl_log1.setText(f"✓ Ambiente local validado em {proj_root}")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+            else:
+                self.lbl_log1.setText("⚠ Pacote de aplicação não localizado junto ao instalador.")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_WARNING};")
         QApplication.processEvents()
 
         # Etapa 2: Firewall
         if self.chk_firewall.isChecked():
-            self.progress_bar.setValue(45)
+            self.progress_bar.setValue(58)
             self.lbl_status.setText("Configurando regras no Windows Defender Firewall...")
             QApplication.processEvents()
             try:
@@ -650,7 +722,7 @@ class DavModernInstaller(QDialog):
                     'netsh advfirewall firewall delete rule name="DA-V Video Streaming"',
                     shell=True, capture_output=True
                 )
-                subprocess.run(
+                r_fw = subprocess.run(
                     'netsh advfirewall firewall add rule name="DA-V Video Streaming" dir=in action=allow protocol=UDP localport=9000-9020,19000-19010 profile=any',
                     shell=True, capture_output=True
                 )
@@ -658,8 +730,21 @@ class DavModernInstaller(QDialog):
                     'netsh advfirewall firewall add rule name="DA-V LAN Beacon" dir=in action=allow protocol=UDP localport=9005 profile=any',
                     shell=True, capture_output=True
                 )
-                self.lbl_log2.setText("✓ Portas UDP 9000-9020, 19000-19010 e 9005 liberadas no Firewall.")
-                self.lbl_log2.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+                if r_fw.returncode == 0:
+                    self.lbl_log2.setText("✓ Portas UDP 9000-9020, 19000-19010 e 9005 liberadas no Firewall.")
+                    self.lbl_log2.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+                else:
+                    import ctypes
+                    fw_cmd = (
+                        'netsh advfirewall firewall delete rule name="DA-V Video Streaming" | Out-Null; '
+                        'netsh advfirewall firewall add rule name="DA-V Video Streaming" dir=in action=allow protocol=UDP localport=9000-9020,19000-19010 profile=any | Out-Null; '
+                        'netsh advfirewall firewall add rule name="DA-V LAN Beacon" dir=in action=allow protocol=UDP localport=9005 profile=any | Out-Null'
+                    )
+                    ctypes.windll.shell32.ShellExecuteW(
+                        None, "runas", "powershell.exe", f'-NoProfile -WindowStyle Hidden -Command "{fw_cmd}"', None, 0
+                    )
+                    self.lbl_log2.setText("✓ Regras UDP solicitadas via Administrador (Windows Firewall).")
+                    self.lbl_log2.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
             except Exception as e:
                 self.lbl_log2.setText(f"⚠ Aviso no Firewall: {e}")
                 self.lbl_log2.setStyleSheet(f"font-size: 12px; color: {C_WARNING};")
@@ -667,24 +752,28 @@ class DavModernInstaller(QDialog):
             self.lbl_log2.setText("— Configuração de Firewall ignorada pelo usuário.")
         QApplication.processEvents()
 
-        proj_root = self._get_proj_root()
-        launcher = proj_root / "scripts" / "gui_app.py"
-        pyw_exe = self._get_python_runtime()
+        target_exe, target_args, work_dir = self._resolve_installed_target()
+        self._installed_target = (target_exe, target_args, work_dir)
 
         # Etapa 3: Protocolo dav://
         if self.chk_protocol.isChecked():
-            self.progress_bar.setValue(70)
+            self.progress_bar.setValue(75)
             self.lbl_status.setText("Registrando protocolo 'dav://' no Registro do Windows...")
             QApplication.processEvents()
             try:
-                cmd_str = f'"{pyw_exe}" "{launcher}" "%1"'
+                if target_args:
+                    cmd_str = f'"{target_exe}" {target_args} "%1"'
+                else:
+                    cmd_str = f'"{target_exe}" "%1"'
 
                 with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\dav") as k:
                     winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "URL:DA-V Protocol")
                     winreg.SetValueEx(k, "URL Protocol", 0, winreg.REG_SZ, "")
+                    with winreg.CreateKey(k, r"DisplayIcon") as ik:
+                        winreg.SetValueEx(ik, "", 0, winreg.REG_SZ, f'"{target_exe}",0')
                     with winreg.CreateKey(k, r"shell\open\command") as sk:
                         winreg.SetValueEx(sk, "", 0, winreg.REG_SZ, cmd_str)
-                self.lbl_log3.setText("✓ Protocolo 'dav://' associado ao DA-V com sucesso.")
+                self.lbl_log3.setText("✓ Protocolo 'dav://' associado ao executável instalado.")
                 self.lbl_log3.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
             except Exception as e:
                 self.lbl_log3.setText(f"⚠ Registro do protocolo: {e}")
@@ -693,35 +782,39 @@ class DavModernInstaller(QDialog):
             self.lbl_log3.setText("— Registro do protocolo ignorado pelo usuário.")
         QApplication.processEvents()
 
-        # Etapa 4: Atalho no Desktop
+        # Etapa 4: Atalho na Área de Trabalho e Menu Iniciar
         if self.chk_desktop.isChecked():
-            self.progress_bar.setValue(90)
-            self.lbl_status.setText("Criando atalhos na Área de Trabalho...")
+            self.progress_bar.setValue(92)
+            self.lbl_status.setText("Criando atalhos na Área de Trabalho e Menu Iniciar...")
             QApplication.processEvents()
             try:
-                desktop = Path(os.environ["USERPROFILE"]) / "Desktop"
-                lnk_path = desktop / "DA-V.lnk"
+                icon_file = work_dir / "dav_icon.ico"
+                icon_loc = f"{icon_file},0" if icon_file.is_file() else f"{target_exe},0"
+                escaped_args = target_args.replace('"', '`"') if target_args else ""
 
-                # Limpa qualquer .vbs antigo
-                vbs_old = desktop / "DA-V.vbs"
-                if vbs_old.exists():
-                    try:
-                        vbs_old.unlink()
-                    except Exception:
-                        pass
-
-                # Cria atalho nativo .lnk do Windows com ícone via PowerShell
                 ps_cmd = (
-                    f'$ws = New-Object -ComObject WScript.Shell; '
-                    f'$s = $ws.CreateShortcut("{lnk_path}"); '
-                    f'$s.TargetPath = "{pyw_exe}"; '
-                    f'$s.Arguments = "`"{launcher}`""; '
-                    f'$s.WorkingDirectory = "{proj_root}"; '
-                    f'$s.Description = "DA-V - Distribuidor Amplo de Vídeo (60 FPS P2P)"; '
-                    f'$s.Save()'
+                    '$ws = New-Object -ComObject WScript.Shell; '
+                    '$desk = $ws.SpecialFolders("Desktop"); '
+                    '$smenu = $ws.SpecialFolders("Programs"); '
+                    'foreach ($dir in @($desk, $smenu)) { '
+                    '  if ($dir -and (Test-Path $dir)) { '
+                    '    $lnk = Join-Path $dir "DA-V.lnk"; '
+                    '    $s = $ws.CreateShortcut($lnk); '
+                    f'    $s.TargetPath = "{target_exe}"; '
+                    f'    $s.Arguments = "{escaped_args}"; '
+                    f'    $s.WorkingDirectory = "{work_dir}"; '
+                    f'    $s.IconLocation = "{icon_loc}"; '
+                    '    $s.Description = "DA-V - Distribuidor Amplo de Vídeo (60 FPS P2P)"; '
+                    '    $s.Save() '
+                    '  } '
+                    '}'
                 )
-                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], shell=True, capture_output=True, check=True)
-                self.lbl_log4.setText("✓ Atalho oficial criado na Área de Trabalho (DA-V).")
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+                    capture_output=True,
+                    check=True,
+                )
+                self.lbl_log4.setText("✓ Atalhos criados na Área de Trabalho e no Menu Iniciar (DA-V).")
                 self.lbl_log4.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
             except Exception as e:
                 self.lbl_log4.setText(f"⚠ Atalho: {e}")
@@ -731,10 +824,9 @@ class DavModernInstaller(QDialog):
         QApplication.processEvents()
 
         self.progress_bar.setValue(100)
-        self.lbl_status.setText("✓ Configurações aplicadas!")
+        self.lbl_status.setText("✓ Instalação concluída!")
         QApplication.processEvents()
 
-        # Avança para a página de conclusão após pequeno delay
         QTimer.singleShot(700, self._advance_to_finish)
 
     def _advance_to_finish(self):
@@ -742,12 +834,15 @@ class DavModernInstaller(QDialog):
         self._update_step_view()
 
     def _launch_app(self):
-        """Dispara a abertura da aplicação DA-V."""
+        """Dispara a abertura imediata do executável instalado DA-V."""
         try:
-            proj_root = self._get_proj_root()
-            launcher = proj_root / "scripts" / "gui_app.py"
-            pyw_exe = self._get_python_runtime()
-            subprocess.Popen([pyw_exe, str(launcher)], cwd=str(proj_root), shell=True)
+            target_exe, target_args, work_dir = getattr(
+                self, "_installed_target", self._resolve_installed_target()
+            )
+            cmd = [str(target_exe)]
+            if target_args:
+                cmd.append(target_args.strip('"'))
+            subprocess.Popen(cmd, cwd=str(work_dir), shell=False)
         except Exception as e:
             print(f"Erro ao abrir DA-V: {e}")
 

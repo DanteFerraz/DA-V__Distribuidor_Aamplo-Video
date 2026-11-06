@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(dav_service
-    VERSION 3.1.0
+    VERSION 3.1.1
     DESCRIPTION "DA-V: Distribuidor Amplo de Video - Ultra-Low Latency Streaming Engine"
     LANGUAGES C CXX
 )

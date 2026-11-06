@@ -13,6 +13,7 @@ import sys
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 # ── Garante que a raiz do projeto esteja no sys.path (código-fonte ou binário PyInstaller) ──
@@ -614,22 +615,65 @@ class DavModernLinuxInstaller(QDialog):
         self.current_step = max(self.current_step - 1, 0)
         self._update_step_view()
 
+    @staticmethod
+    def _find_bundled_payload() -> Path | None:
+        candidates = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "dav_app_payload_linux.tar.gz")
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "dav_app_payload_linux.tar.gz")
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
     def _execute_installation(self):
         proj_root = PROJ_ROOT
-        launcher_script = proj_root / "launch_dav.sh"
+        install_dir = Path.home() / ".local" / "share" / "dav"
+        payload_tgz = self._find_bundled_payload()
 
-        # Etapa 1: Backend C++23
-        self.progress_bar.setValue(20)
-        self.lbl_status.setText("Validando biblioteca nativa C++23...")
+        self.progress_bar.setValue(15)
+        self.lbl_status.setText("Instalando binários do DA-V em ~/.local/share/dav...")
         QApplication.processEvents()
 
-        so_target = proj_root / "build" / "libdav_core.so"
-        if so_target.exists():
-            self.lbl_log1.setText(f"✓ Backend C++23 validado: {so_target.name}")
+        if payload_tgz is not None:
+            try:
+                install_dir.mkdir(parents=True, exist_ok=True)
+                internal_dir = install_dir / "_internal"
+                if internal_dir.exists():
+                    shutil.rmtree(internal_dir, ignore_errors=True)
+                with tarfile.open(payload_tgz, "r:gz") as tf:
+                    tf.extractall(install_dir)
+                bin_elf = install_dir / "DA-V"
+                if bin_elf.is_file():
+                    bin_elf.chmod(0o755)
+                launcher_script = bin_elf
+                self._installed_workdir = install_dir
+                self.lbl_log1.setText(f"✓ Aplicação autossuficiente instalada em {install_dir}")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+            except Exception as exc:
+                launcher_script = proj_root / "launch_dav.sh"
+                self._installed_workdir = proj_root
+                self.lbl_log1.setText(f"⚠ Falha ao extrair pacote ({exc}); usando diretório atual.")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_WARNING};")
+        elif (proj_root / "DA-V").is_file():
+            launcher_script = proj_root / "DA-V"
+            launcher_script.chmod(0o755)
+            self._installed_workdir = proj_root
+            self.lbl_log1.setText(f"✓ Binário ELF validado em {proj_root}")
             self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
         else:
-            self.lbl_log1.setText("ℹ Backend C++23 não encontrado (o DA-V usará pipeline Python/SIMD).")
-            self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_ACCENT};")
+            launcher_script = proj_root / "launch_dav.sh"
+            self._installed_workdir = proj_root
+            so_target = proj_root / "build" / "libdav_core.so"
+            if so_target.exists():
+                self.lbl_log1.setText(f"✓ Backend C++23 validado: {so_target.name}")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
+            else:
+                self.lbl_log1.setText("ℹ Ambiente de código-fonte validado (pipeline Python/SIMD).")
+                self.lbl_log1.setStyleSheet(f"font-size: 12px; color: {C_ACCENT};")
+        self._installed_launcher = launcher_script
         QApplication.processEvents()
 
         # Etapa 2: Desktop Entry
@@ -642,6 +686,11 @@ class DavModernLinuxInstaller(QDialog):
                 user_apps.mkdir(parents=True, exist_ok=True)
                 desktop_file = user_apps / "dav.desktop"
 
+                icon_cand = self._installed_workdir / "dav_icon.png"
+                if not icon_cand.is_file():
+                    icon_cand = proj_root / "installer" / "dav_icon.png"
+                icon_val = str(icon_cand) if icon_cand.is_file() else "video-display"
+
                 desktop_content = f"""[Desktop Entry]
 Version=1.0
 Type=Application
@@ -649,18 +698,26 @@ Name=DA-V · Distribuidor Amplo de Vídeo
 GenericName=Transmissão de Vídeo 60 FPS P2P
 Comment=Motor de compartilhamento de tela P2P de ultra-baixa latência com hardware NVENC/SIMD
 Exec="{launcher_script}" %u
-Icon=video-display
+Path={self._installed_workdir}
+Icon={icon_val}
 Terminal=false
 Categories=AudioVideo;Video;Network;RemoteAccess;
 MimeType=x-scheme-handler/dav;
-StartupWMClass=dav-desktop
+StartupWMClass=DA-V
 """
                 with open(desktop_file, "w", encoding="utf-8") as f:
                     f.write(desktop_content)
                 desktop_file.chmod(0o755)
                 subprocess.run(["update-desktop-database", str(user_apps)], check=False)
 
-                self.lbl_log2.setText("✓ Lançador adicionado ao Menu de Aplicativos (~/.local/share/applications/dav.desktop).")
+                for desk_name in ("Desktop", "Área de Trabalho"):
+                    desk_dir = Path.home() / desk_name
+                    if desk_dir.is_dir():
+                        desk_shortcut = desk_dir / "DA-V.desktop"
+                        desk_shortcut.write_text(desktop_content, encoding="utf-8")
+                        desk_shortcut.chmod(0o755)
+
+                self.lbl_log2.setText("✓ Lançador adicionado ao Menu de Aplicativos e Área de Trabalho.")
                 self.lbl_log2.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
             except Exception as e:
                 self.lbl_log2.setText(f"⚠ Lançador Desktop: {e}")
@@ -720,8 +777,9 @@ StartupWMClass=dav-desktop
 
     def _launch_app(self):
         try:
-            launcher = PROJ_ROOT / "launch_dav.sh"
-            subprocess.Popen([str(launcher)], cwd=str(PROJ_ROOT), shell=True)
+            launcher = getattr(self, "_installed_launcher", PROJ_ROOT / "launch_dav.sh")
+            workdir = getattr(self, "_installed_workdir", PROJ_ROOT)
+            subprocess.Popen([str(launcher)], cwd=str(workdir), shell=False)
         except Exception as e:
             print(f"Erro ao abrir DA-V: {e}")
 

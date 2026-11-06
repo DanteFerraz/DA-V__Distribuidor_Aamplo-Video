@@ -77,10 +77,39 @@ jobs:
           python -m pytest tests/ -v
           python tests/test_p2p_e2e.py
 
-      - name: Compile Standalone Linux Graphical Installer (ELF x86_64)
+      - name: Compile Self-Contained Linux Application & Payload Installer
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
+          ROOT_DIR="$(pwd)"
+          pyinstaller --noconfirm --clean --onedir --windowed \
+            --name DA-V \
+            --paths "$ROOT_DIR" \
+            --add-data "$ROOT_DIR/installer/dav_icon.png:." \
+            --add-data "$ROOT_DIR/installer/dav_icon.ico:." \
+            --collect-all av \
+            --hidden-import scripts.dav_sender_worker \
+            --hidden-import scripts.dav_client \
+            --hidden-import src.signaling.server.dav_rendezvous \
+            --hidden-import mss \
+            --hidden-import aiohttp \
+            --exclude-module PyQt5 \
+            --exclude-module PyQt6 \
+            --exclude-module tkinter \
+            --exclude-module pytest \
+            scripts/gui_app.py
+
+          cp "$ROOT_DIR/installer/dav_icon.png" dist/DA-V/
+          cp "$ROOT_DIR/build/libdav_core.so" dist/DA-V/
+          chmod +x dist/DA-V/DA-V
+          ./dist/DA-V/DA-V --self-check
+
+          mkdir -p build_payload
+          tar -czf build_payload/dav_app_payload_linux.tar.gz -C dist/DA-V .
+
           pyinstaller --noconfirm --clean --onefile --windowed \
             --name DA-V_Instalador_Linux_x86_64 \
+            --add-data "$ROOT_DIR/build_payload/dav_app_payload_linux.tar.gz:." \
             --exclude-module PyQt5 \
             --exclude-module PyQt6 \
             --exclude-module tkinter \
@@ -92,12 +121,13 @@ jobs:
           STAGE="stage_linux/DA-V-v${VERSION}-Linux-x86_64"
           mkdir -p "$STAGE/build" release_assets
 
-          cp -r src scripts include cmake third_party deploy "$STAGE/"
+          cp -r dist/DA-V/* "$STAGE/"
+          cp -r src scripts include cmake third_party deploy installer "$STAGE/"
           cp CMakeLists.txt README.md LEIA-ME_LINUX.md CHANGELOG.md VERSION requirements.txt "$STAGE/"
           cp launch_dav.sh build_linux.sh "$STAGE/"
           cp build/libdav_core.so build/dav_daemon "$STAGE/build/"
           cp dist/DA-V_Instalador_Linux_x86_64 "$STAGE/"
-          chmod +x "$STAGE/launch_dav.sh" "$STAGE/build_linux.sh" "$STAGE/DA-V_Instalador_Linux_x86_64" "$STAGE/build/dav_daemon"
+          chmod +x "$STAGE/DA-V" "$STAGE/launch_dav.sh" "$STAGE/build_linux.sh" "$STAGE/DA-V_Instalador_Linux_x86_64" "$STAGE/build/dav_daemon"
 
           tar -czf "release_assets/DA-V_v${VERSION}_Linux_x86_64.tar.gz" -C stage_linux "DA-V-v${VERSION}-Linux-x86_64"
           cp dist/DA-V_Instalador_Linux_x86_64 release_assets/
@@ -140,15 +170,45 @@ jobs:
           python -m pytest tests/ -v
           python tests/test_p2p_e2e.py
 
-      - name: Compile Standalone Windows Graphical Installer (.exe x64)
+      - name: Compile Self-Contained Windows Application & Payload Installer
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed `
-            --name DA-V_Instalador_Windows_x64 `
+          $Root = (Get-Location).Path
+          pyinstaller --noconfirm --clean --onedir --windowed `
+            --name DA-V `
+            --icon "$Root\installer\dav_icon.ico" `
+            --paths "$Root" `
+            --add-data "$Root\installer\dav_icon.ico;." `
+            --add-data "$Root\installer\dav_icon.png;." `
+            --collect-all av `
+            --hidden-import scripts.dav_sender_worker `
+            --hidden-import scripts.dav_client `
+            --hidden-import src.signaling.server.dav_rendezvous `
+            --hidden-import mss `
+            --hidden-import aiohttp `
             --exclude-module PyQt5 `
             --exclude-module PyQt6 `
             --exclude-module tkinter `
-            scripts/dav_installer_win.py
+            --exclude-module pytest `
+            "$Root\scripts\gui_app.py"
+
+          Copy-Item "$Root\installer\dav_icon.ico" "dist\DA-V\"
+          $DllPath = Get-ChildItem -Path build -Recurse -Filter "dav_core.dll" | Select-Object -First 1
+          if ($DllPath) {
+            Copy-Item $DllPath.FullName "dist\DA-V\dav_core.dll"
+          }
+
+          New-Item -ItemType Directory -Force -Path "build_payload" | Out-Null
+          python -c "import pathlib, zipfile; src=pathlib.Path('dist/DA-V'); z=zipfile.ZipFile('build_payload/dav_app_payload.zip','w',zipfile.ZIP_DEFLATED,compresslevel=6); [z.write(p, p.relative_to(src).as_posix()) for p in src.rglob('*') if p.is_file()]; z.close()"
+
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name DA-V_Instalador_Windows_x64 `
+            --icon "$Root\installer\dav_icon.ico" `
+            --add-data "$Root\build_payload\dav_app_payload.zip;." `
+            --exclude-module PyQt5 `
+            --exclude-module PyQt6 `
+            --exclude-module tkinter `
+            "$Root\scripts\dav_installer_win.py"
 
       - name: Assemble Windows Release Bundle
         shell: pwsh
@@ -157,7 +217,8 @@ jobs:
           $Stage = "stage_win/DA-V-v$Ver-Windows-x64"
           New-Item -ItemType Directory -Force -Path "$Stage/build", "release_assets" | Out-Null
 
-          Copy-Item -Recurse src, scripts, include, cmake, third_party, deploy "$Stage/"
+          Copy-Item -Recurse "dist/DA-V/*" "$Stage/"
+          Copy-Item -Recurse src, scripts, include, cmake, third_party, deploy, installer "$Stage/"
           Copy-Item CMakeLists.txt, README.md, LEIA-ME_LINUX.md, CHANGELOG.md, VERSION, requirements.txt, launch_dual_test.ps1 "$Stage/"
           Copy-Item dist/DA-V_Instalador_Windows_x64.exe "$Stage/"
 
@@ -198,7 +259,7 @@ jobs:
       - name: Create GitHub Release with Multi-OS Builds
         uses: softprops/action-gh-release@v2
         with:
-          name: "DA-V ${{ github.ref_name }} — Arquitetura P2P Single-Socket & Blind Relay (Windows + Linux)"
+          name: "DA-V ${{ github.ref_name }} — Instaladores Autossuficientes & Arquitetura P2P Single-Socket (Windows + Linux)"
           body_path: CHANGELOG.md
           files: release_bundle/*
           draft: false

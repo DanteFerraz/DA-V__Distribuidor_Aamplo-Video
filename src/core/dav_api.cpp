@@ -90,7 +90,7 @@ std::array<dav::Byte, 32> derive_pin_key(const char* pin) {
 extern "C" {
 
 DAV_API const char* dav_get_version(void) {
-    return "DA-V v3.1.0 (Native C-ABI Engine)";
+    return "DA-V v3.1.1 (Native C-ABI Engine)";
 }
 
 DAV_API void dav_set_log_callback(DavLogCallback cb, void* user_data) {

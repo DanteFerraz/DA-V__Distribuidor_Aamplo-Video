@@ -642,7 +642,15 @@ class DavMainWindow(QMainWindow):
             try:
                 import ctypes
                 ps_script = os.path.join(_PROJECT_ROOT, "scripts", "setup_firewall.ps1")
-                params = f'-NoProfile -ExecutionPolicy Bypass -File "{ps_script}"'
+                if os.path.isfile(ps_script):
+                    params = f'-NoProfile -ExecutionPolicy Bypass -File "{ps_script}"'
+                else:
+                    inline_cmd = (
+                        'netsh advfirewall firewall delete rule name="DA-V Video Streaming" | Out-Null; '
+                        'netsh advfirewall firewall add rule name="DA-V Video Streaming" dir=in action=allow protocol=UDP localport=9000-9020,19000-19010 profile=any | Out-Null; '
+                        'netsh advfirewall firewall add rule name="DA-V LAN Beacon" dir=in action=allow protocol=UDP localport=9005 profile=any | Out-Null'
+                    )
+                    params = f'-NoProfile -ExecutionPolicy Bypass -Command "{inline_cmd}"'
                 ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe", params, None, 1)
                 self._append_log("SUCCESS", "Confirme a janela de Administrador para concluir a liberação.")
                 QTimer.singleShot(4000, self._check_firewall_status)

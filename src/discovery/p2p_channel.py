@@ -396,6 +396,22 @@ class P2PChannelClient:
         except Exception:
             pass
 
+        if getattr(sys, "frozen", False):
+            try:
+                from src.signaling.server.dav_rendezvous import DavRendezvousServer
+
+                def _run_embedded_rdv():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    srv = DavRendezvousServer("127.0.0.1", self.http_port, self.stun_port)
+                    loop.run_until_complete(srv.start())
+
+                threading.Thread(target=_run_embedded_rdv, daemon=True, name="Embedded-Rendezvous").start()
+                time.sleep(0.45)
+            except Exception as err:
+                logger.debug(f"Auto-início embutido do Rendezvous local falhou: {err}")
+            return
+
         srv_script = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "src",

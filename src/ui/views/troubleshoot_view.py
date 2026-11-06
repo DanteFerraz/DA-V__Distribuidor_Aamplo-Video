@@ -71,7 +71,15 @@ class TroubleshootView(QWidget):
             f"<span style='color:#e2e8f0;'>{text}</span>"
         )
         try:
-            log_dir = os.path.join(_PROJECT_ROOT, "logs")
+            import sys
+            if getattr(sys, "frozen", False):
+                if sys.platform == "win32":
+                    base_log = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "DA-V")
+                else:
+                    base_log = os.path.join(os.path.expanduser("~"), ".local", "state", "dav")
+                log_dir = os.path.join(base_log, "logs")
+            else:
+                log_dir = os.path.join(_PROJECT_ROOT, "logs")
             os.makedirs(log_dir, exist_ok=True)
             with open(os.path.join(log_dir, "dav_transmission.log"), "a", encoding="utf-8") as f:
                 f.write(f"[{ts}] [{level}] {text}\n")

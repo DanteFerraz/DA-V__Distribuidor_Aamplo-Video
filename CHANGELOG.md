@@ -4,6 +4,16 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [3.1.1] — 2026-11-06
+
+### Corrigido
+- **Instaladores Autossuficientes (Windows & Linux):** `DA-V_Instalador_Windows_x64.exe` e `DA-V_Instalador_Linux_x86_64` agora trazem embutido o pacote completo da aplicação compilada (`DA-V.exe` / `DA-V` ELF + runtime PySide6 + FFmpeg/PyAV + SIMD), extraindo-o automaticamente em `%LOCALAPPDATA%\Programs\DA-V` (Windows) e `~/.local/share/dav` (Linux). Corrige a falha em que o atalho da Área de Trabalho apontava para o diretório temporário de download sem iniciar o aplicativo.
+- **Isolamento Multiprocesso em Binário Congelado:** Adicionado `multiprocessing.freeze_support()` e importação diferida de Qt em `scripts/gui_app.py`, garantindo que o subprocesso `DAV-Sender-Engine` inicie em `< 80 ms` sem reabrir janelas duplicadas.
+- **Atalhos Nativos e Ícone Oficial:** Resolução dinâmica de `Desktop` e `Menu Iniciar` via `WScript.Shell.SpecialFolders` (compatível com pastas sincronizadas pelo OneDrive) e adição dos ícones oficiais `installer/dav_icon.ico` e `installer/dav_icon.png`.
+- **Renderização Mermaid na Página Principal:** Padronizados conectores `sequenceDiagram` e `flowchart` no `README.md`.
+
+---
+
 ## [3.1.0] — 2026-11-06
 
 ### Adicionado
@@ -40,3 +50,4 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 - Captura nativa Windows Graphics Capture (WGC Direct3D), DXGI Desktop Duplication e X11 MIT-SHM.
 - Codificação de hardware NVIDIA NVENC (`p1` Ultra-Low Latency) a 1080p 60 FPS cravados.
 - Interface Desktop modular em PySide6 com telemetria TUPÃ em tempo real e descoberta automática LAN Beacon.
+

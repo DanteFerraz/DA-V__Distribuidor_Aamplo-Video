@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Release-v3.1.0-0ea5e9?style=for-the-badge)
+![Version](https://img.shields.io/badge/Release-v3.1.1-0ea5e9?style=for-the-badge)
 ![Core](https://img.shields.io/badge/Engine-Python%20SIMD%20%2B%20C%2B%2B23-1e293b?style=for-the-badge)
 ![Cadence](https://img.shields.io/badge/Streaming-1080p%20%40%2060%20FPS-10b981?style=for-the-badge)
 ![NAT Traversal](https://img.shields.io/badge/P2P-Single--Socket%20STUN%20%2B%20Blind%20Relay-f59e0b?style=for-the-badge)
@@ -202,8 +202,8 @@ Valores aferidos no pipeline real de captura + codificação + rede + decodifica
 ### Opção 1: Instaladores Oficiais (Releases)
 
 Baixe o instalador correspondente ao seu sistema operacional na aba [**Releases**](https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video/releases):
-- **Windows 10/11 (x64):** Execute `DA-V_Instalador_Windows_x64.exe` (configura regras do Windows Firewall, atalho na Área de Trabalho e protocolo `dav://`).
-- **Linux (x86_64):** Extraia `DA-V_v3.1.0_Linux_x86_64.tar.gz` e execute `./launch_dav.sh` ou o assistente gráfico `DA-V_Instalador_Linux_x86_64`.
+- **Windows 10/11 (x64):** Execute `DA-V_Instalador_Windows_x64.exe` (extrai os binários autossuficientes em `%LOCALAPPDATA%\Programs\DA-V`, configura regras do Windows Firewall, cria atalhos na Área de Trabalho / Menu Iniciar e registra o protocolo `dav://`).
+- **Linux (x86_64):** Execute o instalador autossuficiente `./DA-V_Instalador_Linux_x86_64` (instala em `~/.local/share/dav`) ou extraia `DA-V_v3.1.1_Linux_x86_64.tar.gz`.
 
 ---
 

@@ -3,7 +3,7 @@
 **Projeto:** DA-V (*Distribuidor Amplo de Vídeo*)  
 **Autoria:** Dante Ferraz (MonoTech)  
 **Data:** 06 de Novembro de 2026  
-**Versão Consolidada:** `v3.1.0`  
+**Versão Consolidada:** `v3.1.1` (evoluída a partir de `v3.1.0`)  
 
 ---
 
@@ -40,10 +40,10 @@ Além da reconstrução do motor de transporte P2P, todo o repositório passou p
 - `scripts/dav_sender_worker.py`: Nova máquina de estados `SenderTransportEndpoint` com pré-bind UDP, STUN no descritor real, eventos IPC (`ENDPOINT_READY`, `P2P_LOCKED`), rajadas `DAV_P2P_SYN`, resposta instantânea a `DAV_P2P_PLI`, keepalive STUN a cada `15 s` em *Standby*, comutação automática para `DAV_RLY1`, MTU seguro de `1320 bytes`, proteção `SIO_UDP_CONNRESET` no Windows e entrypoint `main()`.
 - `scripts/dav_client.py`: Unificação do motor Python/SIMD + PyAV entre Windows e Linux (`DAV_USE_NATIVE_CORE=1` mantido como *opt-in* para C-ABI), adição de `wait_sender_endpoint()`, `pair_sender_peer()` e `prepare_receiver_socket()`, interceptação de controle P2P antes da checagem de cabeçalho de 32 bytes, validação estrita de protocolo (`version == 1`, `ssrc == 0xDA0001`), envio automático de `DAV_P2P_PLI` e fallback para Blind Relay.
 
-### Interface Gráfica, Instaladores e Núcleo C++23
-- `src/ui/main_window.py` e `scripts/gui_app.py`: Integração do Single-Socket STUN na abertura de sessões Transmissor e Receptor, correção do tratamento de deep-links `dav://connect/<PIN>` (`p2p_uri_mode=True` preservando `target_ip=""`), badge dinâmico de plataforma e checagem unificada de portas UDP.
-- `src/ui/views/sender_view.py` e `src/ui/views/troubleshoot_view.py`: Humanização textual de rótulos de codec (agnósticos de modelo fixo de GPU), atualização do card de fragmentação MTU (`1320 bytes`) e alinhamento das faixas de firewall.
-- `scripts/dav_installer_win.py`, `scripts/dav_installer_linux.py` e `scripts/setup_firewall.ps1`: Atualização para `v3.1.0`, resolução robusta de interpretador Python no Windows (ignorando stubs inativos de `WindowsApps`), suporte a execução empacotada via PyInstaller no Linux e unificação das regras de firewall (`UDP 9000-9020, 19000-19010, 9005`).
+### Interface Gráfica, Instaladores Autossuficientes e Núcleo C++23 (`v3.1.1`)
+- `src/ui/main_window.py` e `scripts/gui_app.py`: Integração do Single-Socket STUN na abertura de sessões Transmissor e Receptor, correção do tratamento de deep-links `dav://connect/<PIN>` (`p2p_uri_mode=True` preservando `target_ip=""`), isolamento multiprocesso em binário congelado (`multiprocessing.freeze_support()` + importação diferida de Qt para partida rápida do `DAV-Sender-Engine`), modo `--self-check`, fallback inline de Firewall para executáveis congelados e ícone nativo.
+- `src/ui/views/sender_view.py` e `src/ui/views/troubleshoot_view.py`: Humanização textual de rótulos de codec (agnósticos de modelo fixo de GPU), atualização do card de fragmentação MTU (`1320 bytes`), alinhamento das faixas de firewall e diretório de logs em `%LOCALAPPDATA%\DA-V\logs` / `~/.local/state/dav/logs` quando congelado.
+- `scripts/dav_installer_win.py`, `scripts/dav_installer_linux.py`, `installer/dav_icon.ico`, `installer/dav_icon.png` e `scripts/setup_firewall.ps1`: Evolução dos instaladores para **instaladores autossuficientes com payload compilado embutido** (`dav_app_payload.zip` no Windows extraindo `DA-V.exe` + `_internal` em `%LOCALAPPDATA%\Programs\DA-V`; `dav_app_payload_linux.tar.gz` no Linux extraindo `DA-V` ELF em `~/.local/share/dav`), criação de atalhos funcionais tanto na Área de Trabalho quanto no Menu Iniciar via `WScript.Shell.SpecialFolders` (com ícone `dav_icon.ico`), associação `dav://` direta ao binário instalado e unificação das regras de firewall (`UDP 9000-9020, 19000-19010, 9005`).
 - `CMakeLists.txt`, `include/dav/dav_api.h`, `src/core/dav_api.cpp`, `src/capture/windows/dxgi_capturer.cpp`, `src/codec/sw_encoder.cpp`, `src/qos/qos_engine.cpp`, `launch_dav.sh`: Atualização de versão para `3.1.0`, separação de `ARCHIVE_OUTPUT_NAME` (`dav_core_static`) e macro `DAV_STATIC_LIB` para linkagem limpa no MSVC C++23 e GCC 14/15, e inclusão explícita de `<cstring>` e `<algorithm>`.
 
 ### Documentação Arquitetural, Testes, Governança e CI/CD
