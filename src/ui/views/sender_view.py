@@ -54,6 +54,7 @@ class SenderView(QWidget):
         grid.addWidget(QLabel("Monitor de Origem:"), 1, 0)
         self.cmb_monitor = QComboBox()
         mons = enumerate_system_monitors()
+        self.monitors = mons
         for i, m in enumerate(mons):
             prim = " (Principal)" if m.get("is_primary") else " (Secundário)"
             self.cmb_monitor.addItem(f"Monitor {i+1}{prim} — {m['width']}x{m['height']}")
@@ -72,11 +73,19 @@ class SenderView(QWidget):
         # Row 2: Resolution & FPS
         grid.addWidget(QLabel("Resolução de Saída:"), 2, 0)
         self.cmb_res = QComboBox()
-        self.cmb_res.addItems([
+        res_items = []
+        if mons:
+            nat_w = max(640, int(mons[0].get("width", 1920)) & ~1)
+            nat_h = max(360, int(mons[0].get("height", 1080)) & ~1)
+            if (nat_w, nat_h) not in ((1920, 1080), (1280, 720), (640, 360)):
+                res_items.append(f"{nat_w}x{nat_h} (Nativa do Monitor - 60 FPS Zero Escala)")
+
+        res_items.extend([
             "1920x1080 (Full HD - 60 FPS)",
             "1280x720 (HD - 60 FPS Otimizado)",
-            "640x360 (Baixo Consumo)"
+            "640x360 (Baixo Consumo)",
         ])
+        self.cmb_res.addItems(res_items)
         grid.addWidget(self.cmb_res, 2, 1)
 
         grid.addWidget(QLabel("Taxa de Quadros (FPS):"), 2, 2)

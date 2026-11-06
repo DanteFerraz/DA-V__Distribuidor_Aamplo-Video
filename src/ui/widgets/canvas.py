@@ -39,9 +39,9 @@ class VideoCanvasWidget(QWidget):
         self.is_connected = False
         self._frame_times = deque(maxlen=60)
         self.setMinimumSize(480, 270)
-        self.sender_codec = "H.264 NVENC (RTX 4070)"
+        self.sender_codec = "H.264 / HEVC ULL"
         self.sender_frame_kb = 24
-        self.gpu_mode = "Hardware NVIDIA NVENC (RTX 4070) + WGC Direct3D"
+        self.gpu_mode = "PyAV SIMD Zero-Copy + DirectComposition"
 
         self.setStyleSheet(f"background-color: {Theme.SYS['bg_canvas']}; border-radius: {Theme.RADIUS_LG}px;")
 
@@ -174,13 +174,22 @@ class VideoCanvasWidget(QWidget):
         painter.setPen(fps_color)
         painter.drawText(28, 58, f"Taxa de Quadros : {self.fps:4.1f} FPS")
 
+        frame_kb_real = (
+            max(1, int((self.bitrate_mbps * 1000.0 / 8.0) / max(self.fps, 1.0)))
+            if self.bitrate_mbps > 0 and self.fps > 0
+            else self.sender_frame_kb
+        )
+        res_info = ""
+        if self.current_image and not self.current_image.isNull():
+            res_info = f" ({self.current_image.width()}x{self.current_image.height()})"
+
         painter.setPen(QColor(Theme.SYS["text_primary"]))
         painter.drawText(28, 78, f"Vazao de Rede   : {self.bitrate_mbps:5.2f} Mbps")
-        painter.drawText(28, 98, f"Latencia LAN    : {self.latency_ms:4.2f} ms")
+        painter.drawText(28, 98, f"Latencia Rede   : {self.latency_ms:4.2f} ms")
         painter.drawText(28, 118, f"Quadros/Pacotes : {self.frames_count} / {self.packets_count}")
 
         painter.setPen(QColor(Theme.SYS["text_muted"]))
         f_small = QFont("Segoe UI", 8)
         painter.setFont(f_small)
-        painter.drawText(28, 138, f"Codec: {self.sender_codec} | ~{self.sender_frame_kb}KB/frame")
+        painter.drawText(28, 138, f"Stream: {self.sender_codec}{res_info} | ~{frame_kb_real} KB/quadro")
         painter.drawText(28, 154, f"Engine: {self.gpu_mode}")

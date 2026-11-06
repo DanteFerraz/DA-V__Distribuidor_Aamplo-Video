@@ -380,7 +380,7 @@ class SenderTransportEndpoint:
                     self.last_relay_bind = 0.0
                     self._send_punch_burst()
                     print(f"[Sender P2P] Iniciando Hole-Punching concorrente para candidatos: {self.candidates}")
-                elif action == "REQUEST_KEYFRAME":
+                elif action in ("REQUEST_KEYFRAME", "request_idr"):
                     encoder.request_keyframe()
                 elif action in ("PAUSE_STREAM", "STOP_STREAM"):
                     self.is_streaming_active.clear()
@@ -760,7 +760,10 @@ def _sender_subprocess(
                     t_target = max(t_target + frame_interval, time.perf_counter())
 
         else:
-            # Capturador multiplataforma Linux (X11/XWayland via MSS) e modo sintético headless
+            # Capturador multiplataforma Linux:
+            # 1) Wayland Nativo (XDG Desktop Portal + PipeWire + GStreamer)
+            # 2) X11 Nativo (MSS XShm/XGetImage com sentinela anti-XWayland isolado)
+            # 3) Modo sintético headless para CI / testes automatizados
             arrays = [np.zeros((height, width, 4), dtype=np.uint8) for _ in range(NUM_BUFS)]
 
             def _capture_worker():
@@ -771,16 +774,54 @@ def _sender_subprocess(
                 t_target = time.perf_counter() + frame_interval
                 cap_id_linux = 0
 
+                portal_cap = None
                 sct = None
                 mon_box = None
-                if os.environ.get("DAV_HEADLESS_SYNTHETIC") != "1":
-                    try:
-                        import mss
-                        sct = mss.mss()
-                        mon_idx = min(monitor_index + 1, len(sct.monitors) - 1) if len(sct.monitors) > 1 else 1
-                        mon_box = sct.monitors[mon_idx]
-                    except Exception:
-                        sct = None
+                cached_src_shape = None
+                cached_y_idx = None
+                cached_x_idx = None
+                consecutive_black_mss = 0
+                tried_portal_fallback = False
+
+                is_synthetic = os.environ.get("DAV_HEADLESS_SYNTHETIC") == "1"
+
+                if not is_synthetic:
+                    from src.capture.linux_wayland_portal import (
+                        WaylandPortalCapturer,
+                        is_wayland_session,
+                    )
+
+                    if is_wayland_session():
+                        tried_portal_fallback = True
+                        evt_queue.put((
+                            "log",
+                            "INFO",
+                            "[Wayland] Sessão Wayland detectada — aguardando autorização na janela 'Compartilhar Tela' do sistema (PipeWire)...",
+                        ))
+                        candidate = WaylandPortalCapturer(width=width, height=height, fps=fps)
+                        if candidate.start(wait_first_frame_timeout=60.0):
+                            portal_cap = candidate
+                            cmd_queue.put(("request_idr",))
+                            evt_queue.put((
+                                "log",
+                                "SUCCESS",
+                                f"[Wayland] Captura PipeWire ativa em {width}x{height} @ {fps} FPS.",
+                            ))
+                        else:
+                            evt_queue.put((
+                                "log",
+                                "WARN",
+                                f"[Wayland] Portal PipeWire indisponível ({candidate.last_error}). Tentando fallback X11/MSS...",
+                            ))
+
+                    if portal_cap is None:
+                        try:
+                            import mss
+                            sct = mss.mss()
+                            mon_idx = min(monitor_index + 1, len(sct.monitors) - 1) if len(sct.monitors) > 1 else 1
+                            mon_box = sct.monitors[mon_idx]
+                        except Exception:
+                            sct = None
 
                 while not stop_event.is_set():
                     if not is_streaming_active.is_set():
@@ -795,24 +836,55 @@ def _sender_subprocess(
 
                     _t_cap_start = time.perf_counter()
                     captured = False
-                    if sct and mon_box:
+
+                    if portal_cap is not None:
+                        captured = portal_cap.grab_into(arrays[buf_idx])
+                    elif sct and mon_box:
                         try:
                             sct_img = sct.grab(mon_box)
                             arr_src = np.asarray(sct_img, dtype=np.uint8)
                             if arr_src.shape[0] != height or arr_src.shape[1] != width:
                                 if _HAS_CV2:
                                     cv2.resize(
-                                        arr_src, (width, height),
-                                        dst=arrays[buf_idx], interpolation=cv2.INTER_LINEAR,
+                                        arr_src,
+                                        (width, height),
+                                        dst=arrays[buf_idx],
+                                        interpolation=cv2.INTER_NEAREST,
                                     )
                                 else:
-                                    # Reamostragem vetorizada NumPy caso OpenCV não esteja instalado
-                                    y_idx = np.linspace(0, arr_src.shape[0] - 1, height).astype(np.int32)
-                                    x_idx = np.linspace(0, arr_src.shape[1] - 1, width).astype(np.int32)
-                                    np.copyto(arrays[buf_idx], arr_src[np.ix_(y_idx, x_idx)])
+                                    if cached_src_shape != arr_src.shape[:2]:
+                                        cached_src_shape = arr_src.shape[:2]
+                                        cached_y_idx = np.linspace(0, arr_src.shape[0] - 1, height).astype(np.intp)
+                                        cached_x_idx = np.linspace(0, arr_src.shape[1] - 1, width).astype(np.intp)
+                                    np.copyto(arrays[buf_idx], arr_src[cached_y_idx][:, cached_x_idx])
                             else:
                                 np.copyto(arrays[buf_idx], arr_src)
                             captured = True
+
+                            # Sentinela XWayland: detecta janela raiz bloqueada (100% zeros) nos primeiros quadros
+                            if not tried_portal_fallback and cap_id_linux < 12:
+                                if not np.any(arrays[buf_idx][::16, ::16, :3]):
+                                    consecutive_black_mss += 1
+                                    if consecutive_black_mss >= 8:
+                                        tried_portal_fallback = True
+                                        evt_queue.put((
+                                            "log",
+                                            "WARN",
+                                            "[Captura Linux] XWayland bloqueou leitura X11 (quadros vazios). Migrando automaticamente para PipeWire Portal...",
+                                        ))
+                                        from src.capture.linux_wayland_portal import WaylandPortalCapturer
+                                        candidate = WaylandPortalCapturer(width=width, height=height, fps=fps)
+                                        if candidate.start(wait_first_frame_timeout=60.0):
+                                            portal_cap = candidate
+                                            portal_cap.grab_into(arrays[buf_idx])
+                                            cmd_queue.put(("request_idr",))
+                                            try:
+                                                sct.close()
+                                            except Exception:
+                                                pass
+                                            sct = None
+                                else:
+                                    consecutive_black_mss = 0
                         except Exception:
                             captured = False
 
@@ -844,6 +916,8 @@ def _sender_subprocess(
                         pass
                     t_target = max(t_target + frame_interval, time.perf_counter())
 
+                if portal_cap is not None:
+                    portal_cap.close()
                 if sct:
                     try:
                         sct.close()

@@ -1,9 +1,9 @@
-# Relatório Técnico de Sessão — 2026-11-06: Arquitetura P2P Nativa Single-Socket, Blind Encrypted UDP Relay, Documentação Arquitetural, Governança e Releases Windows/Linux (`v3.1.0`)
+# Relatório Técnico de Sessão — 2026-11-06: Arquitetura P2P Nativa Single-Socket, Blind Relay, Captura Nativa Wayland PipeWire e Releases Windows/Linux (`v3.1` e `v3.2.0`)
 
 **Projeto:** DA-V (*Distribuidor Amplo de Vídeo*)  
 **Autoria:** Dante Ferraz (MonoTech)  
 **Data:** 06 de Novembro de 2026  
-**Versão Consolidada:** `v3.1.1` (evoluída a partir de `v3.1.0`)  
+**Versão Consolidada:** `v3.2.0` (evoluída a partir de `v3.1.0` / `v3.1.1`)  
 
 ---
 
@@ -61,4 +61,43 @@ Além da reconstrução do motor de transporte P2P, todo o repositório passou p
    - Descoberta Single-Socket STUN mapeando portas externas reais (`Cone NAT`), pareamento via PIN na nuvem Oracle e decodificação contínua de **42 quadros reais 720p H.264 NVENC em `0.70 s` (`60.0 FPS`)**.
 3. **Builds Gerados e Pipeline de Release:**
    - Pacote local Windows (`DA-V_Instalador_Windows_x64.exe` + `DA-V_v3.1.0_Windows_x64.zip`) e pacote Linux (`DA-V_v3.1.0_Linux_x86_64.tar.gz` com scripts `LF` e permissões `0755`) gerados em `dist_installer/`, acompanhados do workflow `.github/workflows/release.yml` disparado pela tag `v3.1.0`.
+
+---
+
+## 5. Evolução v3.2.0 — Diagnóstico Forense da Transmissão Linux (Wayland) e Motor Nativo PipeWire
+
+### 5.1 Evidências Forenses da Transmissão Remota WAN Real
+Após a publicação da release `v3.1.1`, foi realizado teste WAN real entre dois endpoints distintos:
+- **Transmissor Windows (Dante-PC · `170.239.227.15`, RTX 4070 NVENC) → Receptor Linux (`45.234.138.209`, Gomes):** Sucesso absoluto com **57.145 quadros** e **1.092.899 pacotes** entregues a **60.0 FPS** constantes (`9,6–17,3 Mbps`, latência WAN `~30 ms`).
+- **Transmissor Linux (`45.234.138.209:50135`) → Receptor Windows (`170.239.227.15:8030`):** O túnel `[WAN P2P Direto]` convergiu em `< 4 s`, entregando `1.872 quadros / 1.936 pacotes` com 0% de perda, porém a imagem recebida era uma **tela preta sólida (`#000000`)** com vazão de apenas `0.02 Mbps` (`1 KB/quadro`), taxa travada em `~23.5–26.0 FPS` e HUD indicando strings fixas de RTX 4070 no cliente Windows.
+
+### 5.2 Causas-Raízes Diagnosticadas e Solucionadas
+1. **Isolamento de Janela Raiz do XWayland (Tela Preta + `0.02 Mbps`):** O notebook Ubuntu rodava sob sessão GNOME Wayland ativa (`$WAYLAND_DISPLAY`). O leitor X11 `mss.mss()` chamava `XGetImage` na janela raiz; sob compositores Wayland modernos (Mutter/KWin), a área de trabalho não é exposta a clientes X11 legados por segurança, retornando silenciosamente um buffer preenchido com zeros (`0, 0, 0`). O codificador `libx264` comprimia a imagem preta perfeita em `~800 bytes` (`1 KB/quadro` = `0.02 Mbps`), com picos periódicos de `0.12 Mbps` nos quadros IDR a cada 2s.
+2. **Upscaling Forçado e Cadência Reduzida (`~23.5 FPS`):** O monitor físico do notebook Linux é `1366x768` (`1,04 MP`), enquanto a interface forçava `1920x1080` (`2,07 MP`), duplicando o volume de pixels e gerando gargalo em CPU (`np.ix_` + IPC XWayland).
+3. **Telemetria Estática no Canvas HUD:** Strings fixas no receptor vinculavam o codec a `"RTX 4070 + WGC"` mesmo durante a recepção de fluxos originados por software (`libx264`) em computadores Linux.
+
+### 5.3 Implementações da Versão `v3.2.0`
+1. **Motor Nativo Wayland (`src/capture/linux_wayland_portal.py`):**
+   - Utilização de `org.freedesktop.portal.ScreenCast` via DBus de sessão do sistema.
+   - Higienização estrita de variáveis de ambiente (`PYTHONHOME`, `PYTHONPATH`, `LD_LIBRARY_PATH` sem poluição de `_MEIPASS`/`_internal`), permitindo a execução perfeita dentro de binários PyInstaller congelados.
+   - Captura zero-copy herdando o descritor Unix PipeWire (`OpenPipeWireRemote`) diretamente para pipeline GStreamer `pipewiresrc ! videoconvert ! videoscale ! videorate ! fdsink`.
+   - Thread assíncrona com double-buffer mantendo cadência estável de **60 FPS** mesmo em telas estáticas.
+2. **Sentinela Anti-Tela-Preta no Transmissor Linux (`scripts/dav_sender_worker.py`):**
+   - Detecção ativa de sessão Wayland na inicialização com solicitação do Portal PipeWire.
+   - Sentinela de salvaguarda no caminho X11/MSS: caso os primeiros quadros apresentem pixels nulos consecutivos, migra a quente para o motor nativo PipeWire Portal.
+   - Eliminação de `np.ix_` em favor de reamostragem `cv2.INTER_NEAREST` ou fatiamento pré-indexado vetorizado em NumPy (< 1 ms).
+3. **Escala SIMD de Passe Único e Multi-Core Adaptativo (`src/codec/hybrid_codec.py`):**
+   - Redimensionamento e conversão de cores `bgra -> yuv420p` unificados em passe único C/AVX2 acelerado via FFmpeg `libswscale` (`interpolation=1`).
+   - Escalonamento automático de threads para `libx264` (`min(8, max(4, os.cpu_count()))`) com `sliced-threads=1`.
+4. **Resolução Nativa Inteligente e Parser Dinâmico (`src/ui/views/sender_view.py` e `src/ui/main_window.py`):**
+   - Auto-seleção de `"Nativa do Monitor (60 FPS Zero Escala)"` quando a tela primária for menor que 1080p (ex.: `1366x768`).
+   - Parser genérico regex `(\d{3,5})x(\d{3,5})` com alinhamento a múltiplos de 2 para conformidade estrita com H.264 `yuv420p`.
+5. **HUD Dinâmico no Receptor (`src/ui/widgets/canvas.py`):**
+   - Cálculo dinâmico de `~KB/quadro` a partir da vazão de rede e taxa de quadros instantânea.
+   - Exibição de resolução do fluxo de vídeo e rótulo `"Latência Rede"`.
+6. **Governança, CI Multiplataforma e Testes Automatizados:**
+   - Adicionada suíte de testes `tests/test_linux_wayland_capture.py`.
+   - Atualizados `VERSION` (`3.2.0`), `CHANGELOG.md`, `launch_dav.sh`, `scripts/dav_installer_linux.py`, `LEIA-ME_LINUX.md` e `.github/workflows/release.yml`.
+   - Validação com `10/10 testes unitários e E2E aprovados` sem erros.
+
 

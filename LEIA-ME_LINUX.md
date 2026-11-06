@@ -1,4 +1,4 @@
-# DA-V v3.1.0 — Guia Operacional e Técnico para Linux
+# DA-V v3.2.0 — Guia Operacional e Técnico para Linux
 
 Documentação dedicada à instalação, compilação e operação do **DA-V (Distribuidor Amplo de Vídeo)** em distribuições Linux modernas (**Ubuntu 22.04 / 24.04 / 26.04 LTS**, **Debian 12+**, **Fedora 40+** e **Arch Linux**).
 
@@ -9,11 +9,11 @@ Documentação dedicada à instalação, compilação e operação do **DA-V (Di
 A edição Linux compartilha **exatamente o mesmo protocolo binário de rede e motor P2P Single-Socket** da edição Windows, garantindo interoperabilidade direta **Windows ↔ Linux** em qualquer direção (Linux transmitindo para Windows, Windows transmitindo para Linux ou Linux para Linux):
 
 1. **Motor Unificado de Mídia (`scripts/dav_client.py` + `scripts/dav_sender_worker.py`):**
-   - **Codificação:** Utiliza `h264_nvenc` automaticamente quando há GPU NVIDIA com drivers proprietários instalados; caso contrário, comuta sem intervenção para **`libx264` (`ultrafast` + `zerolatency` + `sliced-threads`)** via FFmpeg/PyAV, sustentando 60 FPS mesmo em CPUs integradas Intel/AMD.
+   - **Codificação:** Utiliza `h264_nvenc` automaticamente quando há GPU NVIDIA com drivers proprietários instalados; caso contrário, comuta sem intervenção para **`libx264` (`ultrafast` + `zerolatency` + `sliced-threads` multi-core)** via FFmpeg/PyAV, sustentando 60 FPS mesmo em CPUs integradas Intel/AMD.
    - **Escalonamento POSIX:** Aplica `os.nice(-10)` (quando permitido) e afinidade de núcleos via `os.sched_setaffinity` em um processo separado, isolando o loop de vídeo da interface gráfica Qt.
-2. **Servidor Gráfico (X11 vs Wayland):**
-   - Como **Receptor (Assistir)**, o DA-V roda nativamente tanto em sessões **Wayland** (`QT_QPA_PLATFORM=wayland`) quanto **X11** (`QT_QPA_PLATFORM=xcb`).
-   - Como **Transmissor (Compartilhar Tela)**, para captura de área de trabalho completa a 60 FPS sem bloqueios de permissão por janela do compositor Wayland, recomenda-se iniciar sessão em **Ubuntu on Xorg / X11** na tela de login (ícone de engrenagem no GDM).
+2. **Servidor Gráfico (Wayland e X11 Nativos):**
+   - Como **Receptor (Assistir)**: Suporte nativo completo tanto em sessões **Wayland** (`QT_QPA_PLATFORM=wayland;xcb`) quanto **X11** (`QT_QPA_PLATFORM=xcb`).
+   - Como **Transmissor (Compartilhar Tela)**: A partir da **v3.2.0**, o DA-V possui integração nativa com o **XDG Desktop Portal (`org.freedesktop.portal.ScreenCast`) + PipeWire**, transmitindo a 60 FPS diretamente no **Ubuntu GNOME (Wayland)**, KDE Plasma e Hyprland sem necessidade de migrar para Xorg! Na primeira transmissão Wayland, o sistema exibe a janela nativa de autorização ("Compartilhar Tela"). Em sessões X11, o DA-V utiliza captura direta via XShm/MSS.
 3. **Core C++23 Opcional (`libdav_core.so` & `dav_daemon`):**
    - Implementa captura nativa **X11 MIT-SHM** (`XShmCreateImage` / `XShmGetImage`) e sockets POSIX de baixa latência, compatível com **GCC 13, 14 e 15** (incluindo Ubuntu 26.04 LTS).
 
@@ -26,7 +26,8 @@ A edição Linux compartilha **exatamente o mesmo protocolo binário de rede e m
 ```bash
 sudo apt update && sudo apt install -y \
     build-essential cmake ninja-build \
-    python3 python3-venv python3-pip python3-dev \
+    python3 python3-venv python3-pip python3-dev python3-gi \
+    gstreamer1.0-pipewire gstreamer1.0-tools gstreamer1.0-plugins-base \
     libx11-dev libxext-dev libxfixes-dev libxrandr-dev \
     libgl1-mesa-dev libglib2.0-0 libegl1 \
     libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 \

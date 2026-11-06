@@ -4,6 +4,18 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [3.2.0] — 2026-11-06
+
+### Adicionado
+- **Captura Nativa Wayland via XDG Desktop Portal + PipeWire (`src/capture/linux_wayland_portal.py`):** Elimina a tela preta (`0.02 Mbps` / `1 KB/quadro`) sob Ubuntu GNOME e compositores Wayland (Mutter/KWin/Hyprland). O motor negocia a sessão `org.freedesktop.portal.ScreenCast` via DBus de sistema com ambiente higienizado (desacoplado do `_MEIPASS` em binários PyInstaller), herda o descritor PipeWire Unix e transmite quadros BGRx em baixa latência via GStreamer (`pipewiresrc`) com leitura em double-buffer constante a 60 FPS.
+- **Sentinela Automático Anti-Tela-Preta no XWayland:** Caso o fallback X11 (`mss`) detecte quadros vazios (zeros absolutos por isolamento do compositor), comuta a quente e automaticamente para o capturador nativo PipeWire Portal.
+- **Resolução Nativa sem Escala (Notebooks 1366x768):** `SenderView` e `DavMainWindow` detectam automaticamente a resolução física do monitor primário quando for menor que 1080p, evitando *upscaling* 2x via CPU e dobrando o FPS e a nitidez.
+- **Escala SIMD em Passe Único no FFmpeg (`libswscale`):** `HybridEncoder` unifica o redimensionamento e a conversão de espaço de cores `bgr0 -> yuv420p` em uma única passagem C/AVX2 acelerada.
+- **Multi-Core Adaptativo no `libx264`:** Escalonamento automático de threads para compressão H.264 por software (`threads=min(8, os.cpu_count())` e `sliced-threads=1`), sustentando 60 FPS em CPUs modestas.
+- **HUD Dinâmico no Receptor:** Telemetria da interface com cálculo em tempo real de `KB/quadro`, rótulo `Latência Rede` e resolução do fluxo recebido, removendo strings estáticas de GPU no cliente receptor.
+
+---
+
 ## [3.1.1] — 2026-11-06
 
 ### Corrigido

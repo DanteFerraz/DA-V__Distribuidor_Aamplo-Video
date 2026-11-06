@@ -73,7 +73,17 @@ class DavMainWindow(QMainWindow):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("DA-V v3.1.0 — Distribuidor Amplo de Vídeo")
+        version_str = "3.2.0"
+        try:
+            ver_file = os.path.join(_PROJECT_ROOT, "VERSION")
+            if os.path.exists(ver_file):
+                with open(ver_file, "r", encoding="utf-8") as vf:
+                    v = vf.read().strip()
+                    if v:
+                        version_str = v
+        except Exception:
+            pass
+        self.setWindowTitle(f"DA-V v{version_str} — Distribuidor Amplo de Vídeo")
         self.setMinimumSize(1120, 740)
 
         self.local_ip = get_local_ip()
@@ -371,12 +381,14 @@ class DavMainWindow(QMainWindow):
         target_port = self.view_sender.spn_send_port.value()
         pin = self.view_sender.txt_send_pin.text().strip()
 
+        import re
         res_text = self.view_sender.cmb_res.currentText()
-        w, h = (
-            (1280, 720)
-            if "1280x720" in res_text
-            else ((1920, 1080) if "1920x1080" in res_text else (640, 360))
-        )
+        m_res = re.search(r"(\d{3,5})x(\d{3,5})", res_text)
+        if m_res:
+            w = max(320, int(m_res.group(1)) & ~1)
+            h = max(240, int(m_res.group(2)) & ~1)
+        else:
+            w, h = 1280, 720
         fps = 60 if "60 FPS" in self.view_sender.cmb_fps.currentText() else 30
 
         bitrate_text = self.view_sender.cmb_bitrate.currentText()
@@ -422,6 +434,7 @@ class DavMainWindow(QMainWindow):
             monitor_index=monitor_index,
             bind_port=sender_bind_port,
             on_p2p_event=_on_tx_p2p_locked,
+            on_log=lambda lvl, msg: self.bridge.log_message.emit(lvl, msg),
         )
         if not success:
             self._append_log("ERROR", f"Falha ao iniciar o Transmissor ({target_ip}:{target_port}).")

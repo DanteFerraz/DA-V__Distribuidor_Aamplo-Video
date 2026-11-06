@@ -39,9 +39,13 @@ fi
 source .venv/bin/activate
 
 # 3. Detectar Servidor Gráfico (X11 / Wayland)
-if [ -n "$WAYLAND_DISPLAY" ]; then
-    echo "[INFO] Sessão gráfica: Wayland ($WAYLAND_DISPLAY)"
-    export QT_QPA_PLATFORM=wayland
+if [ -n "$WAYLAND_DISPLAY" ] || [ "$XDG_SESSION_TYPE" == "wayland" ]; then
+    echo "[INFO] Sessão gráfica: Wayland (${WAYLAND_DISPLAY:-wayland-0})"
+    export QT_QPA_PLATFORM="wayland;xcb"
+    if ! command -v gst-launch-1.0 &>/dev/null; then
+        echo "[AVISO] Para captura nativa de tela sob Wayland (sem tela preta), instale:"
+        echo "        sudo apt install -y gstreamer1.0-pipewire gstreamer1.0-tools gstreamer1.0-plugins-base python3-gi"
+    fi
 elif [ -n "$DISPLAY" ]; then
     echo "[INFO] Sessão gráfica: X11 ($DISPLAY)"
     export QT_QPA_PLATFORM=xcb

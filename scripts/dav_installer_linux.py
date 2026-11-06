@@ -386,7 +386,14 @@ class DavModernLinuxInstaller(QDialog):
         sess_col.setSpacing(1)
         lbl_s_title = QLabel(f"Servidor Gráfico: {session_type}")
         lbl_s_title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {C_TEXT_PRIMARY};")
-        lbl_s_sub = QLabel("Suporte completo a Wayland (PipeWire) e X11 nativo (MIT-SHM Zero-Copy)." if is_wayland else "Captura nativa MIT-SHM ultrarrápida com latência < 2ms ativa.")
+        has_pw_gst = shutil.which("gst-launch-1.0") is not None
+        if is_wayland:
+            if has_pw_gst:
+                lbl_s_sub = QLabel("Wayland nativo pronto: XDG Desktop Portal + PipeWire (60 FPS sem tela preta).")
+            else:
+                lbl_s_sub = QLabel("Wayland detectado. Recomendado: sudo apt install gstreamer1.0-pipewire")
+        else:
+            lbl_s_sub = QLabel("Captura nativa MIT-SHM ultrarrápida com latência < 2ms ativa.")
         lbl_s_sub.setStyleSheet(f"font-size: 11px; color: {C_TEXT_MUTED};")
         sess_col.addWidget(lbl_s_title)
         sess_col.addWidget(lbl_s_sub)

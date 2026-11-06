@@ -91,6 +91,7 @@ jobs:
             --hidden-import scripts.dav_sender_worker \
             --hidden-import scripts.dav_client \
             --hidden-import src.signaling.server.dav_rendezvous \
+            --hidden-import src.capture.linux_wayland_portal \
             --hidden-import mss \
             --hidden-import aiohttp \
             --exclude-module PyQt5 \
@@ -184,6 +185,7 @@ jobs:
             --hidden-import scripts.dav_sender_worker `
             --hidden-import scripts.dav_client `
             --hidden-import src.signaling.server.dav_rendezvous `
+            --hidden-import src.capture.linux_wayland_portal `
             --hidden-import mss `
             --hidden-import aiohttp `
             --exclude-module PyQt5 `

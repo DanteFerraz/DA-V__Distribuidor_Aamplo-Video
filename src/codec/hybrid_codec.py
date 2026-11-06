@@ -11,6 +11,7 @@ executado em máquinas Linux ou Windows sem GPU dedicada, eliminando dependênci
 de OpenCV ou drivers proprietários.
 """
 
+import os
 from fractions import Fraction
 from typing import Optional
 import numpy as np
@@ -114,6 +115,7 @@ class HybridEncoder:
                 print(f"[Codec] {self.codec_type} indisponível neste host ({nv_err}). Alternando para libx264 ultrafast...")
 
         # 2. Fallback universal H.264 por CPU SIMD (essencial para Linux sem GPU NVIDIA)
+        cpu_threads = min(8, max(4, os.cpu_count() or 4))
         for sw_name in ("libx264", "h264"):
             try:
                 ctx = av.CodecContext.create(sw_name, "w")
@@ -122,19 +124,22 @@ class HybridEncoder:
                 ctx.pix_fmt = "yuv420p"
                 ctx.time_base = Fraction(1, self.fps)
                 ctx.max_b_frames = 0
-                ctx.thread_count = 4
+                ctx.thread_count = cpu_threads
                 ctx.options = {
                     "preset": "ultrafast",
                     "tune": "zerolatency",
                     "b": f"{self.bitrate_kbps}k",
-                    "x264-params": f"repeat-headers=1:keyint={self.fps * 2}:min-keyint=1:sliced-threads=1:sync-lookahead=0:rc-lookahead=0",
+                    "x264-params": (
+                        f"repeat-headers=1:keyint={self.fps * 2}:min-keyint=1:"
+                        f"sliced-threads=1:threads={cpu_threads}:sync-lookahead=0:rc-lookahead=0"
+                    ),
                 }
                 ctx.open()
                 self._av_codec = ctx
                 self.codec_type = "libx264"
                 self._wire_magic = MAGIC_H264
                 self.active_backend_name = "LIBX264_ULL"
-                print(f"[Codec] Encoder {self.active_backend_name} ativo ({self.width}x{self.height} @ {self.fps} FPS).")
+                print(f"[Codec] Encoder {self.active_backend_name} ativo ({self.width}x{self.height} @ {self.fps} FPS, {cpu_threads} threads).")
                 return
             except Exception:
                 continue
@@ -156,17 +161,24 @@ class HybridEncoder:
 
         if self._av_codec is not None:
             try:
+                src_h, src_w = np_bgra.shape[0], np_bgra.shape[1]
                 channels = np_bgra.shape[2] if len(np_bgra.shape) == 3 else 1
-                if HAS_CV2 and channels == 4:
+                needs_scale = (src_w != self.width) or (src_h != self.height)
+
+                if not needs_scale and HAS_CV2 and channels == 4:
                     yuv = cv2.cvtColor(np_bgra, cv2.COLOR_BGRA2YUV_I420)
                     frame = av.VideoFrame.from_ndarray(yuv, format="yuv420p")
-                elif HAS_CV2 and channels == 3:
+                elif not needs_scale and HAS_CV2 and channels == 3:
                     yuv = cv2.cvtColor(np_bgra, cv2.COLOR_BGR2YUV_I420)
                     frame = av.VideoFrame.from_ndarray(yuv, format="yuv420p")
                 elif channels == 4:
-                    frame = av.VideoFrame.from_ndarray(np_bgra, format="bgra").reformat(format="yuv420p")
+                    frame = av.VideoFrame.from_ndarray(np_bgra, format="bgra").reformat(
+                        width=self.width, height=self.height, format="yuv420p", interpolation=1
+                    )
                 else:
-                    frame = av.VideoFrame.from_ndarray(np_bgra, format="bgr24").reformat(format="yuv420p")
+                    frame = av.VideoFrame.from_ndarray(np_bgra, format="bgr24").reformat(
+                        width=self.width, height=self.height, format="yuv420p", interpolation=1
+                    )
 
                 frame.pts = self._frame_seq
                 if self._force_next_idr or self._frame_seq == 1:

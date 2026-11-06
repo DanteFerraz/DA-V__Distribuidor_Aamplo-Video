@@ -227,9 +227,11 @@ class DavCoreEngine:
         monitor_index: int = 0,
         bind_port: Optional[int] = None,
         on_p2p_event: Optional[Callable] = None,
+        on_log: Optional[Callable] = None,
     ) -> bool:
         self._user_sender_stats_callback = on_sender_stats or (lambda *a: None)
         self._user_p2p_event_callback = on_p2p_event
+        self._user_log_callback = on_log
         self._sender_endpoint_info = None
         self._sender_endpoint_ready.clear()
 
@@ -503,6 +505,12 @@ class DavCoreEngine:
                         self._sender_endpoint_ready.set()
                     elif evt[0] == "P2P_LOCKED" and self._user_p2p_event_callback:
                         self._user_p2p_event_callback(evt[1], evt[2], evt[3])
+                    elif evt[0] == "log":
+                        if getattr(self, "_user_log_callback", None):
+                            try:
+                                self._user_log_callback(evt[1], evt[2])
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
