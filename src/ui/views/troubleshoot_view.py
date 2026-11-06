@@ -39,7 +39,7 @@ class TroubleshootView(QWidget):
         btn_loopback.clicked.connect(self.loopback_requested.emit)
         btn_box.addWidget(btn_loopback)
 
-        btn_firewall = QPushButton("Liberar Portas no Firewall (UDP 9000/9005)")
+        btn_firewall = QPushButton("Liberar Portas no Firewall (UDP 9000-9020 / 9005)")
         btn_firewall.setObjectName("secondaryBtn")
         btn_firewall.clicked.connect(self.fix_firewall_requested.emit)
         btn_box.addWidget(btn_firewall)

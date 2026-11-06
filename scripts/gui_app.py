@@ -79,11 +79,13 @@ def main():
 
     pin_arg = args.pin
     auto_recv_arg = args.auto_recv
+    p2p_uri_mode = False
     if args.uri and ("dav" in args.uri or "/" in args.uri):
         extracted_pin = args.uri.split("/")[-1].strip().replace("dav:", "").strip(":/ ")
         if extracted_pin:
             pin_arg = extracted_pin
             auto_recv_arg = True
+            p2p_uri_mode = True
 
     try:
         from PySide6.QtGui import QSurfaceFormat
@@ -101,7 +103,8 @@ def main():
         auto_recv=auto_recv_arg,
         auto_send=args.auto_send,
         monitor_idx=args.monitor,
-        custom_pin=pin_arg
+        custom_pin=pin_arg,
+        p2p_uri_mode=p2p_uri_mode,
     )
     window.show()
     sys.exit(app.exec())

@@ -15,8 +15,17 @@ import shutil
 import subprocess
 from pathlib import Path
 
-# ── Garante que a raiz do projeto esteja no sys.path ──────────────────────────
-PROJ_ROOT = Path(__file__).resolve().parent.parent
+# ── Garante que a raiz do projeto esteja no sys.path (código-fonte ou binário PyInstaller) ──
+def _resolve_linux_proj_root() -> Path:
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        for cand in (exe_dir, exe_dir.parent, exe_dir.parent.parent):
+            if (cand / "launch_dav.sh").exists() or (cand / "scripts" / "gui_app.py").exists():
+                return cand
+        return exe_dir
+    return Path(__file__).resolve().parent.parent
+
+PROJ_ROOT = _resolve_linux_proj_root()
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
@@ -290,7 +299,7 @@ class DavModernLinuxInstaller(QDialog):
 
         side_layout.addStretch()
 
-        lbl_ver = QLabel("DA-V v3.0 (Linux Edition)\nDante Ferraz · MonoTech")
+        lbl_ver = QLabel("DA-V v3.1.0 (Linux Edition)\nDante Ferraz · MonoTech")
         lbl_ver.setStyleSheet(f"font-size: 10px; color: {C_TEXT_MUTED}; line-height: 1.4;")
         side_layout.addWidget(lbl_ver)
 
@@ -464,7 +473,7 @@ class DavModernLinuxInstaller(QDialog):
         card_layout.addWidget(self.chk_protocol)
         card_layout.addWidget(lbl_proto_sub)
 
-        self.chk_ufw = QCheckBox("Liberar portas UDP no firewall UFW (Portas 19000-19010 e 9005)")
+        self.chk_ufw = QCheckBox("Liberar portas UDP no firewall UFW (Portas 9000-9020 e 9005)")
         self.chk_ufw.setChecked(True)
         lbl_ufw_sub = QLabel("   Executa comando sudo/pkexec para liberar tráfego P2P e beacon local.")
         lbl_ufw_sub.setStyleSheet(f"font-size: 11px; color: {C_TEXT_MUTED}; margin-top: -6px;")
@@ -683,16 +692,17 @@ StartupWMClass=dav-desktop
             QApplication.processEvents()
             try:
                 # Executa silenciosamente se tiver permissão, caso contrário exibe comando
-                res1 = subprocess.run(["sudo", "-n", "ufw", "allow", "19000:19010/udp"], capture_output=True)
-                res2 = subprocess.run(["sudo", "-n", "ufw", "allow", "9005/udp"], capture_output=True)
-                if res1.returncode == 0 and res2.returncode == 0:
-                    self.lbl_log4.setText("✓ Portas UDP 19000-19010 e 9005 liberadas no UFW.")
+                res1 = subprocess.run(["sudo", "-n", "ufw", "allow", "9000:9020/udp"], capture_output=True)
+                res2 = subprocess.run(["sudo", "-n", "ufw", "allow", "19000:19010/udp"], capture_output=True)
+                res3 = subprocess.run(["sudo", "-n", "ufw", "allow", "9005/udp"], capture_output=True)
+                if res1.returncode == 0 and res3.returncode == 0:
+                    self.lbl_log4.setText("✓ Portas UDP 9000-9020, 19000-19010 e 9005 liberadas no UFW.")
                     self.lbl_log4.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
                 else:
-                    self.lbl_log4.setText("ℹ Para liberar o firewall, execute no terminal: sudo ufw allow 19000:19010/udp && sudo ufw allow 9005/udp")
+                    self.lbl_log4.setText("ℹ Para liberar o firewall, execute: sudo ufw allow 9000:9020/udp && sudo ufw allow 9005/udp")
                     self.lbl_log4.setStyleSheet(f"font-size: 12px; color: {C_ACCENT};")
             except Exception:
-                self.lbl_log4.setText("ℹ Para liberar o firewall, execute: sudo ufw allow 19000:19010/udp && sudo ufw allow 9005/udp")
+                self.lbl_log4.setText("ℹ Para liberar o firewall, execute: sudo ufw allow 9000:9020/udp && sudo ufw allow 9005/udp")
                 self.lbl_log4.setStyleSheet(f"font-size: 12px; color: {C_ACCENT};")
         else:
             self.lbl_log4.setText("— Configuração de firewall ignorada.")

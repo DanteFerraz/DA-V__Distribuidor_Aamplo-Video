@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.24)
 
 project(dav_service
-    VERSION 1.0.0
-    DESCRIPTION "DA-V: Distribuidor Aamplo - High-Performance Video Distribution Service"
+    VERSION 3.1.0
+    DESCRIPTION "DA-V: Distribuidor Amplo de Video - Ultra-Low Latency Streaming Engine"
     LANGUAGES C CXX
 )
 
@@ -61,6 +61,8 @@ endif()
 
 # Core static library
 add_library(dav_core STATIC ${DAV_CORE_SOURCES})
+set_target_properties(dav_core PROPERTIES ARCHIVE_OUTPUT_NAME "dav_core_static")
+target_compile_definitions(dav_core PUBLIC DAV_STATIC_LIB)
 target_include_directories(dav_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include

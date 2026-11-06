@@ -30,7 +30,7 @@ class H264BitstreamParser:
                 pos += 1
         return nals
 
-def test_h264_encoding_pipeline():
+def _verify_h264_encoding_pipeline():
     print("[Test] Validating H.264 Annex-B Bitstream & NAL Structure...")
     
     # 1. Simulate keyframe with SPS/PPS + IDR Slice
@@ -69,8 +69,12 @@ def test_h264_encoding_pipeline():
     }
     return results
 
+def test_h264_encoding_pipeline():
+    res = _verify_h264_encoding_pipeline()
+    assert res["nal_integrity"] == "100% VALID Annex-B"
+
 def run_tests():
-    res = test_h264_encoding_pipeline()
+    res = _verify_h264_encoding_pipeline()
     print("[Results]", res)
     print("[SUCCESS] H.264 & Hardware-Accelerated Codec pipeline verified!")
     return res

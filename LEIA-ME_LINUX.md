@@ -1,133 +1,137 @@
-# DA-V: Distribuidor Amplo de Vídeo — Guia Operacional Linux
+# DA-V v3.1.0 — Guia Operacional e Técnico para Linux
 
-Guia canônico de instalação, compilação nativa C++23 e execução do ecossistema **DA-V** em distribuições Linux (Ubuntu 22.04/24.04, Debian 12, Arch Linux, Oracle Linux 9 / RHEL).
-
----
-
-## 1. Visão Geral da Portabilidade Linux
-
-O DA-V foi projetado com arquitetura modular desacoplada:
-1. **Core C++23 (`libdav_core.so` & `dav_daemon`)**:
-   - Captura de tela nativa X11 com aceleração via extensão MIT-SHM (`XShmCreateImage`, `XShmGetImage`) com zero-copy para o buffer de ring SPSC lock-free.
-   - Fallback de captura de vídeo sintético/MSS caso executado em ambientes de teste sem display ativo ou containers Docker.
-   - Sockets POSIX com `SO_REUSEPORT`, `SO_REUSEADDR` e `TCP_NODELAY`.
-2. **Worker e Pipeline Python 3 (`scripts/dav_sender_worker.py`)**:
-   - Pacing de 60 FPS garantido via relógio de precisão `time.perf_counter()`.
-   - Prioridade de processo elevada via POSIX `os.nice(-10)`.
-   - Afinidade de núcleos de CPU via `os.sched_setaffinity` para isolar threads de captura, encoding H.264 e encriptação ChaCha20-Poly1305.
-   - Encriptação autenticada AEAD de 256 bits com integridade de pacotes e recuperação FEC.
-3. **Interface Gráfica PySide6 (`scripts/gui_app.py`)**:
-   - Suporte transparente a servidores X11 (`QT_QPA_PLATFORM=xcb`) e Wayland (`QT_QPA_PLATFORM=wayland`).
-   - Diagnóstico automático e liberação de portas de firewall via `ufw` e `iptables`.
+Documentação dedicada à instalação, compilação e operação do **DA-V (Distribuidor Amplo de Vídeo)** em distribuições Linux modernas (**Ubuntu 22.04 / 24.04 / 26.04 LTS**, **Debian 12+**, **Fedora 40+** e **Arch Linux**).
 
 ---
 
-## 2. Pré-Requisitos do Sistema (Ubuntu 24.04 / 26.04 LTS & Debian 12)
+## 1. Como o DA-V Opera no Linux
+
+A edição Linux compartilha **exatamente o mesmo protocolo binário de rede e motor P2P Single-Socket** da edição Windows, garantindo interoperabilidade direta **Windows ↔ Linux** em qualquer direção (Linux transmitindo para Windows, Windows transmitindo para Linux ou Linux para Linux):
+
+1. **Motor Unificado de Mídia (`scripts/dav_client.py` + `scripts/dav_sender_worker.py`):**
+   - **Codificação:** Utiliza `h264_nvenc` automaticamente quando há GPU NVIDIA com drivers proprietários instalados; caso contrário, comuta sem intervenção para **`libx264` (`ultrafast` + `zerolatency` + `sliced-threads`)** via FFmpeg/PyAV, sustentando 60 FPS mesmo em CPUs integradas Intel/AMD.
+   - **Escalonamento POSIX:** Aplica `os.nice(-10)` (quando permitido) e afinidade de núcleos via `os.sched_setaffinity` em um processo separado, isolando o loop de vídeo da interface gráfica Qt.
+2. **Servidor Gráfico (X11 vs Wayland):**
+   - Como **Receptor (Assistir)**, o DA-V roda nativamente tanto em sessões **Wayland** (`QT_QPA_PLATFORM=wayland`) quanto **X11** (`QT_QPA_PLATFORM=xcb`).
+   - Como **Transmissor (Compartilhar Tela)**, para captura de área de trabalho completa a 60 FPS sem bloqueios de permissão por janela do compositor Wayland, recomenda-se iniciar sessão em **Ubuntu on Xorg / X11** na tela de login (ícone de engrenagem no GDM).
+3. **Core C++23 Opcional (`libdav_core.so` & `dav_daemon`):**
+   - Implementa captura nativa **X11 MIT-SHM** (`XShmCreateImage` / `XShmGetImage`) e sockets POSIX de baixa latência, compatível com **GCC 13, 14 e 15** (incluindo Ubuntu 26.04 LTS).
+
+---
+
+## 2. Instalação de Dependências do Sistema
+
+### Ubuntu 22.04 / 24.04 / 26.04 LTS e Debian 12+
 
 ```bash
 sudo apt update && sudo apt install -y \
-    build-essential \
-    cmake \
-    ninja-build \
-    libx11-dev \
-    libxext-dev \
-    libxfixes-dev \
-    libxrandr-dev \
-    libgl1-mesa-dev \
-    libglib2.0-0 \
-    libegl1 \
-    libxcb-cursor0 \
-    libxcb-xinerama0 \
-    libxcb-icccm4 \
-    libxcb-image0 \
-    libxcb-keysyms1 \
-    libxcb-render-util0 \
-    libxcb-shape0 \
-    libxcb-xkb1 \
-    libxkbcommon-x11-0 \
-    ffmpeg \
-    python3 \
-    python3-venv \
-    python3-pip \
-    python3-dev \
-    ufw
+    build-essential cmake ninja-build \
+    python3 python3-venv python3-pip python3-dev \
+    libx11-dev libxext-dev libxfixes-dev libxrandr-dev \
+    libgl1-mesa-dev libglib2.0-0 libegl1 \
+    libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 \
+    libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xkb1 \
+    libxkbcommon-x11-0 ffmpeg ufw git
 ```
 
-### Arch Linux
+### Arch Linux / Manjaro
+
 ```bash
 sudo pacman -Syu --noconfirm \
-    base-devel \
-    cmake \
-    ninja \
-    libx11 \
-    libxext \
-    mesa \
-    python \
-    python-pip
+    base-devel cmake ninja libx11 libxext libxrandr libxfixes \
+    mesa ffmpeg python python-pip ufw git
 ```
 
----
+### Fedora 40+ / RHEL 9 / Oracle Linux 9
 
-## 3. Compilação do Backend C++23
-
-Execute o script de compilação automatizada:
 ```bash
-chmod +x build_linux.sh
-./build_linux.sh
+sudo dnf install -y \
+    gcc-c++ cmake ninja-build python3 python3-devel python3-pip \
+    libX11-devel libXext-devel libXfixes-devel libXrandr-devel \
+    mesa-libGL-devel libxkbcommon-x11 ffmpeg-free git
 ```
-
-O script detecta o compilador (`g++-13`, `g++`, `clang++`), configura o CMake em modo `Release` e gera:
-- `build/libdav_core.so`: Biblioteca compartilhada C-ABI.
-- `build/dav_daemon`: Daemon standalone do serviço.
 
 ---
 
-## 4. Execução do DA-V
+## 3. Execução Rápida e Integração ao Desktop
 
-### Inicialização Automática (Interface Gráfica)
+### Iniciar Diretamente (Provisionamento Automático da `.venv`)
+
 ```bash
 chmod +x launch_dav.sh
 ./launch_dav.sh
 ```
 
-O `launch_dav.sh` gerencia automaticamente o ambiente virtual Python (`.venv`), instala dependências de `requirements.txt` e configura a plataforma gráfica Qt.
+Na primeira execução, o `launch_dav.sh` cria o ambiente `.venv`, instala os pacotes de `requirements.txt`, detecta `WAYLAND_DISPLAY` / `DISPLAY` e abre a interface gráfica.
 
-### Inicialização em Modo Daemon (Headless / Servidor de Captura)
+### Assistente Gráfico de Instalação Linux (Menu de Aplicativos + `dav://` + UFW)
+
+Para adicionar o DA-V ao lançador do GNOME/KDE, associar links de convite `dav://connect/PIN` via `xdg-mime` e configurar o firewall:
+
 ```bash
-./launch_dav.sh --daemon --port 9200 --monitor 0 --fps 60
+source .venv/bin/activate
+python3 scripts/dav_installer_linux.py
 ```
 
-### Execução da Suíte de Testes no Linux
+> **Importante:** Sempre execute scripts da pasta `scripts/` a partir do diretório raiz do projeto (`python3 scripts/dav_installer_linux.py`) para que o pacote raiz seja resolvido corretamente pelo Python.
+
+### Compilação Opcional do Backend C++23
+
 ```bash
+chmod +x build_linux.sh
+./build_linux.sh
+```
+
+Artefatos gerados em `build/`:
+- `build/libdav_core.so`: Biblioteca compartilhada C-ABI.
+- `build/dav_daemon`: Executável standalone do serviço C++23.
+
+---
+
+## 4. Comandos Úteis de Linha de Comando
+
+```bash
+# Executar toda a suíte de validação (unitários + P2P Hole-Punching + Blind Relay)
 ./launch_dav.sh --test
-```
 
-### Benchmark de Latência e Vazão
-```bash
+# Executar benchmark de latência e vazão
 ./launch_dav.sh --bench
+
+# Rodar apenas o Transmissor em modo Headless / Servidor
+./launch_dav.sh --daemon --port 9000 --pin 845-747 --fps 60
 ```
 
 ---
 
-## 5. Portas de Rede e Firewall
+## 5. Portas de Rede e Firewall (UFW)
 
-O DA-V opera utilizando as seguintes portas padrão na arquitetura moderna P2P:
-- **Portas UDP 19000-19010**: Transporte de pacotes de vídeo de ultra-baixa latência (60 FPS P2P hole-punching).
-- **Porta UDP 9005**: Descoberta e anúncios de peers na Rede Local (LAN Beacon multicast/broadcast).
-- **Sinalização WAN**: HTTPS/SSE direto no servidor Rendezvous (Oracle Cloud VPS `129.148.26.150:5000/p2p/`).
+O DA-V v3.1 utiliza as seguintes portas UDP para pareamento local e P2P direto:
 
-Para liberar o tráfego via UFW no Ubuntu:
+- **`9000:9020/udp`** (e faixa auxiliar `19000:19010/udp`): Streaming de vídeo a 60 FPS e sondas de perfuração de NAT (`DAV_P2P_SYN` / `DAV_P2P_ACK`).
+- **`9005/udp`**: Descoberta automática de máquinas na mesma rede local (`LanBeaconService`).
+
+Para liberar no Ubuntu/Debian com UFW ativo:
+
 ```bash
-sudo ufw allow 19000:19010/udp comment 'DAV Video Stream P2P'
-sudo ufw allow 9005/udp comment 'DAV LAN Beacon'
+sudo ufw allow 9000:9020/udp comment 'DA-V P2P Video Stream'
+sudo ufw allow 19000:19010/udp comment 'DA-V Auxiliary Ports'
+sudo ufw allow 9005/udp comment 'DA-V LAN Discovery Beacon'
 sudo ufw reload
 ```
 
 ---
 
-## 6. Integração com TCD (Transmissor e Coletor de Dados)
+## 6. Implantação do Servidor `DAV-Rendezvous` em VPS Linux (Oracle Cloud)
 
-Quando utilizado em conjunto com o TCD:
-1. O TCD atua como nó de sinalização WAN e retransmissão de acervo de mídia de alto desempenho.
-2. O DA-V consulta o TCD via WebSocket para descoberta de canais e peers na rede local ou WAN.
-3. Para iniciar ambos no mesmo host Linux, utilize o serviço do TCD (`systemctl start tcd`) e inicie o DA-V via `./launch_dav.sh`.
+Para atualizar ou implantar o serviço de sinalização + **Blind Encrypted UDP Relay** em uma VPS Ubuntu/Oracle Linux:
+
+1. Copie o repositório para `/opt/dav` na VPS e instale a unidade `systemd`:
+   ```bash
+   sudo cp /opt/dav/deploy/dav-rendezvous.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now dav-rendezvous
+   sudo systemctl status dav-rendezvous
+   ```
+2. Libere no firewall da VPS **e** na *Security List / Network Security Group* do painel da nuvem (Oracle Cloud VCN):
+   - **TCP `80`** (via Nginx Reverse Proxy para `127.0.0.1:8765`, com `proxy_buffering off;` para SSE) ou **TCP `8765`** direto.
+   - **UDP `8768`** (indispensável para que o `RendezvousUdpGateway` responda sondas STUN reflexivas e opere o **Blind Encrypted UDP Relay** em redes com CGNAT Simétrico).

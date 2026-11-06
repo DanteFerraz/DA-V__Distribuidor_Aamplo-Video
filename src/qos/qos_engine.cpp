@@ -1,4 +1,5 @@
 #include "src/qos/qos_engine.hpp"
+#include <algorithm>
 
 namespace dav {
 

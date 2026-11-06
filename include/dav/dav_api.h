@@ -3,7 +3,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#if defined(_WIN32) || defined(__CYGWIN__)
+#if defined(DAV_STATIC_LIB)
+    #define DAV_API
+#elif defined(_WIN32) || defined(__CYGWIN__)
     #if defined(DAV_BUILDING_DLL)
         #define DAV_API __declspec(dllexport)
     #else

@@ -62,10 +62,10 @@ class SenderView(QWidget):
         grid.addWidget(QLabel("Codec de Vídeo:"), 1, 2)
         self.cmb_codec = QComboBox()
         self.cmb_codec.addItems([
-            "NVIDIA NVENC H.264 (RTX 4070 - Ultra-Low Latency)",
-            "NVIDIA NVENC HEVC (RTX 4070 - Alta Compressão)",
-            "JPEG SIMD Vetorizado (Universal CPU/GPU)",
-            "RAW DIB Sem Compressão (LAN Local)"
+            "H.264 Ultra-Low Latency (Auto: NVENC GPU / libx264 SIMD)",
+            "HEVC / H.265 Alta Compressão (Auto: NVENC GPU / H.264)",
+            "JPEG SIMD Vetorizado (Compatibilidade Universal)",
+            "RAW Sem Compressão (Rede Local Gigabit)"
         ])
         grid.addWidget(self.cmb_codec, 1, 3)
 
@@ -133,9 +133,9 @@ class SenderView(QWidget):
         stats_layout.setSpacing(Theme.SPACE_MD)
 
         self.card_fps = StatCard("Taxa de Quadros", "0.0 FPS", "Alvo: 60 FPS", Theme.SYS["accent_primary"])
-        self.card_mbps = StatCard("Vazão de Saída", "0.00 Mbps", "Rede local UDP", Theme.SYS["status_info"])
+        self.card_mbps = StatCard("Vazão de Saída", "0.00 Mbps", "Transporte P2P / LAN UDP", Theme.SYS["status_info"])
         self.card_frames = StatCard("Quadros Enviados", "0", "H.264 NAL Units", Theme.SYS["status_success"])
-        self.card_packets = StatCard("Pacotes Fragmentados", "0", "MTU 1350 bytes", Theme.SYS["status_warning"])
+        self.card_packets = StatCard("Pacotes Fragmentados", "0", "MTU 1320 bytes", Theme.SYS["status_warning"])
 
         stats_layout.addWidget(self.card_fps)
         stats_layout.addWidget(self.card_mbps)

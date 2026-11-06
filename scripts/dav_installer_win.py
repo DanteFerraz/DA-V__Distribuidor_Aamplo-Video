@@ -295,7 +295,7 @@ class DavModernInstaller(QDialog):
         side_layout.addStretch()
 
         # Rodapé da sidebar
-        lbl_ver = QLabel("DA-V v3.0 · Dante Ferraz\nMonoTech Architecture")
+        lbl_ver = QLabel("DA-V v3.1.0 · Dante Ferraz\nMonoTech Architecture")
         lbl_ver.setStyleSheet(f"font-size: 10px; color: {C_TEXT_MUTED}; line-height: 1.4;")
         side_layout.addWidget(lbl_ver)
 
@@ -452,7 +452,7 @@ class DavModernInstaller(QDialog):
 
         self.chk_firewall = QCheckBox("Liberar portas no Windows Defender Firewall (Recomendado)")
         self.chk_firewall.setChecked(True)
-        lbl_fw_sub = QLabel("   Abre o canal UDP 19000-19010 e broadcast LAN 9005 para tráfego sem bloqueio.")
+        lbl_fw_sub = QLabel("   Abre as faixas UDP 9000-9020, 19000-19010 e o Beacon LAN 9005 para tráfego P2P direto.")
         lbl_fw_sub.setStyleSheet(f"font-size: 11px; color: {C_TEXT_MUTED}; margin-top: -6px;")
         card_layout.addWidget(self.chk_firewall)
         card_layout.addWidget(lbl_fw_sub)
@@ -621,13 +621,15 @@ class DavModernInstaller(QDialog):
 
     @staticmethod
     def _get_python_runtime() -> str:
-        pyw = shutil.which("pythonw") or shutil.which("pyw") or shutil.which("python")
-        if pyw:
-            return pyw
-        candidate = Path(sys.executable).parent / "pythonw.exe"
-        if candidate.exists():
-            return str(candidate)
-        return "pythonw"
+        for cmd in ("pyw", "pythonw", "python"):
+            found = shutil.which(cmd)
+            if found and "WindowsApps" not in found:
+                return found
+        local_py = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
+        if local_py.exists():
+            for cand in sorted(local_py.glob("Python3*/pythonw.exe"), reverse=True):
+                return str(cand)
+        return "pyw"
 
     def _execute_installation(self):
         """Aplica as configurações no Windows com feedback visual passo a passo."""
@@ -645,14 +647,18 @@ class DavModernInstaller(QDialog):
             QApplication.processEvents()
             try:
                 subprocess.run(
-                    'netsh advfirewall firewall add rule name="DA-V Video Streaming" dir=in action=allow protocol=UDP localport=19000-19010 profile=any',
+                    'netsh advfirewall firewall delete rule name="DA-V Video Streaming"',
+                    shell=True, capture_output=True
+                )
+                subprocess.run(
+                    'netsh advfirewall firewall add rule name="DA-V Video Streaming" dir=in action=allow protocol=UDP localport=9000-9020,19000-19010 profile=any',
                     shell=True, capture_output=True
                 )
                 subprocess.run(
                     'netsh advfirewall firewall add rule name="DA-V LAN Beacon" dir=in action=allow protocol=UDP localport=9005 profile=any',
                     shell=True, capture_output=True
                 )
-                self.lbl_log2.setText("✓ Portas UDP 19000-19010 e 9005 liberadas no Firewall.")
+                self.lbl_log2.setText("✓ Portas UDP 9000-9020, 19000-19010 e 9005 liberadas no Firewall.")
                 self.lbl_log2.setStyleSheet(f"font-size: 12px; color: {C_SUCCESS}; font-weight: 600;")
             except Exception as e:
                 self.lbl_log2.setText(f"⚠ Aviso no Firewall: {e}")

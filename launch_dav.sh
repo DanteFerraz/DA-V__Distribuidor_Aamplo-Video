@@ -55,6 +55,7 @@ fi
 if [ "$1" == "--test" ]; then
     echo "[INFO] Executando suíte completa de testes no Linux..."
     pytest tests/ -v
+    python3 tests/test_p2p_e2e.py
     python3 tests/test_full_pipeline_e2e.py
     python3 tests/test_kcp_transport.py
     python3 tests/test_screen_capture.py

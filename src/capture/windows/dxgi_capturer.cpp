@@ -1,6 +1,7 @@
 #include "src/capture/windows/dxgi_capturer.hpp"
 #include "src/core/logger.hpp"
 #include "src/core/time.hpp"
+#include <cstring>
 
 #if defined(_WIN32)
 #include <windows.h>

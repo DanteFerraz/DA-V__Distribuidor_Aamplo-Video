@@ -38,7 +38,7 @@ class WireProtocolSimulator:
             "frag_tot": unpacked[10]
         }
 
-def test_packetizer_and_crypto():
+def _verify_packetizer_and_crypto():
     print("[Test] Validating RTP Packetizer, 32B Wire Protocol & ChaCha20-Poly1305 Crypto...")
 
     # 1. Verify Header Size
@@ -101,8 +101,12 @@ def test_packetizer_and_crypto():
     }
     return results
 
+def test_packetizer_and_crypto():
+    res = _verify_packetizer_and_crypto()
+    assert res["data_integrity"] == "BIT-PERFECT MATCH"
+
 def run_tests():
-    res = test_packetizer_and_crypto()
+    res = _verify_packetizer_and_crypto()
     print("[Results]", res)
     print("[SUCCESS] Wire Protocol, Packetizer & Crypto verified!")
     return res

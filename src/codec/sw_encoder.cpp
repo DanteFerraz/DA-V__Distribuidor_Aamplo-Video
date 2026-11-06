@@ -2,6 +2,7 @@
 #include "src/codec/frame_scaler.hpp"
 #include "src/core/logger.hpp"
 #include "src/core/time.hpp"
+#include <algorithm>
 #include <cstring>
 
 namespace dav {

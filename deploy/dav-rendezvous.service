@@ -1,0 +1,18 @@
+[Unit]
+Description=DA-V Rendezvous, STUN & Blind Encrypted UDP Relay Service (v3.1.0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dav
+Environment="DAV_HTTP_PORT=8765"
+Environment="DAV_STUN_PORT=8768"
+Environment="DAV_SESSION_TTL=300"
+ExecStart=/usr/bin/python3 /opt/dav/src/signaling/server/dav_rendezvous.py
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

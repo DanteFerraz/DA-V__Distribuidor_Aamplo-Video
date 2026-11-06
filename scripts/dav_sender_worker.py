@@ -1,70 +1,77 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DA-V — Pipeline Desacoplado de Transmissão de Vídeo (Sender Worker)
+DA-V — Pipeline Isolado de Captura, Codificação e Transporte P2P (Sender Worker v2.0)
 Autor: Dante Ferraz (MonoTech)
 
-Executa em um processo isolado para mitigar contenção de GIL do CPython,
-organizado em três threads dedicadas com afinidade de CPU:
-- Thread 0 (Captura):  DXGI / Win32 GDI / Linux X11 MIT-SHM -> Ring Buffer SPSC lock-free.
-- Thread 1 (Encode):   NVIDIA NVENC (p1 Ultra-Low Latency) / PyAV H.264 + Criptografia ChaCha20-Poly1305.
-- Thread 2 (Envio):    Fragmentação MTU, pacotes RTP 32B e socket UDP assíncrono.
-Pacing de 60 FPS garantido via relógio de precisão monotônico com 0% de drift.
+Executa em um processo independente do sistema operacional para eliminar qualquer
+contenção do GIL (Global Interpreter Lock) sobre a interface gráfica Qt:
+- Captura nativa: Windows Graphics Capture (WGC Direct3D) / Win32 GDI DIBSection / Linux X11 MSS.
+- Codificação de baixa latência: NVIDIA NVENC (p1 ULL + Repeat Headers) com fallback automático
+  para libx264 (ultrafast / zerolatency) em máquinas Linux ou Windows sem GPU dedicada.
+- Transporte UDP Single-Socket: executa descoberta STUN RFC 5389, Hole-Punching bidirecional
+  multi-candidato, resposta instantânea a pedidos de keyframe (PLI) e Blind Encrypted Relay
+  no mesmo descritor de arquivo UDP que envia o fluxo de vídeo a 60 FPS.
 """
 
-import sys
 import os
+import sys
+import time
+import json
+import queue
 import socket
 import struct
-import time
-import queue
-import threading
 import ctypes
-from ctypes import wintypes
-import numpy as np
+import argparse
+import threading
 import multiprocessing as mp
-from typing import Optional, List, Dict, Any
+from ctypes import wintypes
+from typing import Any, Dict, List, Optional, Tuple
 
-# Ensure project root is in sys.path
+import numpy as np
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from src.codec.hybrid_codec import HybridEncoder
+from src.discovery.p2p_channel import (
+    MAGIC_ACK,
+    MAGIC_PLI,
+    MAGIC_SYN,
+    build_peer_candidates,
+    discover_socket_endpoint,
+    normalize_pin,
+    send_stun_keepalive,
+    wrap_relay_packet,
+)
 
 try:
     import cv2
     cv2.setNumThreads(1)
+    _HAS_CV2 = True
 except Exception:
-    pass
+    _HAS_CV2 = False
 
 try:
-    from windows_capture import WindowsCapture, Frame, InternalCaptureControl
+    from windows_capture import Frame, InternalCaptureControl, WindowsCapture
     _WGC_AVAILABLE = True
 except ImportError:
     _WGC_AVAILABLE = False
 
-# ── Stage Probe Integration (fire-and-forget, non-blocking) ────────────────────
-# Import lazily so the probe is optional — DA-V runs fine without it.
 _probe_send = None
 try:
     from scripts.dav_stage_probe import probe_init, probe_send as _probe_send
 except Exception:
     pass
 
-# ── Win32 API Definitions for Thread Scheduling & Affinity ────────────────────
+# Constantes de escalonamento de threads e processos Win32
 THREAD_PRIORITY_TIME_CRITICAL = 15
 THREAD_PRIORITY_HIGHEST = 2
-THREAD_PRIORITY_ABOVE_NORMAL = 1
-THREAD_PRIORITY_NORMAL = 0
-
-# Process priority classes
-HIGH_PRIORITY_CLASS        = 0x00000080
+HIGH_PRIORITY_CLASS = 0x00000080
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
-NORMAL_PRIORITY_CLASS      = 0x00000020
-
-# Access rights for OpenProcess
 PROCESS_ALL_ACCESS = 0x1F0FFF
+SIO_UDP_CONNRESET = 0x9800000C
 
 k32 = None
 if sys.platform == "win32":
@@ -80,8 +87,6 @@ if sys.platform == "win32":
         k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         k32.SetPriorityClass.restype = wintypes.BOOL
-        k32.GetPriorityClass.argtypes = [wintypes.HANDLE]
-        k32.GetPriorityClass.restype = wintypes.DWORD
         k32.CloseHandle.argtypes = [wintypes.HANDLE]
         k32.CloseHandle.restype = wintypes.BOOL
         ctypes.windll.winmm.timeBeginPeriod(1)
@@ -94,20 +99,26 @@ except Exception:
     pass
 
 
+def _disable_win_udp_connreset(sock: socket.socket):
+    """Impede que mensagens ICMP Port Unreachable disparem WinError 10054 durante o Hole-Punching."""
+    if sys.platform == "win32" and hasattr(sock, "ioctl"):
+        try:
+            sock.ioctl(SIO_UDP_CONNRESET, False)
+        except Exception:
+            pass
+
+
 def _elevate_process_priority(target_class: int = HIGH_PRIORITY_CLASS):
-    """Elevate THIS process priority across Windows and Linux."""
-    if sys.platform == "win32":
-        if k32 is not None:
-            try:
-                pid = k32.GetCurrentProcessId()
-                h_proc = k32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
-                if h_proc:
-                    k32.SetPriorityClass(h_proc, target_class)
-                    k32.CloseHandle(h_proc)
-            except Exception:
-                pass
+    if sys.platform == "win32" and k32 is not None:
+        try:
+            pid = k32.GetCurrentProcessId()
+            h_proc = k32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
+            if h_proc:
+                k32.SetPriorityClass(h_proc, target_class)
+                k32.CloseHandle(h_proc)
+        except Exception:
+            pass
     else:
-        # Linux POSIX priority
         try:
             os.nice(-10)
         except Exception:
@@ -115,29 +126,25 @@ def _elevate_process_priority(target_class: int = HIGH_PRIORITY_CLASS):
 
 
 def _set_thread_perf(priority: int, core_affinity_mask: int):
-    """Set OS priority and CPU core affinity for the calling thread."""
-    if sys.platform == "win32":
-        if k32 is not None:
-            try:
-                h_thread = k32.GetCurrentThread()
-                k32.SetThreadPriority(h_thread, priority)
-                if core_affinity_mask > 0:
-                    k32.SetThreadAffinityMask(h_thread, core_affinity_mask)
-            except Exception:
-                pass
-    else:
-        # Linux thread affinity via sched_setaffinity
-        if hasattr(os, "sched_setaffinity") and core_affinity_mask > 0:
-            try:
-                cores = {i for i in range(64) if (core_affinity_mask & (1 << i))}
-                if cores:
-                    os.sched_setaffinity(0, cores)
-            except Exception:
-                pass
+    if sys.platform == "win32" and k32 is not None:
+        try:
+            h_thread = k32.GetCurrentThread()
+            k32.SetThreadPriority(h_thread, priority)
+            if core_affinity_mask > 0:
+                k32.SetThreadAffinityMask(h_thread, core_affinity_mask)
+        except Exception:
+            pass
+    elif hasattr(os, "sched_setaffinity") and core_affinity_mask > 0:
+        try:
+            cores = {i for i in range(64) if (core_affinity_mask & (1 << i))}
+            if cores:
+                os.sched_setaffinity(0, cores)
+        except Exception:
+            pass
 
 
 def _build_key_vector(pin: str, key_max_len: int = 16777216) -> np.ndarray:
-    clean_pin = str(pin).replace("-", "").replace(" ", "").strip()
+    clean_pin = normalize_pin(pin)
     raw_key = f"dav-secret-{clean_pin}-key-salt-2026".encode("utf-8")
     key_bytes = bytes([raw_key[i % len(raw_key)] ^ ((i * 37) & 0xFF) for i in range(32)])
     return np.frombuffer(
@@ -146,16 +153,20 @@ def _build_key_vector(pin: str, key_max_len: int = 16777216) -> np.ndarray:
 
 
 def enumerate_system_monitors() -> List[Dict[str, Any]]:
-    """Enumerate all connected physical displays on Windows or Linux."""
-    monitors = []
+    """Enumera os monitores físicos ativos no Windows ou Linux (X11/Wayland)."""
+    monitors: List[Dict[str, Any]] = []
 
     if sys.platform == "win32":
         try:
             user32 = ctypes.windll.user32
 
             class RECT(ctypes.Structure):
-                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
 
             class MONITORINFOEX(ctypes.Structure):
                 _fields_ = [
@@ -163,7 +174,7 @@ def enumerate_system_monitors() -> List[Dict[str, Any]]:
                     ("rcMonitor", RECT),
                     ("rcWork", RECT),
                     ("dwFlags", ctypes.c_ulong),
-                    ("szDevice", ctypes.c_wchar * 32)
+                    ("szDevice", ctypes.c_wchar * 32),
                 ]
 
             def _enum_proc(hMonitor, hdcMonitor, lprcMonitor, dwData):
@@ -171,23 +182,23 @@ def enumerate_system_monitors() -> List[Dict[str, Any]]:
                 info.cbSize = ctypes.sizeof(MONITORINFOEX)
                 user32.GetMonitorInfoW(hMonitor, ctypes.byref(info))
                 r = info.rcMonitor
-                w = r.right - r.left
-                h = r.bottom - r.top
-                is_prim = bool(info.dwFlags & 1)
                 monitors.append({
                     "device": info.szDevice,
-                    "left": r.left, "top": r.top,
-                    "width": w, "height": h,
-                    "is_primary": is_prim
+                    "left": r.left,
+                    "top": r.top,
+                    "width": r.right - r.left,
+                    "height": r.bottom - r.top,
+                    "is_primary": bool(info.dwFlags & 1),
                 })
                 return True
 
-            MONITORENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(RECT), ctypes.c_long)
+            MONITORENUMPROC = ctypes.WINFUNCTYPE(
+                ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(RECT), ctypes.c_long
+            )
             user32.EnumDisplayMonitors(0, 0, MONITORENUMPROC(_enum_proc), 0)
         except Exception:
             pass
 
-    # Cross-platform fallback via Qt QGuiApplication (X11 / Wayland / Windows)
     if not monitors:
         try:
             from PySide6.QtGui import QGuiApplication
@@ -196,24 +207,291 @@ def enumerate_system_monitors() -> List[Dict[str, Any]]:
                 for i, s in enumerate(app.screens()):
                     geo = s.geometry()
                     monitors.append({
-                        "device": s.name() or f"Screen-{i+1}",
-                        "left": geo.x(), "top": geo.y(),
-                        "width": geo.width(), "height": geo.height(),
-                        "is_primary": (i == 0)
+                        "device": s.name() or f"Screen-{i + 1}",
+                        "left": geo.x(),
+                        "top": geo.y(),
+                        "width": geo.width(),
+                        "height": geo.height(),
+                        "is_primary": (i == 0),
                     })
         except Exception:
             pass
 
     if not monitors:
-        # Universal fallback to primary standard screen
+        try:
+            import mss
+            with mss.mss() as sct:
+                for i, m in enumerate(sct.monitors[1:], start=0):
+                    monitors.append({
+                        "device": f"Display-{i + 1}",
+                        "left": m["left"],
+                        "top": m["top"],
+                        "width": m["width"],
+                        "height": m["height"],
+                        "is_primary": (i == 0),
+                    })
+        except Exception:
+            pass
+
+    if not monitors:
         monitors.append({
             "device": "Display-1",
-            "left": 0, "top": 0,
+            "left": 0,
+            "top": 0,
             "width": 1920,
             "height": 1080,
-            "is_primary": True
+            "is_primary": True,
         })
     return monitors
+
+
+class SenderTransportEndpoint:
+    """
+    Gerencia o descritor único de socket UDP do Transmissor:
+    - Realiza descoberta STUN RFC 5389 antes do loop não-bloqueante para garantir que a porta
+      pública reportada ao Rendezvous corresponda exatamente ao socket que envia o vídeo.
+    - Conduz o handshake bidirecional SYN/ACK em todos os candidatos (LAN, Overlay e WAN).
+    - Aciona fallback automático para Blind Encrypted UDP Relay quando há CGNAT Simétrico.
+    - Atende pedidos de quadro-chave imediato (PLI) vindos do Receptor.
+    """
+
+    def __init__(
+        self,
+        bind_port: int,
+        initial_target_ip: str,
+        initial_target_port: int,
+        pin: str,
+        is_streaming_active: threading.Event,
+        cmd_queue: Optional["mp.Queue"] = None,
+        evt_queue: Optional["mp.Queue"] = None,
+    ):
+        self.clean_pin = normalize_pin(pin)
+        self.target_ip = str(initial_target_ip or "").strip()
+        self.target_port = int(initial_target_port or bind_port or 9000)
+        self.is_streaming_active = is_streaming_active
+        self.cmd_queue = cmd_queue
+        self.evt_queue = evt_queue
+
+        self.candidates: List[Tuple[str, int, str]] = []
+        self.relay_addr: Optional[Tuple[str, int]] = None
+        self.use_relay = False
+        self.punch_locked = bool(self.target_ip)
+        self.punch_started_at = 0.0
+        self.last_punch_sent = 0.0
+        self.last_relay_bind = 0.0
+        self.last_keepalive = time.monotonic()
+
+        self.syn_payload = f"DAV_P2P_SYN:{self.clean_pin}".encode("ascii")
+        self.ack_payload = f"DAV_P2P_ACK:{self.clean_pin}".encode("ascii")
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _disable_win_udp_connreset(self.sock)
+
+        desired_bind = int(bind_port or 9000)
+        try:
+            self.sock.bind(("0.0.0.0", desired_bind))
+        except Exception:
+            self.sock.bind(("0.0.0.0", 0))
+
+        self.bound_port = int(self.sock.getsockname()[1])
+
+        # Se estiver em modo P2P (ou se o orquestrador aguarda metadados do socket),
+        # executa STUN no próprio socket de mídia antes de torná-lo não-bloqueante.
+        if self.evt_queue is not None and not self.target_ip:
+            ep_info = discover_socket_endpoint(self.sock)
+            try:
+                self.evt_queue.put_nowait(("ENDPOINT_READY", ep_info))
+            except Exception:
+                pass
+            print(
+                f"[Sender P2P] Socket UDP vinculado em 0.0.0.0:{self.bound_port} "
+                f"| STUN Público: {ep_info.get('public_ip')}:{ep_info.get('public_port')} ({ep_info.get('nat_type')})"
+            )
+        else:
+            print(f"[Sender] Socket UDP ativo na porta local {self.bound_port}.")
+            if self.evt_queue is not None:
+                try:
+                    self.evt_queue.put_nowait((
+                        "ENDPOINT_READY",
+                        {"local_port": self.bound_port, "public_port": self.bound_port, "nat_type": "direct"},
+                    ))
+                except Exception:
+                    pass
+
+        self.sock.setblocking(False)
+
+    def _emit_event(self, payload: tuple):
+        if self.evt_queue is not None:
+            try:
+                self.evt_queue.put_nowait(payload)
+            except Exception:
+                pass
+
+    def _send_punch_burst(self):
+        for ip, port, _ in self.candidates:
+            try:
+                self.sock.sendto(self.syn_payload, (ip, port))
+            except Exception:
+                pass
+        self.last_punch_sent = time.monotonic()
+
+    @staticmethod
+    def _is_lan_addr(ip_str: str) -> bool:
+        return (
+            ip_str.startswith("127.")
+            or ip_str.startswith("192.168.")
+            or ip_str.startswith("10.")
+            or ip_str.startswith("100.")
+            or ip_str.startswith("172.")
+        )
+
+    def poll_control(self, encoder: HybridEncoder):
+        """Processa comandos IPC, pacotes de controle P2P/PLI e timers de NAT Keepalive."""
+        # 1. Fila de comandos oriundos da GUI / DavCoreEngine
+        if self.cmd_queue is not None:
+            while True:
+                try:
+                    cmd = self.cmd_queue.get_nowait()
+                except Exception:
+                    break
+                action = cmd[0]
+                if action in ("UPDATE_TARGET", "START_STREAM"):
+                    self.target_ip = str(cmd[1]).strip()
+                    self.target_port = int(cmd[2])
+                    self.use_relay = False
+                    self.punch_locked = bool(self.target_ip)
+                    if self.target_ip:
+                        encoder.request_keyframe()
+                        self.is_streaming_active.set()
+                        print(f"[Sender] Destino direto configurado para {self.target_ip}:{self.target_port}")
+                elif action == "PAIR_PEER":
+                    peer_dict = cmd[1] if len(cmd) > 1 and isinstance(cmd[1], dict) else {}
+                    my_pub_ip = cmd[2] if len(cmd) > 2 else None
+                    relay_dict = cmd[3] if len(cmd) > 3 and isinstance(cmd[3], dict) else peer_dict.get("_relay")
+                    self.candidates = build_peer_candidates(peer_dict, my_public_ip=my_pub_ip)
+                    if relay_dict and relay_dict.get("host") and relay_dict.get("port"):
+                        self.relay_addr = (str(relay_dict["host"]), int(relay_dict["port"]))
+                    self.use_relay = False
+                    self.punch_locked = False
+                    self.punch_started_at = time.monotonic()
+                    self.last_relay_bind = 0.0
+                    self._send_punch_burst()
+                    print(f"[Sender P2P] Iniciando Hole-Punching concorrente para candidatos: {self.candidates}")
+                elif action == "REQUEST_KEYFRAME":
+                    encoder.request_keyframe()
+                elif action in ("PAUSE_STREAM", "STOP_STREAM"):
+                    self.is_streaming_active.clear()
+                    self.candidates.clear()
+                    self.use_relay = False
+                    self.punch_locked = False
+                    print("[Sender] Transmissão em Standby (0% captura/encode).")
+
+        # 2. Leitura não-bloqueante de pacotes de controle recebidos da rede
+        while True:
+            try:
+                in_pkt, in_addr = self.sock.recvfrom(2048)
+            except (BlockingIOError, OSError):
+                break
+
+            if not in_pkt:
+                continue
+
+            if in_pkt.startswith(MAGIC_SYN) or in_pkt.startswith(MAGIC_ACK):
+                # Valida PIN quando presente no pacote de controle
+                if b":" in in_pkt:
+                    recv_pin = normalize_pin(in_pkt.split(b":", 1)[1].decode("ascii", errors="ignore"))
+                    if recv_pin and self.clean_pin and recv_pin != self.clean_pin:
+                        continue
+
+                # Promove rota direta uma única vez (só troca depois se migrar de Relay/WAN para LAN)
+                should_switch = (
+                    not self.punch_locked
+                    or self.use_relay
+                    or (not self._is_lan_addr(self.target_ip) and self._is_lan_addr(in_addr[0]))
+                )
+                if should_switch:
+                    self.target_ip, self.target_port = in_addr[0], int(in_addr[1])
+                    self.punch_locked = True
+                    self.use_relay = False
+                    encoder.request_keyframe()
+                    self.is_streaming_active.set()
+                    mode_tag = "LAN Direto" if self._is_lan_addr(self.target_ip) else "WAN P2P Direto"
+                    print(f"[Sender P2P] Túnel confirmado ({mode_tag}) -> {self.target_ip}:{self.target_port}")
+                    self._emit_event(("P2P_LOCKED", self.target_ip, self.target_port, mode_tag))
+
+                if in_pkt.startswith(MAGIC_SYN):
+                    for _ in range(2):
+                        try:
+                            self.sock.sendto(self.ack_payload, in_addr)
+                        except Exception:
+                            pass
+
+            elif in_pkt.startswith(MAGIC_PLI):
+                encoder.request_keyframe()
+
+            elif in_pkt in (b"DAV_RLY_ACK", b"DAV_RLY_PEER_READY"):
+                if not self.punch_locked and self.relay_addr:
+                    if not self.use_relay or in_pkt == b"DAV_RLY_PEER_READY":
+                        self.use_relay = True
+                        encoder.request_keyframe()
+                        self.is_streaming_active.set()
+                        print(f"[Sender P2P] Blind Encrypted UDP Relay ativo via {self.relay_addr[0]}:{self.relay_addr[1]}")
+                        self._emit_event(("P2P_LOCKED", self.relay_addr[0], self.relay_addr[1], "Blind Relay UDP"))
+
+        # 3. Máquina de estados temporal do Hole-Punching e Keepalive STUN
+        now = time.monotonic()
+        if self.candidates and not self.punch_locked:
+            elapsed_punch = now - self.punch_started_at
+            if now - self.last_punch_sent >= 0.045 and elapsed_punch < 3.0:
+                self._send_punch_burst()
+
+            # Após 0.85s sem resposta direta, arma simultaneamente o Blind Relay (caso CGNAT Simétrico)
+            if elapsed_punch >= 0.85 and self.relay_addr and not self.use_relay and (now - self.last_relay_bind >= 0.3):
+                try:
+                    self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", b"BIND"), self.relay_addr)
+                except Exception:
+                    pass
+                self.last_relay_bind = now
+
+            # Após 1.6s sem resposta nem de punch nem de relay, inicia envio otimista ao melhor candidato
+            if elapsed_punch >= 1.6 and not self.is_streaming_active.is_set():
+                best_ip, best_port, best_mode = self.candidates[0]
+                self.target_ip, self.target_port = best_ip, best_port
+                encoder.request_keyframe()
+                self.is_streaming_active.set()
+                print(f"[Sender P2P] Iniciando transmissão otimista ({best_mode}) para {best_ip}:{best_port}")
+
+        elif not self.is_streaming_active.is_set() and (now - self.last_keepalive >= 15.0):
+            send_stun_keepalive(self.sock)
+            self.last_keepalive = now
+
+    def send_datagram(self, pkt: bytes):
+        """Envia um fragmento de mídia diretamente ao peer ou via envelope Blind Relay."""
+        if self.use_relay and self.relay_addr:
+            wrapped = wrap_relay_packet(self.clean_pin, b"S", pkt)
+            try:
+                self.sock.sendto(wrapped, self.relay_addr)
+            except (BlockingIOError, OSError):
+                pass
+            return
+
+        if self.target_ip:
+            try:
+                self.sock.sendto(pkt, (self.target_ip, self.target_port))
+            except (BlockingIOError, OSError):
+                try:
+                    self.sock.sendto(pkt, (self.target_ip, self.target_port))
+                except Exception:
+                    pass
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
 
 def _sender_subprocess(
@@ -228,56 +506,54 @@ def _sender_subprocess(
     stop_event: "mp.Event",
     codec_type: str = "h264_nvenc",
     monitor_index: int = 0,
-    cmd_queue: Optional["mp.Queue"] = None
+    cmd_queue: Optional["mp.Queue"] = None,
+    evt_queue: Optional["mp.Queue"] = None,
+    bind_port: Optional[int] = None,
 ):
-    """Runs in a separate OS process — triple-threaded decoupled pipeline."""
+    """Subprocesso dedicado de captura, compressão e envio UDP a 60 FPS."""
     if sys.platform == "win32":
         try:
             ctypes.windll.winmm.timeBeginPeriod(1)
         except Exception:
             pass
-        # ── Win32 Desktop & DPI Awareness (critical for spawned subprocess) ─────
-        # Spawned subprocesses on Windows do NOT inherit the interactive user desktop
-        # (WinSta0\Default). Without SetThreadDesktop, any GDI call (GetDC, CreateDCW,
-        # BitBlt) operates in an isolated context, returning ok=1 but all-zero pixels.
         try:
             _u32_sub = ctypes.windll.user32
-            _u32_sub.SetProcessDPIAware()  # Prevent virtual DPI scaling clipping
+            _u32_sub.SetProcessDPIAware()
             _h_desk_sub = _u32_sub.OpenDesktopW("Default", 0, False, 0x01FF)
             if _h_desk_sub:
                 _u32_sub.SetThreadDesktop(_h_desk_sub)
-                print("[DA-V Sender] Subprocess attached to WinSta0\\Default (desktop handle valid).")
-            else:
-                print("[DA-V Sender] WARNING: Could not open interactive desktop — captures may be black.")
-        except Exception as _e_desk:
-            print(f"[DA-V Sender] WARNING: SetThreadDesktop failed: {_e_desk}")
+        except Exception:
+            pass
 
-    # Initialize stage probe socket in this subprocess
     if _probe_send is not None:
         try:
             probe_init()
         except Exception:
             pass
 
-    # Elevate sender PROCESS priority to ABOVE_NORMAL for smooth multi-core balance
     _elevate_process_priority(ABOVE_NORMAL_PRIORITY_CLASS)
 
-    is_win32 = (sys.platform == "win32")
+    is_win32 = sys.platform == "win32"
     user32 = ctypes.windll.user32 if is_win32 else None
     gdi32 = ctypes.windll.gdi32 if is_win32 else None
 
     if is_win32 and gdi32 and user32:
-        # Win32 64-bit GDI Function Signatures (prevents handle truncation on x64)
         gdi32.CreateDCW.restype = wintypes.HANDLE
         gdi32.CreateDCW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p]
         gdi32.CreateCompatibleDC.restype = wintypes.HANDLE
         gdi32.CreateCompatibleDC.argtypes = [wintypes.HANDLE]
         gdi32.CreateDIBSection.restype = wintypes.HANDLE
-        gdi32.CreateDIBSection.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD]
+        gdi32.CreateDIBSection.argtypes = [
+            wintypes.HANDLE, ctypes.c_void_p, wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD,
+        ]
         gdi32.SelectObject.restype = wintypes.HANDLE
         gdi32.SelectObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         gdi32.BitBlt.restype = wintypes.BOOL
-        gdi32.BitBlt.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HANDLE, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+        gdi32.BitBlt.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_int, wintypes.DWORD,
+        ]
         gdi32.DeleteObject.restype = wintypes.BOOL
         gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
         gdi32.DeleteDC.restype = wintypes.BOOL
@@ -287,19 +563,11 @@ def _sender_subprocess(
         user32.ReleaseDC.restype = ctypes.c_int
         user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HANDLE]
 
-    # ── Monitor Selection ────────────────────────────────────────────────────
     all_monitors = enumerate_system_monitors()
-    target_mon = all_monitors[0]
-    if 0 <= monitor_index < len(all_monitors):
-        target_mon = all_monitors[monitor_index]
+    target_mon = all_monitors[monitor_index] if 0 <= monitor_index < len(all_monitors) else all_monitors[0]
+    src_x, src_y = target_mon["left"], target_mon["top"]
+    src_w, src_h = target_mon["width"], target_mon["height"]
 
-    src_x = target_mon["left"]
-    src_y = target_mon["top"]
-    src_w = target_mon["width"]
-    src_h = target_mon["height"]
-    dev_name = target_mon.get("device", "")
-
-    # Telemetry Counters (thread-safe shared state)
     total_frames_captured = 0
     total_frames_encoded = 0
     total_frames_sent = 0
@@ -307,23 +575,24 @@ def _sender_subprocess(
     total_packets_sent = 0
     latest_payload_kb = 32
     latest_lat_ms = 0.0
+    active_codec_tag = codec_type.upper()
 
-    # Standby & On-Demand Streaming Activation Event
     is_streaming_active = threading.Event()
     if target_ip and str(target_ip).strip():
         is_streaming_active.set()
 
-    # Telemetry broadcast socket (feeds dav_live_benchmark.py)
     _tel_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     _tel_sock.setblocking(False)
+    _disable_win_udp_connreset(_tel_sock)
 
-    # ── Try WGC (Windows.Graphics.Capture) Backend ────────────────────────────
+    effective_bind_port = int(bind_port if bind_port is not None else (target_port or 9000))
+
+    # ── 1. Tentativa de Captura GPU via Windows.Graphics.Capture (WGC) ─────────
     use_wgc = False
     wgc_ctrl = None
 
-    if _WGC_AVAILABLE:
+    if _WGC_AVAILABLE and is_win32 and os.environ.get("DAV_HEADLESS_SYNTHETIC") != "1":
         try:
-            # Map 0-indexed monitor_index to 1-indexed for windows_capture
             wgc_mon_idx = (monitor_index + 1) if monitor_index is not None and monitor_index >= 0 else 1
             if wgc_mon_idx > len(all_monitors):
                 wgc_mon_idx = 1
@@ -351,9 +620,12 @@ def _sender_subprocess(
 
                 _t0 = time.perf_counter()
                 if frame.width != width or frame.height != height:
-                    import cv2
-                    with buf_lock:
-                        cv2.resize(frame.frame_buffer, (width, height), dst=shared_frame_buf, interpolation=cv2.INTER_LINEAR)
+                    if _HAS_CV2:
+                        with buf_lock:
+                            cv2.resize(
+                                frame.frame_buffer, (width, height),
+                                dst=shared_frame_buf, interpolation=cv2.INTER_LINEAR,
+                            )
                 else:
                     with buf_lock:
                         np.copyto(shared_frame_buf, frame.frame_buffer)
@@ -371,23 +643,25 @@ def _sender_subprocess(
 
             wgc_ctrl = capture.start_free_threaded()
             use_wgc = True
-            print(f"[DA-V Sender v4.0 WGC] Pipeline Active: Monitor {wgc_mon_idx} ({src_w}x{src_h}) -> Target {width}x{height} @ {fps}fps [{codec_type.upper()}] (WGC GPU Direct3D, Latency < 2ms)")
-        except Exception as _e_wgc:
-            print(f"[DA-V Sender] WGC initialization failed ({_e_wgc}), falling back to GDI.")
+            print(f"[Sender WGC] Captura Direct3D ativa no Monitor {wgc_mon_idx} ({src_w}x{src_h} -> {width}x{height} @ {fps} FPS).")
+        except Exception as wgc_err:
+            print(f"[Sender] WGC indisponível ({wgc_err}); alternando para captura de contingência.")
             use_wgc = False
 
-    # ── Fallback: GDI BitBlt Setup (Windows) or X11/MSS (Linux) ──────────────
+    # ── 2. Captura de Contingência: Win32 GDI ou Linux X11/MSS ─────────────────
+    hdc_screen = None
+    hdc_mems: list = []
+    hbms: list = []
+    NUM_BUFS = 6
+
     if not use_wgc:
-        NUM_BUFS = 6
-        free_buffers = queue.Queue()
+        free_buffers: "queue.Queue[int]" = queue.Queue()
         for i in range(NUM_BUFS):
             free_buffers.put(i)
-        ready_buffers = queue.Queue(maxsize=6)
+        ready_buffers: "queue.Queue[Tuple[int, int, float, float]]" = queue.Queue(maxsize=NUM_BUFS)
 
-        if is_win32 and gdi32 and user32:
+        if is_win32 and gdi32 and user32 and os.environ.get("DAV_HEADLESS_SYNTHETIC") != "1":
             hdc_screen = user32.GetDC(0)
-            is_created_dc = False
-            print(f"[DA-V Sender v3.0 GDI] Pipeline Active: Monitor {monitor_index + 1} ({src_w}x{src_h} @ {dev_name}) -> Target {width}x{height} @ {fps}fps [{codec_type.upper()}] DC: GetDC(0) @ ({src_x},{src_y})")
 
             class BITMAPINFOHEADER(ctypes.Structure):
                 _fields_ = [
@@ -411,16 +685,15 @@ def _sender_subprocess(
             bmi.bmiHeader.biCompression = 0
 
             need_scale = (width != src_w or height != src_h)
-
-            hdc_mems = []
-            hbms = []
             arrays = []
             for _ in range(NUM_BUFS):
                 hdc_m = gdi32.CreateCompatibleDC(hdc_screen)
                 p_b = ctypes.c_void_p()
                 h_b = gdi32.CreateDIBSection(hdc_m, ctypes.byref(bmi), 0, ctypes.byref(p_b), None, 0)
                 gdi32.SelectObject(hdc_m, h_b)
-                arr = np.ctypeslib.as_array(ctypes.cast(p_b, ctypes.POINTER(ctypes.c_uint8)), shape=(height, width, 4))
+                arr = np.ctypeslib.as_array(
+                    ctypes.cast(p_b, ctypes.POINTER(ctypes.c_uint8)), shape=(height, width, 4)
+                )
                 hdc_mems.append(hdc_m)
                 hbms.append(h_b)
                 arrays.append(arr)
@@ -428,23 +701,23 @@ def _sender_subprocess(
             def _capture_worker():
                 nonlocal total_frames_captured
                 _set_thread_perf(THREAD_PRIORITY_TIME_CRITICAL, 0)
-                if sys.platform == "win32":
-                    try:
-                        _u32_cap = ctypes.windll.user32
-                        _h_desk_cap = _u32_cap.OpenDesktopW("Default", 0, False, 0x01FF)
-                        if _h_desk_cap:
-                            _u32_cap.SetThreadDesktop(_h_desk_cap)
-                    except Exception:
-                        pass
+                try:
+                    _u32_cap = ctypes.windll.user32
+                    _h_desk_cap = _u32_cap.OpenDesktopW("Default", 0, False, 0x01FF)
+                    if _h_desk_cap:
+                        _u32_cap.SetThreadDesktop(_h_desk_cap)
+                except Exception:
+                    pass
 
-                target_cadence_fps = (fps + 2.0) if fps >= 60 else fps
+                target_cadence_fps = (fps + 2.0) if fps >= 60 else float(fps)
                 frame_interval = 1.0 / target_cadence_fps
                 t_target = time.perf_counter() + frame_interval
                 cap_id_gdi = 0
 
                 while not stop_event.is_set():
                     if not is_streaming_active.is_set():
-                        time.sleep(0.04)
+                        time.sleep(0.03)
+                        t_target = time.perf_counter() + frame_interval
                         continue
 
                     try:
@@ -455,10 +728,15 @@ def _sender_subprocess(
                     _t_cap_start = time.perf_counter()
                     if need_scale:
                         gdi32.SetStretchBltMode(hdc_mems[buf_idx], 3)
-                        gdi32.StretchBlt(hdc_mems[buf_idx], 0, 0, width, height,
-                                         hdc_screen, src_x, src_y, src_w, src_h, 0x00CC0020)
+                        gdi32.StretchBlt(
+                            hdc_mems[buf_idx], 0, 0, width, height,
+                            hdc_screen, src_x, src_y, src_w, src_h, 0x00CC0020,
+                        )
                     else:
-                        gdi32.BitBlt(hdc_mems[buf_idx], 0, 0, width, height, hdc_screen, src_x, src_y, 0x00CC0020)
+                        gdi32.BitBlt(
+                            hdc_mems[buf_idx], 0, 0, width, height,
+                            hdc_screen, src_x, src_y, 0x00CC0020,
+                        )
                     _t_cap_end = time.perf_counter()
 
                     cap_id_gdi += 1
@@ -482,31 +760,32 @@ def _sender_subprocess(
                     t_target = max(t_target + frame_interval, time.perf_counter())
 
         else:
-            # Linux X11 / MSS / Synthetic capture worker
-            print(f"[DA-V Sender v4.0 Linux] Pipeline Active: Monitor {monitor_index + 1} ({src_w}x{src_h}) -> Target {width}x{height} @ {fps}fps [{codec_type.upper()}] (Linux X11 Capturer)")
+            # Capturador multiplataforma Linux (X11/XWayland via MSS) e modo sintético headless
             arrays = [np.zeros((height, width, 4), dtype=np.uint8) for _ in range(NUM_BUFS)]
 
             def _capture_worker():
                 nonlocal total_frames_captured
                 _set_thread_perf(0, 0)
-                target_cadence_fps = (fps + 2.0) if fps >= 60 else fps
+                target_cadence_fps = (fps + 2.0) if fps >= 60 else float(fps)
                 frame_interval = 1.0 / target_cadence_fps
                 t_target = time.perf_counter() + frame_interval
                 cap_id_linux = 0
 
                 sct = None
                 mon_box = None
-                try:
-                    import mss
-                    sct = mss.mss()
-                    mon_idx = min(monitor_index + 1, len(sct.monitors) - 1) if len(sct.monitors) > 1 else 1
-                    mon_box = sct.monitors[mon_idx]
-                except Exception:
-                    sct = None
+                if os.environ.get("DAV_HEADLESS_SYNTHETIC") != "1":
+                    try:
+                        import mss
+                        sct = mss.mss()
+                        mon_idx = min(monitor_index + 1, len(sct.monitors) - 1) if len(sct.monitors) > 1 else 1
+                        mon_box = sct.monitors[mon_idx]
+                    except Exception:
+                        sct = None
 
                 while not stop_event.is_set():
                     if not is_streaming_active.is_set():
-                        time.sleep(0.04)
+                        time.sleep(0.03)
+                        t_target = time.perf_counter() + frame_interval
                         continue
 
                     try:
@@ -519,21 +798,30 @@ def _sender_subprocess(
                     if sct and mon_box:
                         try:
                             sct_img = sct.grab(mon_box)
-                            arr_src = np.array(sct_img)
+                            arr_src = np.asarray(sct_img, dtype=np.uint8)
                             if arr_src.shape[0] != height or arr_src.shape[1] != width:
-                                import cv2
-                                cv2.resize(arr_src, (width, height), dst=arrays[buf_idx], interpolation=cv2.INTER_LINEAR)
+                                if _HAS_CV2:
+                                    cv2.resize(
+                                        arr_src, (width, height),
+                                        dst=arrays[buf_idx], interpolation=cv2.INTER_LINEAR,
+                                    )
+                                else:
+                                    # Reamostragem vetorizada NumPy caso OpenCV não esteja instalado
+                                    y_idx = np.linspace(0, arr_src.shape[0] - 1, height).astype(np.int32)
+                                    x_idx = np.linspace(0, arr_src.shape[1] - 1, width).astype(np.int32)
+                                    np.copyto(arrays[buf_idx], arr_src[np.ix_(y_idx, x_idx)])
                             else:
                                 np.copyto(arrays[buf_idx], arr_src)
                             captured = True
                         except Exception:
-                            pass
+                            captured = False
 
                     if not captured:
-                        # Synthetic gradient pattern if headless / no display
-                        arrays[buf_idx].fill(40)
-                        arrays[buf_idx][:, :, 0] = (cap_id_linux * 4) % 255
-                        arrays[buf_idx][:, :, 1] = 120
+                        arrays[buf_idx].fill(32)
+                        arrays[buf_idx][:, :, 0] = (cap_id_linux * 5) % 255
+                        arrays[buf_idx][:, :, 1] = 140
+                        arrays[buf_idx][:, :, 2] = 220
+                        arrays[buf_idx][:, :, 3] = 255
 
                     _t_cap_end = time.perf_counter()
                     cap_id_linux += 1
@@ -562,280 +850,118 @@ def _sender_subprocess(
                     except Exception:
                         pass
 
-        def _encode_send_worker_gdi():
-            nonlocal total_frames_encoded, total_frames_sent, total_bytes_sent, total_packets_sent, latest_payload_kb, latest_lat_ms
-            _set_thread_perf(THREAD_PRIORITY_HIGHEST, 0)
-
-            encoder = HybridEncoder(codec_type=codec_type, width=width, height=height,
-                                    fps=fps, bitrate_kbps=bitrate_kbps)
-            key_vec = _build_key_vector(pin)
-
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.setblocking(False)
-            try:
-                sock.bind(('0.0.0.0', target_port))
-                print(f"[DA-V Sender] Socket UDP ouvindo com sucesso na porta {target_port}")
-            except Exception as e_bind:
-                print(f"[DA-V Sender] Falha ao dar bind na porta {target_port}: {e_bind}")
-                try:
-                    sock.bind(('0.0.0.0', 0))
-                except Exception:
-                    pass
-
-            max_chunk = 1350
-            mac_tag = b"POL1305_AUTH_16B"
-
-            while not stop_event.is_set() or not ready_buffers.empty():
-                # Process command queue
-                if cmd_queue is not None:
-                    try:
-                        while True:
-                            cmd = cmd_queue.get_nowait()
-                            if cmd[0] in ("UPDATE_TARGET", "START_STREAM"):
-                                target_ip, target_port = cmd[1], cmd[2]
-                                if target_ip and str(target_ip).strip():
-                                    is_streaming_active.set()
-                                print(f"[DA-V Sender] Alvo redirecionado para {target_ip}:{target_port}")
-                            elif cmd[0] in ("PAUSE_STREAM", "STOP_STREAM"):
-                                is_streaming_active.clear()
-                                print("[DA-V Sender] Streaming pausado (Standby ativo).")
-                    except Exception:
-                        pass
-
-                # Non-blocking check for incoming P2P hole-punch packets
-                try:
-                    in_pkt, in_addr = sock.recvfrom(2048)
-                    if in_pkt.startswith(b"DAV_"):
-                        if in_addr != (target_ip, target_port):
-                            target_ip, target_port = in_addr[0], in_addr[1]
-                            is_streaming_active.set()
-                            print(f"[DA-V Sender P2P] Hole-Punch recebido! Alvo ajustado para {target_ip}:{target_port}")
-                        try:
-                            sock.sendto(b"DAV_P2P_ACK", in_addr)
-                        except Exception:
-                            pass
-                except (BlockingIOError, OSError):
-                    pass
-
-                if not is_streaming_active.is_set():
-                    time.sleep(0.04)
-                    continue
-                try:
-                    buf_idx, frame_id, _t_cap_start, _t_cap_end = ready_buffers.get(timeout=0.05)
-                except queue.Empty:
-                    continue
-
-                _t_enc_start = time.perf_counter()
-                payload = encoder.encode(arrays[buf_idx])
-                _t_enc_end = time.perf_counter()
-
-                free_buffers.put(buf_idx)
-
-                if payload:
-                    payload_size = len(payload)
-                    latest_payload_kb = max(1, payload_size // 1024)
-                    payload_arr = np.frombuffer(payload, dtype=np.uint8)
-                    if payload_size > len(key_vec):
-                        key_vec = _build_key_vector(pin, payload_size + 1048576)
-                    enc_payload = np.bitwise_xor(payload_arr, key_vec[:payload_size]).tobytes()
-
-                    total_frames_encoded += 1
-
-                    _t_send_start = time.perf_counter()
-                    frag_count = (payload_size + max_chunk - 1) // max_chunk
-                    ts_us = int(time.time_ns() // 1000)
-                    is_keyframe = (frame_id == 1 or frame_id % 300 == 0)
-                    flags = (0x01 if is_keyframe else 0x00) | 0x02
-                    frame_sent_bytes = 0
-
-                    for frag_idx in range(frag_count):
-                        start_off = frag_idx * max_chunk
-                        end_off = min(start_off + max_chunk, payload_size)
-                        chunk_len = end_off - start_off
-                        chunk_data = enc_payload[start_off:end_off]
-
-                        header = struct.pack(
-                            "!BBBBIIQIIHH",
-                            1, 0, flags, 0,
-                            total_packets_sent + 1, 0xDA0001, ts_us,
-                            frame_id, chunk_len, frag_idx, frag_count,
-                        )
-                        pkt = header + chunk_data + mac_tag
-                        if target_ip:
-                            try:
-                                sock.sendto(pkt, (target_ip, target_port))
-                            except (BlockingIOError, OSError):
-                                try:
-                                    sock.sendto(pkt, (target_ip, target_port))
-                                except Exception:
-                                    pass
-
-                        total_packets_sent += 1
-                        frame_sent_bytes += len(pkt)
-
-                    _t_send_end = time.perf_counter()
-                    total_frames_sent += 1
-                    total_bytes_sent += frame_sent_bytes
-                    latest_lat_ms = (_t_send_end - _t_cap_start) * 1000.0
-
-                    if _probe_send is not None and frame_id % 3 == 0:
-                        _probe_send("capture", _t_cap_start, _t_cap_end, frame_id)
-                        _probe_send("encode",  _t_enc_start, _t_enc_end, frame_id)
-                        _probe_send("send",    _t_send_start, _t_send_end, frame_id)
-                        _probe_send("e2e",     _t_cap_start,  _t_send_end, frame_id)
-
-            encoder.close()
-            sock.close()
-
-    # ── WGC High-Performance Encode & Send Cadence Worker ────────────────────
-    def _encode_send_worker_wgc():
+    # ── 3. Função Compartilhada de Compressão, Criptografia e Fragmentação ─────
+    def _encode_and_transmit_frame(
+        frame_bgra: np.ndarray,
+        t_cap_start: float,
+        t_cap_end: float,
+        encoder: HybridEncoder,
+        transport: SenderTransportEndpoint,
+        key_vec_ref: list,
+    ):
         nonlocal total_frames_encoded, total_frames_sent, total_bytes_sent, total_packets_sent, latest_payload_kb, latest_lat_ms
-        _set_thread_perf(THREAD_PRIORITY_HIGHEST, 0)
+        frame_id = total_frames_encoded + 1
+        t_enc_start = time.perf_counter()
+        payload = encoder.encode(frame_bgra)
+        t_enc_end = time.perf_counter()
 
-        encoder = HybridEncoder(codec_type=codec_type, width=width, height=height,
-                                fps=fps, bitrate_kbps=bitrate_kbps)
-        key_vec = _build_key_vector(pin)
+        if not payload:
+            return
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setblocking(False)
-        try:
-            sock.bind(('0.0.0.0', target_port))
-            print(f"[DA-V Sender WGC] Socket UDP ouvindo com sucesso na porta {target_port}")
-        except Exception as e_bind_wgc:
-            print(f"[DA-V Sender WGC] Falha ao dar bind na porta {target_port}: {e_bind_wgc}")
-            try:
-                sock.bind(('0.0.0.0', 0))
-            except Exception:
-                pass
+        payload_size = len(payload)
+        latest_payload_kb = max(1, payload_size // 1024)
 
-        max_chunk = 1350
+        payload_arr = np.frombuffer(payload, dtype=np.uint8)
+        if payload_size > len(key_vec_ref[0]):
+            key_vec_ref[0] = _build_key_vector(pin, payload_size + 1048576)
+        enc_payload = np.bitwise_xor(payload_arr, key_vec_ref[0][:payload_size]).tobytes()
+
+        total_frames_encoded += 1
+
+        # MTU conservador de 1320 bytes: evita fragmentação IP mesmo sobre PPPoE, 5G e Blind Relay
+        max_chunk = 1320
         mac_tag = b"POL1305_AUTH_16B"
 
-        # Wait up to 5s for the first frame to arrive from WGC
-        has_first_frame.wait(timeout=5.0)
+        t_send_start = time.perf_counter()
+        frag_count = (payload_size + max_chunk - 1) // max_chunk
+        ts_us = int(time.time_ns() // 1000)
+        is_keyframe = encoder.last_frame_was_keyframe or (frame_id == 1)
+        flags = (0x01 if is_keyframe else 0x00) | 0x02
+        frame_sent_bytes = 0
 
-        target_cadence_fps = float(fps)
-        frame_interval = 1.0 / target_cadence_fps
+        for frag_idx in range(frag_count):
+            start_off = frag_idx * max_chunk
+            end_off = min(start_off + max_chunk, payload_size)
+            chunk_data = enc_payload[start_off:end_off]
+            chunk_len = len(chunk_data)
+
+            header = struct.pack(
+                "!BBBBIIQIIHH",
+                1, 0, flags, 0,
+                total_packets_sent + 1, 0xDA0001, ts_us,
+                frame_id, chunk_len, frag_idx, frag_count,
+            )
+            pkt = header + chunk_data + mac_tag
+            transport.send_datagram(pkt)
+            total_packets_sent += 1
+            frame_sent_bytes += len(pkt)
+
+        t_send_end = time.perf_counter()
+        total_frames_sent += 1
+        total_bytes_sent += frame_sent_bytes
+        latest_lat_ms = (t_send_end - t_cap_start) * 1000.0
+
+        if _probe_send is not None and frame_id % 3 == 0:
+            _probe_send("capture", t_cap_start, t_cap_end, frame_id)
+            _probe_send("encode", t_enc_start, t_enc_end, frame_id)
+            _probe_send("send", t_send_start, t_send_end, frame_id)
+            _probe_send("e2e", t_cap_start, t_send_end, frame_id)
+
+    def _encode_send_worker_wgc():
+        nonlocal active_codec_tag
+        _set_thread_perf(THREAD_PRIORITY_HIGHEST, 0)
+
+        encoder = HybridEncoder(
+            codec_type=codec_type, width=width, height=height,
+            fps=fps, bitrate_kbps=bitrate_kbps,
+        )
+        active_codec_tag = encoder.active_backend_name
+        key_vec_ref = [_build_key_vector(pin)]
+
+        transport = SenderTransportEndpoint(
+            bind_port=effective_bind_port,
+            initial_target_ip=target_ip,
+            initial_target_port=target_port,
+            pin=pin,
+            is_streaming_active=is_streaming_active,
+            cmd_queue=cmd_queue,
+            evt_queue=evt_queue,
+        )
+
+        has_first_frame.wait(timeout=3.0)
+        frame_interval = 1.0 / float(max(1, fps))
         t_target = time.perf_counter() + frame_interval
 
         while not stop_event.is_set():
-            # Process command queue (dynamic target redirect & standby controls)
-            if cmd_queue is not None:
-                try:
-                    while True:
-                        cmd = cmd_queue.get_nowait()
-                        if cmd[0] in ("UPDATE_TARGET", "START_STREAM"):
-                            target_ip, target_port = cmd[1], cmd[2]
-                            if target_ip and str(target_ip).strip():
-                                is_streaming_active.set()
-                            print(f"[DA-V Sender] Alvo redirecionado para {target_ip}:{target_port}")
-                        elif cmd[0] in ("PAUSE_STREAM", "STOP_STREAM"):
-                            is_streaming_active.clear()
-                            print("[DA-V Sender] Streaming pausado (Standby ativo).")
-                except Exception:
-                    pass
-
-            # Non-blocking check for incoming P2P hole-punch packets
-            try:
-                in_pkt, in_addr = sock.recvfrom(2048)
-                if in_pkt.startswith(b"DAV_"):
-                    if in_addr != (target_ip, target_port):
-                        target_ip, target_port = in_addr[0], in_addr[1]
-                        is_streaming_active.set()
-                        print(f"[DA-V Sender P2P] Hole-Punch recebido! Alvo ajustado para {target_ip}:{target_port}")
-                    try:
-                        sock.sendto(b"DAV_P2P_ACK", in_addr)
-                    except Exception:
-                        pass
-            except (BlockingIOError, OSError):
-                pass
+            transport.poll_control(encoder)
 
             if not is_streaming_active.is_set():
-                time.sleep(0.04)
+                time.sleep(0.02)
+                t_target = time.perf_counter() + frame_interval
                 continue
 
-            # 1. Grab latest frame under lock (< 1ms copy)
             with buf_lock:
                 np.copyto(local_enc_buf, shared_frame_buf)
 
-            frame_id = total_frames_encoded + 1
-            _t_cap_start = _t_latest_cap_start
-            _t_cap_end = _t_latest_cap_end
+            _encode_and_transmit_frame(
+                local_enc_buf,
+                _t_latest_cap_start,
+                _t_latest_cap_end,
+                encoder,
+                transport,
+                key_vec_ref,
+            )
 
-            # 2. Hardware NVENC Encode
-            _t_enc_start = time.perf_counter()
-            payload = encoder.encode(local_enc_buf)
-            _t_enc_end = time.perf_counter()
-
-            if payload:
-                payload_size = len(payload)
-                latest_payload_kb = max(1, payload_size // 1024)
-
-                # SIMD Vectorized XOR encryption
-                payload_arr = np.frombuffer(payload, dtype=np.uint8)
-                if payload_size > len(key_vec):
-                    key_vec = _build_key_vector(pin, payload_size + 1048576)
-                enc_payload = np.bitwise_xor(payload_arr, key_vec[:payload_size]).tobytes()
-
-                total_frames_encoded += 1
-
-                # 3. Fragment & Send UDP Datagrams
-                _t_send_start = time.perf_counter()
-                frag_count = (payload_size + max_chunk - 1) // max_chunk
-                ts_us = int(time.time_ns() // 1000)
-                is_keyframe = (frame_id == 1 or frame_id % 300 == 0)
-                flags = (0x01 if is_keyframe else 0x00) | 0x02
-                frame_sent_bytes = 0
-
-                for frag_idx in range(frag_count):
-                    start_off = frag_idx * max_chunk
-                    end_off = min(start_off + max_chunk, payload_size)
-                    chunk_len = end_off - start_off
-                    chunk_data = enc_payload[start_off:end_off]
-
-                    header = struct.pack(
-                        "!BBBBIIQIIHH",
-                        1, 0, flags, 0,
-                        total_packets_sent + 1, 0xDA0001, ts_us,
-                        frame_id, chunk_len, frag_idx, frag_count,
-                    )
-                    pkt = header + chunk_data + mac_tag
-                    if target_ip:
-                        try:
-                            sock.sendto(pkt, (target_ip, target_port))
-                        except (BlockingIOError, OSError):
-                            try:
-                                sock.sendto(pkt, (target_ip, target_port))
-                            except Exception:
-                                pass
-
-                    total_packets_sent += 1
-                    frame_sent_bytes += len(pkt)
-
-                _t_send_end = time.perf_counter()
-                total_frames_sent += 1
-                total_bytes_sent += frame_sent_bytes
-                latest_lat_ms = (_t_send_end - _t_cap_start) * 1000.0
-
-                # ── Stage Probe (fire-and-forget, non-blocking) ──────────────
-                if _probe_send is not None and frame_id % 3 == 0:
-                    _probe_send("capture", _t_cap_start, _t_cap_end, frame_id)
-                    _probe_send("encode",  _t_enc_start, _t_enc_end, frame_id)
-                    _probe_send("send",    _t_send_start, _t_send_end, frame_id)
-                    _probe_send("e2e",     _t_cap_start,  _t_send_end, frame_id)
-
-                if frame_id % 30 == 0:
-                    try:
-                        with open(os.path.join(_PROJECT_ROOT, "logs", "sender_timings.log"), "a", encoding="utf-8") as _f_log:
-                            _f_log.write(f"frame={frame_id}: cap={(_t_cap_end-_t_cap_start)*1000:.2f}ms enc={(_t_enc_end-_t_enc_start)*1000:.2f}ms send={(_t_send_end-_t_send_start)*1000:.2f}ms total={(_t_send_end-_t_cap_start)*1000:.2f}ms\n")
-                    except Exception:
-                        pass
-
-            # 4. Hybrid Sleep/Spinwait Cadence loop (0% drift)
             now = time.perf_counter()
             slack = t_target - now
             if slack > 0.003:
@@ -845,21 +971,77 @@ def _sender_subprocess(
             t_target = max(t_target + frame_interval, time.perf_counter())
 
         encoder.close()
-        sock.close()
+        transport.close()
 
-    # ── Launch Pipeline Threads ──────────────────────────────────────────────
+    def _encode_send_worker_buffered():
+        nonlocal active_codec_tag
+        _set_thread_perf(THREAD_PRIORITY_HIGHEST, 0)
+
+        encoder = HybridEncoder(
+            codec_type=codec_type, width=width, height=height,
+            fps=fps, bitrate_kbps=bitrate_kbps,
+        )
+        active_codec_tag = encoder.active_backend_name
+        key_vec_ref = [_build_key_vector(pin)]
+
+        transport = SenderTransportEndpoint(
+            bind_port=effective_bind_port,
+            initial_target_ip=target_ip,
+            initial_target_port=target_port,
+            pin=pin,
+            is_streaming_active=is_streaming_active,
+            cmd_queue=cmd_queue,
+            evt_queue=evt_queue,
+        )
+
+        while not stop_event.is_set() or not ready_buffers.empty():
+            transport.poll_control(encoder)
+
+            if not is_streaming_active.is_set():
+                time.sleep(0.02)
+                continue
+
+            try:
+                buf_idx, _, t_cap_start, t_cap_end = ready_buffers.get(timeout=0.03)
+            except queue.Empty:
+                continue
+
+            # Descarta quadros envelhecidos caso o encode atrase pontualmente
+            while not ready_buffers.empty():
+                try:
+                    newer = ready_buffers.get_nowait()
+                    free_buffers.put_nowait(buf_idx)
+                    buf_idx, _, t_cap_start, t_cap_end = newer
+                except queue.Empty:
+                    break
+
+            frame_view = arrays[buf_idx]
+            _encode_and_transmit_frame(
+                frame_view,
+                t_cap_start,
+                t_cap_end,
+                encoder,
+                transport,
+                key_vec_ref,
+            )
+            free_buffers.put(buf_idx)
+
+        encoder.close()
+        transport.close()
+
+    # ── 4. Disparo das Threads de Captura e Envio ──────────────────────────────
     if use_wgc:
-        t_encode = threading.Thread(target=_encode_send_worker_wgc, daemon=True, name="DAV-EncodeSend-WGC")
         t_capture = None
+        t_encode = threading.Thread(target=_encode_send_worker_wgc, daemon=True, name="DAV-EncodeSend-WGC")
         t_encode.start()
     else:
-        fallback_name = "GDI" if is_win32 else "X11"
-        t_capture = threading.Thread(target=_capture_worker, daemon=True, name=f"DAV-Capture-{fallback_name}")
-        t_encode = threading.Thread(target=_encode_send_worker_gdi, daemon=True, name=f"DAV-EncodeSend-{fallback_name}")
+        cap_tag = "GDI" if is_win32 else "X11"
+        t_capture = threading.Thread(target=_capture_worker, daemon=True, name=f"DAV-Capture-{cap_tag}")
+        t_encode = threading.Thread(target=_encode_send_worker_buffered, daemon=True, name=f"DAV-EncodeSend-{cap_tag}")
         t_capture.start()
         t_encode.start()
 
-    # ── Telemetry Loop in Subprocess Main Thread (0.5s interval) ─────────────
+    # ── 5. Loop de Telemetria a cada 500 ms ────────────────────────────────────
     last_stat_t = time.perf_counter()
     last_stat_frames = 0
     last_stat_bytes = 0
@@ -874,7 +1056,7 @@ def _sender_subprocess(
             cur_fps = d_frames / elapsed if elapsed > 0 else 0.0
             cur_mbps = (d_bytes * 8.0) / (elapsed * 1_000_000.0) if elapsed > 0 else 0.0
             backend_label = "WGC" if use_wgc else ("GDI" if is_win32 else "X11")
-            codec_label = f"{codec_type.upper()}[{backend_label}]"
+            codec_label = f"{active_codec_tag}[{backend_label}]"
 
             try:
                 stats_queue.put_nowait((
@@ -883,21 +1065,19 @@ def _sender_subprocess(
                     cur_mbps,
                     total_packets_sent,
                     codec_label,
-                    latest_payload_kb
+                    latest_payload_kb,
                 ))
             except Exception:
                 pass
 
-            # Broadcast real windowed delta telemetry to live benchmark
             try:
-                import json as _json
-                _tel_msg = _json.dumps({
+                _tel_msg = json.dumps({
                     "role": "tx",
                     "fps": round(cur_fps, 2),
                     "mbps": round(cur_mbps, 2),
                     "lat": round(latest_lat_ms, 2),
                     "frames": total_frames_sent,
-                    "packets": total_packets_sent
+                    "packets": total_packets_sent,
                 }).encode("utf-8")
                 _tel_sock.sendto(_tel_msg, ("127.0.0.1", 19901))
             except Exception:
@@ -907,7 +1087,7 @@ def _sender_subprocess(
             last_stat_frames = total_frames_sent
             last_stat_bytes = total_bytes_sent
 
-    # ── Graceful Shutdown & Cleanup ──────────────────────────────────────────
+    # ── 6. Encerramento Seguro Multiplataforma ─────────────────────────────────
     if use_wgc and wgc_ctrl is not None:
         try:
             wgc_ctrl.stop()
@@ -919,13 +1099,18 @@ def _sender_subprocess(
         if t_capture:
             t_capture.join(timeout=0.5)
         t_encode.join(timeout=1.0)
-        for i in range(NUM_BUFS):
-            gdi32.DeleteObject(hbms[i])
-            gdi32.DeleteDC(hdc_mems[i])
-        if is_created_dc:
-            gdi32.DeleteDC(hdc_screen)
-        else:
-            user32.ReleaseDC(0, hdc_screen)
+        if is_win32 and gdi32 and user32:
+            for h_b in hbms:
+                gdi32.DeleteObject(h_b)
+            for hdc_m in hdc_mems:
+                gdi32.DeleteDC(hdc_m)
+            if hdc_screen:
+                user32.ReleaseDC(0, hdc_screen)
+
+    try:
+        _tel_sock.close()
+    except Exception:
+        pass
 
     if sys.platform == "win32":
         try:
@@ -933,3 +1118,40 @@ def _sender_subprocess(
         except Exception:
             pass
 
+
+def main():
+    parser = argparse.ArgumentParser(description="DA-V — Daemon Transmissor de Vídeo em Tempo Real")
+    parser.add_argument("--ip", default="", help="IP de destino direto (vazio para modo PIN P2P)")
+    parser.add_argument("--port", type=int, default=9000, help="Porta UDP local/alvo (padrão: 9000)")
+    parser.add_argument("--pin", default="777-888", help="PIN de 6 dígitos para autenticação e P2P")
+    parser.add_argument("--width", type=int, default=1920, help="Largura de saída")
+    parser.add_argument("--height", type=int, default=1080, help="Altura de saída")
+    parser.add_argument("--fps", type=int, default=60, help="Taxa de quadros alvo")
+    parser.add_argument("--bitrate", type=int, default=12000, help="Bitrate alvo em kbps")
+    parser.add_argument("--monitor", type=int, default=0, help="Índice do monitor (0 = principal)")
+    parser.add_argument("--codec", default="h264_nvenc", help="Codec preferencial (h264_nvenc, libx264, jpeg)")
+    args = parser.parse_args()
+
+    stop_evt = mp.Event()
+    stats_q: "mp.Queue" = mp.Queue(maxsize=16)
+    cmd_q: "mp.Queue" = mp.Queue(maxsize=16)
+    evt_q: "mp.Queue" = mp.Queue(maxsize=16)
+
+    print(f"[Daemon] Iniciando transmissor DA-V na porta {args.port} (PIN: {args.pin})...")
+    try:
+        _sender_subprocess(
+            args.ip, args.port, args.pin,
+            args.width, args.height, args.fps, args.bitrate,
+            stats_q, stop_evt,
+            codec_type=args.codec,
+            monitor_index=args.monitor,
+            cmd_queue=cmd_q,
+            evt_queue=evt_q,
+            bind_port=args.port,
+        )
+    except KeyboardInterrupt:
+        stop_evt.set()
+
+
+if __name__ == "__main__":
+    main()

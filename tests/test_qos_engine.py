@@ -47,7 +47,7 @@ class AbrSimulator:
             self.bitrate = min(self.max_kbps, self.bitrate + 500)
         return max(self.min_kbps, self.bitrate)
 
-def test_qos_engine():
+def _verify_qos_engine():
     print("[Test] Validating QoS Engine: FEC, ABR, and Jitter Buffer...")
 
     # 1. Test FEC XOR Recovery
@@ -97,8 +97,12 @@ def test_qos_engine():
     }
     return results
 
+def test_qos_engine():
+    res = _verify_qos_engine()
+    assert res["fec_recovery"] == "100% BIT-PERFECT MATCH"
+
 def run_tests():
-    res = test_qos_engine()
+    res = _verify_qos_engine()
     print("[Results]", res)
     print("[SUCCESS] QoS Engine, FEC & ABR verified!")
     return res

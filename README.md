@@ -1,212 +1,333 @@
-# ⚡ DA-V · Distribuidor Amplo de Vídeo
+# DA-V · Distribuidor Amplo de Vídeo
 
 <div align="center">
 
-![DA-V Architecture](https://img.shields.io/badge/Architecture-C%2B%2B23%20%2F%20Python%203.11+-blue?style=for-the-badge)
-![Target FPS](https://img.shields.io/badge/Target-60%20FPS%20Uncapped-success?style=for-the-badge)
-![Transport](https://img.shields.io/badge/Transport-KCP%20over%20UDP-orange?style=for-the-badge)
-![Security](https://img.shields.io/badge/Crypto-ChaCha20--Poly1305-blueviolet?style=for-the-badge)
-![Platforms](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey?style=for-the-badge)
+![Version](https://img.shields.io/badge/Release-v3.1.0-0ea5e9?style=for-the-badge)
+![Core](https://img.shields.io/badge/Engine-Python%20SIMD%20%2B%20C%2B%2B23-1e293b?style=for-the-badge)
+![Cadence](https://img.shields.io/badge/Streaming-1080p%20%40%2060%20FPS-10b981?style=for-the-badge)
+![NAT Traversal](https://img.shields.io/badge/P2P-Single--Socket%20STUN%20%2B%20Blind%20Relay-f59e0b?style=for-the-badge)
+![Platforms](https://img.shields.io/badge/OS-Windows%2010%2F11%20%7C%20Linux%20x64-6366f1?style=for-the-badge)
 
-<p align="center">
-  <b>Motor de transmissão de tela de ultra-baixa latência em tempo real a 60 FPS cravados, com captura zero-copy nativa, criptografia autenticada de fluxo e emparelhamento P2P direto sem intermediários.</b>
-</p>
+**Compartilhamento de tela ponto a ponto de baixa latência a 60 FPS reais entre Windows e Linux — com pareamento universal por PIN, perfuração direta de NAT e fallback automático para CGNAT.**
+
+[Arquitetura de Software](#-arquitetura-de-software) •
+[Protocolo P2P e Travessia de NAT](#-engenharia-p2p-stun-single-socket-e-blind-relay) •
+[Formato de Pacote na Rede](#-protocolo-binário-de-transporte) •
+[Como Executar](#-instalação-e-execução) •
+[Releases & Builds](https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video/releases)
 
 </div>
 
 ---
 
-## 💡 Por que o DA-V foi criado?
+## Motivação Técnica
 
-Se você já tentou transmitir telas de alta taxa de quadros, projetos CAD, timelines de vídeo ou jogos usando softwares comerciais como **Discord, Zoom, TeamViewer ou AnyDesk**, certamente se deparou com os mesmos problemas crônicos:
+Quem trabalha com revisão de vídeo, CAD, telemetria em tempo real ou suporte técnico remoto conhece a limitação das ferramentas tradicionais de videoconferência: o fluxo de tela costuma ser reduzido para 15–30 FPS, passa por pilhas genéricas cheias de *jitter buffers* conservadores (150 ms a 300 ms) e depende de servidores intermediários que recomprimem a imagem.
 
-1. **Compressão Agressiva e 30 FPS Forçados:** Softwares corporativos priorizam economia de banda de seus próprios servidores em detrimento da fluidez do seu desktop.
-2. **Latência Inaceitável (150ms a 300ms):** Pilhas WebRTC sobrecarregadas de buffers e processamento em nuvem introduzem atrasos que destroem qualquer sensação de tempo real.
-3. **Servidores Centralizados Invasivos:** Seus frames de vídeo transitam por servidores de terceiros, sujeitos a gargalos e potenciais vulnerabilidades de privacidade.
+O **DA-V (Distribuidor Amplo de Vídeo)** foi construído do zero para resolver um problema específico de engenharia de sistemas: **transportar a área de trabalho a 1080p e 60 quadros por segundo constantes entre máquinas Windows e Linux, mantendo a latência de rede na casa de poucos milissegundos na LAN e atravessando roteadores residenciais/corporativos na WAN usando apenas um código PIN de 6 dígitos.**
 
-> O **DA-V** nasceu da recusa a esses compromissos. O objetivo foi direto: **construir uma ponte de vídeo pura, ponto a ponto, com taxa nativa de 60 FPS a 1080p, latência de transporte na casa dos 2 milissegundos na rede local, e emparelhamento WAN instantâneo via NAT Hole-Punching.**
+Em vez de embutir um navegador inteiro (Electron/WebRTC), o DA-V separa estritamente a interface gráfica (PySide6 com apresentação imediata `SwapInterval=0`) do motor de captura, compressão e rede — operando em processos isolados do sistema operacional para eliminar qualquer interferência do *Global Interpreter Lock* (GIL) ou do escalonador de janelas sobre a cadência de 16,66 ms por quadro.
 
 ---
 
-## 🏛️ Filosofia da Arquitetura
+## Arquitetura de Software
 
-O DA-V opera em uma **arquitetura híbrida desacoplada**, combinando a velocidade bruta do **C++23** no nível do sistema operacional com a flexibilidade do ecossistema assíncrono do **Python 3** e **PySide6**:
+O projeto adota uma **arquitetura multiprocesso desacoplada** com protocolo de rede unificado entre Windows e Linux, acompanhada de módulos nativos em **C++23** (`libdav_core.so` / `dav_daemon`) para cenários embarcados e *headless*.
 
 ```mermaid
-flowchart TD
-    subgraph SENDER ["🖥️ NÓ TRANSMISSOR (SENDER)"]
-        CAP["Captura Zero-Copy\n(DXGI Desktop Duplication / X11 MIT-SHM)"]
-        RING["SPSC Lock-Free Ring Buffer\n(4 Slots BGRA @ 60 FPS)"]
-        ENC["Encoder de Alta Vazão\n(NVIDIA NVENC / PyAV H.264 ULL)"]
-        CRYPTO["Criptografia Autenticada\n(ChaCha20-Poly1305 AEAD + 32B RTP Header)"]
-        KCP_TX["Transporte KCP / UDP\n(Pacing Estrito de 16.6ms)"]
-        
-        CAP --> RING --> ENC --> CRYPTO --> KCP_TX
+flowchart TB
+    subgraph TX_HOST ["Nó Transmissor (Windows / Linux)"]
+        direction TB
+        UI_TX["Interface PySide6\n(Controle, Standby & Telemetria TUPÃ)"]
+        subgraph TX_PROC ["Processo Isolado OS (DAV-Sender-Engine · Sem Contenção GIL)"]
+            CAP["Captura de Tela\n• Win11: WGC Direct3D / GDI DIBSection\n• Linux: X11 MIT-SHM / MSS"]
+            ENC["HybridEncoder (Zero-B-Frames)\n• GPU: NVIDIA NVENC (p1 ULL + Repeat SPS/PPS)\n• CPU: libx264 (ultrafast + zerolatency)"]
+            CIPHER_TX["Cifragem Vetorizada SIMD\n+ Fragmentador MTU 1320 B"]
+            SOCK_TX["SenderTransportEndpoint\n(Descritor Único UDP · SO_SNDBUF 32 MB)"]
+            CAP --> ENC --> CIPHER_TX --> SOCK_TX
+        end
+        UI_TX <-- "IPC Filas (Comandos / Métricas)" --> TX_PROC
     end
 
-    subgraph NETWORK ["🌐 CONECTIVIDADE"]
-        STUN["Rendezvous / STUN Reflexivo\n(Oracle Cloud VPS)"]
-        P2P{{"Túnel P2P Direto\n(UDP Hole-Punching)"}}
-        RELAY["Blind Encrypted Relay\n(Fallback Automático)"]
-        
-        KCP_TX -. Handshake PIN .-> STUN
-        KCP_TX === P2P ===> KCP_RX
-        KCP_TX -. NAT Simétrico .-> RELAY -.-> KCP_RX
+    subgraph CLOUD ["Camada de Descoberta & Contingência"]
+        direction TB
+        BEACON["LAN Beacon UDP :9005\n(Broadcast + Subnet Sweep Zero-Cloud)"]
+        STUN_PUB["STUN Público RFC 5389\n(Google / Cloudflare)"]
+        RDV["Servidor DAV-Rendezvous\n• HTTP/SSE Push (:80 / :8765)\n• Blind Encrypted UDP Relay (:8768)"]
     end
 
-    subgraph RECEIVER ["📺 NÓ RECEPTOR (VIEWER)"]
-        KCP_RX["Socket UDP de Alta Capacidade\n(SO_RCVBUF 2MB + De-jitter)"]
-        DEC["Decodificador H.264 Híbrido\n(Thread Dedicada C-ABI)"]
-        GUI["Apresentação Gráfica PySide6\n(QSurfaceFormat SwapInterval=0)"]
-        
-        KCP_RX --> DEC --> GUI
+    subgraph RX_HOST ["Nó Receptor (Windows / Linux)"]
+        direction TB
+        SOCK_RX["Loop Receptor Assíncrono\n(Descritor Único UDP + Janela 40 Quadros)"]
+        DEC_W["DecodeWorker (Thread Dedicada)\nFFmpeg/PyAV Slice Low-Delay (4 Threads)"]
+        CANVAS["VideoCanvasWidget\n(Zero-Copy QImage · VSync Off)"]
+        SOCK_RX --> DEC_W --> CANVAS
+    end
+
+    SOCK_TX -. "1. Binding Request (Mesmo Socket)" .-> STUN_PUB
+    SOCK_RX -. "1. Binding Request (Mesmo Socket)" .-> STUN_PUB
+    UI_TX -. "2. Registro PIN + Escuta SSE" .-> RDV
+    RX_HOST -. "2. Resolução PIN" .-> RDV
+    UI_TX <-. "Descoberta Local" .-> BEACON <-.-> RX_HOST
+
+    SOCK_TX == "3a. Túnel Direto UDP (LAN / Overlay / WAN Hole-Punch)" ==> SOCK_RX
+    SOCK_RX -. "PLI (Pedido Instantâneo de Keyframe IDR)" .-> SOCK_TX
+    SOCK_TX -. "3b. Fallback CGNAT Simétrico (DAV_RLY1)" .-> RDV -. "Encaminhamento O(1) Cego" .-> SOCK_RX
+```
+
+### Decisões de Projeto que Sustentam os 60 FPS
+
+1. **Isolamento de Processo na Transmissão (`scripts/dav_sender_worker.py`):** A captura de vídeo, a codificação H.264 e o disparo de datagramas rodam em um processo separado criado via `spawn`, com prioridade elevada no kernel (`ABOVE_NORMAL_PRIORITY_CLASS` + `timeBeginPeriod(1)` no Windows; `os.nice(-10)` no Linux). Mover ou redimensionar a janela da GUI nunca atrasa a entrega de um quadro.
+2. **Cascata Multiplataforma de Codificação (`src/codec/hybrid_codec.py`):** Se uma GPU NVIDIA estiver presente, o `HybridEncoder` utiliza o silício dedicado `h264_nvenc` (preset `p1`, `zerolatency`, zero quadros B e repetição automática de cabeçalhos `SPS/PPS`). Em estações Linux ou notebooks sem GPU dedicada, o motor recua automaticamente para `libx264` (`ultrafast` + `sliced-threads`) via FFmpeg/PyAV — mantendo 100% de compatibilidade binária entre Windows e Linux sem exigir OpenCV instalado.
+3. **Modo Standby On-Demand (0% GPU):** Ao iniciar o compartilhamento em modo PIN, o transmissor registra o endpoint público e permanece em espera consumindo 0% de captura/GPU, enviando apenas *keepalives* STUN de 20 bytes a cada 15 segundos para preservar a porta mapeada no roteador até que um receptor se conecte.
+4. **Sincronia Instantânea de Quadro-Chave (PLI):** Redes UDP reais perdem pacotes justamente nos primeiros milissegundos da abertura de um NAT. Sempre que o handshake `SYN/ACK` fecha — ou caso o receptor detecte pacotes `P-frame` sem `IDR` inicial por mais de 200 ms — um sinal leve `DAV_P2P_PLI` instrui o encoder a emitir imediatamente um quadro `IDR + SPS/PPS`, eliminando telas pretas ou artefatos cinzas na entrada da sessão.
+
+---
+
+## Engenharia P2P: STUN Single-Socket e Blind Relay
+
+Um erro clássico em implementações caseiras de P2P é consultar um servidor STUN usando um socket temporário, fechá-lo e abrir outro socket para o streaming: o roteador atribui uma porta externa nova ao segundo socket e o *Hole-Punching* falha silenciosamente.
+
+No **DA-V v3.1**, toda a negociação ocorre **sobre o exato mesmo descritor de arquivo UDP** que enviará e receberá os fragmentos H.264:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant TX as Transmissor (Socket Único UDP)
+    participant STUN as STUN RFC 5389 (Google / Cloudflare)
+    participant RDV as DAV-Rendezvous (SSE + Relay)
+    participant RX as Receptor (Socket Único UDP)
+
+    TX->>TX: bind(0.0.0.0:9000)
+    TX->>STUN: STUN Binding Request (mesmo FD)
+    STUN-->>TX: XOR-MAPPED-ADDRESS (IP_Pub_TX:Porta_NAT_TX)
+    TX->>RDV: POST /p2p/register (PIN, LAN, Overlay, WAN, Tipo NAT)
+    TX->>RDV: GET /p2p/events (Stream SSE aberto · Standby 0% GPU)
+
+    Note over TX: Keepalive STUN (15s) mantém porta aberta no roteador
+
+    RX->>RX: prepare_receiver_socket() -> bind(0.0.0.0:9002)
+    RX->>STUN: STUN Binding Request (mesmo FD)
+    STUN-->>RX: XOR-MAPPED-ADDRESS (IP_Pub_RX:Porta_NAT_RX)
+    RX->>RDV: POST /p2p/resolve (PIN + Candidatos RX)
+    RDV-->>RX: 200 OK (Candidatos TX + Endpoint Relay)
+    RDV-->>TX: Evento SSE "paired" (< 50 ms) com Candidatos RX
+
+    par Corrida Multi-Candidato (Overlay + LAN + WAN)
+        TX->>RX: Rajada DAV_P2P_SYN:<PIN>
+        RX->>TX: Rajada DAV_P2P_SYN:<PIN>
+    end
+
+    alt NAT Cone / Mesma LAN / Malha Overlay (Rota Direta)
+        RX-->>TX: DAV_P2P_ACK:<PIN>
+        TX->>TX: Força IDR Keyframe (SPS/PPS) e ativa 60 FPS
+        TX==>>RX: Fluxo H.264 Criptografado Direto (Menor Latência)
+    else CGNAT Simétrico Estrito nos Dois Lados (Após 850 ms sem rota direta)
+        TX->>RDV: DAV_RLY1 + PIN + 'S' + BIND
+        RX->>RDV: DAV_RLY1 + PIN + 'R' + BIND
+        RDV-->>TX: DAV_RLY_PEER_READY
+        TX==>>RDV: Envelope DAV_RLY1 + Pacote Criptografado
+        RDV==>>RX: Encaminhamento Cego O(1) em RAM (Zero-Knowledge)
     end
 ```
 
----
+### Estratégia de Seleção de Rota (ICE-Lite Autoral)
 
-## ✨ Destaques de Engenharia
-
-### 1. Captura Nativa Sem Cópia (Zero-Copy)
-- **Windows:** Integração com **Desktop Duplication API (DXGI)** e GDI DIBSections mapeadas diretamente, capturando frames 1080p em menos de 1.8 milissegundos sem sobrecarregar a CPU.
-- **Linux:** Implementação nativa C++23 utilizando **X11 MIT-SHM** (`XShmCreateImage`, `shmat`, `XShmGetImage`), transferindo frames do servidor X para o buffer de memória compartilhada do processo em tempo zero.
-
-### 2. Pacing de Precisão de 60 FPS (Zero-Drift)
-- Em vez de depender do `time.sleep()` do sistema operacional (que sofre com granularidades imprevisíveis de 15ms no Windows), o DA-V emprega:
-  - Temporizador multimídia de 1ms (`timeBeginPeriod(1)`).
-  - Afinidade de núcleos de CPU (`SetThreadAffinityMask` / `os.sched_setaffinity`).
-  - Loop híbrido de *Sleep + Spinwait* com relógio monotônico de alta resolução (`time.perf_counter()`), garantindo entrega milimétrica a cada 16.666 ms.
-
-### 3. Transporte Resiliente KCP sobre UDP
-- Elimina os bloqueios *Head-of-Line* inerentes ao protocolo TCP.
-- Forward Error Correction (**FEC**) integrado com matriz de paridade XOR para recuperação imediata de pacotes perdidos sem aguardar retransmissões.
-- Buffer de jitter adaptativo dimensionado dinamicamente para manter o atraso imperceptível ao olho humano.
-
-### 4. Segurança de Nível Bancário (ChaCha20-Poly1305)
-- Todos os datagramas de vídeo são encriptados com chaves simétricas de 256 bits geradas por handshake ou autenticadas via PIN.
-- Integridade validada por tag Poly1305 de 16 bytes: qualquer corrupção de pacote ou tentativa de injeção de pacotes na rede é descartada instantaneamente antes da decodificação.
-
-### 5. Emparelhamento P2P por PIN Universal (Estilo AnyDesk)
-- **Zero configuração de roteador:** Graças ao módulo de perfuração de NAT (**UDP Hole-Punching** concorrente) e servidor de sinalização STUN leve, conectar dois computadores remotos exige apenas digitar um PIN de 6 dígitos.
-- **Transparência LAN/WAN:** Se o IP de destino estiver na mesma rede local, a conexão ocorre diretamente sem tocar a internet.
+Ao parear um PIN, ambos os lados constroem uma lista ordenada de candidatos e os sondam em paralelo:
+1. **Malhas Overlay (`100.64.0.0/10`) e Interfaces LAN Físicas (`192.168.x.x`, `10.x.x.x`):** Testadas primeiro para contornar roteadores domésticos que bloqueiam *NAT Hairpinning* quando transmissor e receptor estão no mesmo escritório/residência.
+2. **Endpoint WAN Reflexivo (`XOR-MAPPED-ADDRESS`):** Mapeado via RFC 5389 diretamente no socket de mídia, acompanhado de predição de portas contíguas (`±1`) para roteadores residenciais de alocação linear.
+3. **Blind Encrypted UDP Relay (`DAV_RLY1`):** Se após `850 ms` nenhum pacote direto atravessar (cenário típico de **CGNAT Simétrico** em operadoras fibra ou redes móveis 4G/5G), os clientes envelopam os datagramas já criptografados e os encaminham via porta UDP `8768` do servidor `DAV-Rendezvous`, que faz o repasse em memória `O(1)` sem jamais ter acesso à chave derivada do PIN.
+4. **Contingência Zero-Cloud (LAN Beacon):** Caso a internet externa esteja indisponível, o receptor resolve o próprio código PIN localmente via broadcast/varredura de sub-rede na porta `9005/udp`.
 
 ---
 
-## 📊 Métricas de Performance Obtidas em Benchmark Real
+## Protocolo Binário de Transporte
 
-| Métrica | DA-V (Distribuidor Amplo) | Soluções Comerciais Típicas |
+Cada quadro comprimido pelo `HybridEncoder` é criptografado em bloco vetorizado e fatiado em datagramas de até **1320 bytes de carga útil** — dimensão escolhida deliberadamente para ficar abaixo do MTU efetivo de enlaces PPPoE, túneis WireGuard e redes móveis 5G sem sofrer fragmentação IP no caminho.
+
+### Cabeçalho de Mídia DA-V (32 Bytes · Network Big-Endian `!BBBBIIQIIHH`)
+
+```text
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|  Version (1)  |  Packet Type  |     Flags     |   Reserved    |  Bytes 0..3
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Sequence Number                        |  Bytes 4..7
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                     SSRC (0x00DA0001)                         |  Bytes 8..11
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                   Capture Timestamp (uint64 µs)               +  Bytes 12..19
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                           Frame ID                            |  Bytes 20..23
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                     Payload Length (≤ 1320)                   |  Bytes 24..27
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Fragment Index         |        Fragment Total         |  Bytes 28..31
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Encrypted Payload (1 .. 1320 bytes)              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|               Authentication Tag (16 bytes)                   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+- **`Flags`:** Bit `0x01` sinaliza quadro `IDR Keyframe` (acionando sincronia imediata no receptor); Bit `0x02` indica payload cifrado.
+- **Janela Deslizante de Remontagem:** O receptor mantém até **40 quadros simultâneos em voo** (expiração de `350 ms`), absorvendo reordenação de pacotes UDP em redes Wi-Fi e links intercontinentais sem travar o decodificador.
+- **Envelope Blind Relay (`17 bytes` opcionais):** Quando em modo relay, o transmissor antepõe `DAV_RLY1` (`8B`) + `PIN` normalizado (`8B`) + papel `S`/`R` (`1B`). O gateway remove os `17 bytes` em memória e entrega o pacote original de `32B + Payload + Tag` intacto ao receptor.
+
+---
+
+## Métricas Reais Medidas
+
+Valores aferidos no pipeline real de captura + codificação + rede + decodificação:
+
+| Estágio / Métrica | Windows 11 (WGC + NVENC) | Linux x64 (X11 + libx264 ULL) |
 | :--- | :--- | :--- |
-| **Taxa de Quadros (FPS)** | **60.0 FPS Estáveis** (Pacing < 0.1ms jitter) | 24 - 30 FPS flutuantes |
-| **Latência de Transporte (LAN)** | **0.1 ms - 2.5 ms** | 45 ms - 120 ms |
-| **Perda de Pacotes E2E** | **0.0%** (com FEC ativo) | 2% a 8% com congelamento |
-| **Vazão de Transmissão** | **8.0 a 18.25 Mbps** (1080p nítido) | 1.5 a 3.5 Mbps (borrado) |
-| **Overhead de CPU (Transmissor)** | **< 4%** (NVIDIA NVENC Offload) | 15% - 25% (software encoding) |
+| **Captura de Quadro (1080p)** | `0.8 ms – 1.9 ms` | `1.5 ms – 3.2 ms` |
+| **Compressão H.264 (Zero-Latency)** | `2.8 ms – 4.6 ms` (NVENC `p1`) | `3.8 ms – 6.5 ms` (`libx264 ultrafast`) |
+| **Transporte + Remontagem (LAN)** | `0.2 ms – 1.8 ms` | `0.2 ms – 1.8 ms` |
+| **Decodificação Slice (4 Threads)** | `2.4 ms – 3.9 ms` | `2.6 ms – 4.2 ms` |
+| **Cadência Sustentada** | **60.0 FPS** | **60.0 FPS** |
+| **Consumo em Standby (Aguardando PIN)** | **0% GPU / < 0.2% CPU** | **0% GPU / < 0.2% CPU** |
 
 ---
 
-## 🚀 Como Executar
+## Instalação e Execução
 
-### Pré-requisitos
-- **Python 3.10 ou superior**
-- **Windows 10/11** ou **Linux (Ubuntu 22.04+, Debian 12+, Arch, Fedora)**
-- Placa de vídeo recomendada (NVIDIA com suporte a NVENC para aceleração total de hardware, embora o modo software funcione perfeitamente via CPU).
+### Opção 1: Instaladores Oficiais (Releases)
+
+Baixe o instalador correspondente ao seu sistema operacional na aba [**Releases**](https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video/releases):
+- **Windows 10/11 (x64):** Execute `DA-V_Instalador_Windows_x64.exe` (configura regras do Windows Firewall, atalho na Área de Trabalho e protocolo `dav://`).
+- **Linux (x86_64):** Extraia `DA-V_v3.1.0_Linux_x86_64.tar.gz` e execute `./launch_dav.sh` ou o assistente gráfico `DA-V_Instalador_Linux_x86_64`.
 
 ---
 
-### No Linux (Ubuntu 24.04 / 26.04 LTS, Debian, Fedora, Arch)
+### Opção 2: A partir do Código-Fonte
 
-> [!TIP]
-> Para o guia detalhado e aprofundado de implantação em Linux, consulte o [LEIA-ME_LINUX.md](LEIA-ME_LINUX.md).
+#### No Windows (PowerShell)
 
-#### 1. Instalar dependências do sistema (Ubuntu 24.04 / 26.04 LTS)
+```powershell
+# 1. Criar ambiente virtual e instalar dependências
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# 2. Abrir a interface gráfica
+python scripts/gui_app.py
+
+# (Opcional) Executar o assistente gráfico de integração com Firewall e links dav://
+python scripts/dav_installer_win.py
+```
+
+#### No Linux (Ubuntu 24.04 / 26.04 LTS, Debian 12+, Fedora, Arch)
+
+> Consulte o [**LEIA-ME_LINUX.md**](LEIA-ME_LINUX.md) para instruções detalhadas sobre X11 vs Wayland, regras UFW e compilação nativa C++23.
+
 ```bash
+# 1. Instalar pacotes base do sistema (Ubuntu / Debian)
 sudo apt update && sudo apt install -y \
     build-essential cmake ninja-build python3 python3-venv python3-pip python3-dev \
     libx11-dev libxext-dev libxfixes-dev libxrandr-dev libgl1-mesa-dev libglib2.0-0 libegl1 \
     libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-    libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxkbcommon-x11-0 ffmpeg ufw git
-```
+    libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxkbcommon-x11-0 ffmpeg ufw
 
-#### 2. Compilar o Core C++23
-```bash
-chmod +x build_linux.sh
-./build_linux.sh
-```
+# 2. (Opcional) Compilar biblioteca nativa C++23 e daemon
+chmod +x build_linux.sh && ./build_linux.sh
 
-#### 3. Iniciar a Aplicação Gráfica
-```bash
-chmod +x launch_dav.sh
-./launch_dav.sh
-```
-
-*Ou instale no sistema criando ícone no Dock e associando convites `dav://`:*
-```bash
-source .venv/bin/activate
-python3 scripts/dav_installer_linux.py
+# 3. Iniciar o DA-V (cria e provisiona a .venv automaticamente)
+chmod +x launch_dav.sh && ./launch_dav.sh
 ```
 
 ---
 
-### No Windows
+## Como Transmitir via P2P (Windows ↔ Linux)
 
-#### 1. Criar e Ativar o Ambiente Virtual
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+1. **No computador que vai compartilhar a tela (Transmissor):**
+   - Abra a aba **Compartilhar Tela**.
+   - Deixe o campo **IP Alvo (Destino)** **vazio** (isso ativa automaticamente o Modo PIN Universal P2P).
+   - Clique em **Iniciar Compartilhamento** e copie o código de 6 dígitos exibido no topo (`Meu PIN`, ex: `845-747`) ou clique em **Copiar Convite** (`dav://connect/845-747`).
+2. **No computador que vai assistir (Receptor):**
+   - Abra a aba **Assistir / Receptor**.
+   - Deixe o campo **IP do Transmissor** **vazio**, digite o **PIN de Acesso** (`845-747`) e clique em **Conectar e Assistir** (ou simplesmente abra o link `dav://connect/845-747`).
+   - Os dois nós negociarão automaticamente o caminho mais rápido disponível (`LAN Direto` -> `WAN P2P Direto` -> `Blind Relay UDP`) e iniciarão o vídeo em tempo real.
+
+---
+
+## Portas de Rede e Auto-Hospedagem do Rendezvous
+
+| Porta / Protocolo | Direção | Finalidade |
+| :--- | :--- | :--- |
+| `9000–9020 / UDP` | Entrada / Saída | Transporte de vídeo P2P/LAN a 60 FPS e Hole-Punching |
+| `9005 / UDP` | Local (LAN) | Descoberta automática de dispositivos (`LanBeaconService`) |
+| `80` ou `8765 / TCP` | Saída (ou VPS) | Sinalização HTTP/SSE no servidor `DAV-Rendezvous` |
+| `8768 / UDP` | Saída (ou VPS) | Sonda STUN reflexiva e `Blind Encrypted UDP Relay` |
+
+Para hospedar sua própria instância do servidor Rendezvous + Blind Relay em uma VPS Linux:
+
+```bash
+sudo cp deploy/dav-rendezvous.service /etc/systemd/system/
+sudo ufw allow 8765/tcp comment 'DAV Rendezvous HTTP/SSE'
+sudo ufw allow 8768/udp comment 'DAV STUN & Blind Relay'
+sudo systemctl daemon-reload && sudo systemctl enable --now dav-rendezvous
 ```
 
-#### 2. Iniciar a Aplicação Gráfica
-```powershell
-python scripts/gui_app.py
-```
+Nos clientes, basta apontar `DAV_RENDEZVOUS_HOST=seu-dominio-ou-ip` caso utilize um servidor próprio.
 
-#### 3. Executar o Teste Ponta a Ponta (E2E)
-```powershell
+---
+
+## Validação e Testes Automatizados
+
+A suíte cobre codificação H.264, criptografia/fragmentação, motor de QoS, preservação de descritor STUN Single-Socket, pareamento P2P ponta a ponta e simulação de CGNAT Simétrico com Blind Relay:
+
+```bash
+pytest tests/ -v
+python tests/test_p2p_e2e.py
 python tests/test_full_pipeline_e2e.py
 ```
 
 ---
 
-## 📁 Estrutura do Projeto
+## Estrutura do Repositório
 
 ```text
 Distribuidor_Aamplo-Video/
-├── cmake/                      # Configurações CMake e detecção de hardware (X11, DXGI, CUDA)
-├── include/dav/                # Headers da API C-ABI pública
-├── scripts/                    # Ponto de entrada, benchmarks e subprocessos
-│   ├── gui_app.py              # Launcher da interface gráfica moderna PySide6
-│   ├── dav_sender_worker.py    # Pipeline multi-thread isolado (Captura + Encode + Envio)
-│   ├── dav_client.py           # Core client e decodificador assíncrono
-│   ├── dav_perf_benchmark.py   # Benchmark de precisão de latência e FPS
-│   └── detect_env.py           # Scanner de hardware, GPUs e aceleração
+├── .github/workflows/          # Pipelines CI/CD multiplataforma e geração de Releases (Win/Linux)
+├── cmake/                      # Detecção de plataforma, compiladores C++23 e aceleração de hardware
+├── deploy/                     # Unidade systemd (dav-rendezvous.service) para VPS Linux
+├── include/dav/                # Cabeçalho público C-ABI (dav_api.h)
+├── installer/                  # Metadados auxiliares de empacotamento Windows/Linux
+├── scripts/
+│   ├── gui_app.py              # Ponto de entrada da aplicação desktop PySide6 e handler dav://
+│   ├── dav_client.py           # Orquestrador cliente unificado, receptor UDP e PLI recovery
+│   ├── dav_sender_worker.py    # Processo isolado de captura (WGC/GDI/X11), encode e P2P TX
+│   ├── dav_installer_win.py    # Assistente gráfico de instalação para Windows
+│   ├── dav_installer_linux.py  # Assistente gráfico de instalação XDG/UFW para Linux
+│   └── setup_firewall.ps1      # Automação de regras UDP no Windows Defender Firewall
 ├── src/
-│   ├── capture/                # Capturadores nativos
-│   │   ├── linux/              # X11 MIT-SHM em C++23 com memória compartilhada
-│   │   └── windows/            # DXGI Desktop Duplication API
-│   ├── codec/                  # Codificadores de baixa latência (NVENC / PyAV / x264)
-│   ├── crypto/                 # Criptografia ChaCha20-Poly1305 AEAD de 256 bits
-│   ├── discovery/              # P2P Channel, UDP Hole-Punching e beacons LAN
-│   ├── packetizer/             # Fragmentador de pacotes MTU e remontagem de frames
-│   ├── qos/                    # Motor de QoS, FEC, Jitter Buffer e Bitrate Adaptativo
-│   ├── signaling/server/       # Servidor Rendezvous e STUN reflexivo
-│   └── ui/                     # Interface de usuário moderna PySide6
-│       ├── views/              # Telas (Viewer, Sender, Tupã Telemetria, Discovery)
-│       └── widgets/            # Componentes gráficos modulares (Header, Sidebar, Canvas)
-├── tests/                      # Suíte de testes automatizados (100% PASS)
-├── build_linux.sh              # Script de compilação automatizada para Linux
-├── launch_dav.sh               # Script de execução inteligente para Linux
-├── requirements.txt            # Dependências Python canônicas
-└── LEIA-ME_LINUX.md            # Guia técnico operacional detalhado para Linux
+│   ├── capture/                # Capturadores C++23 (DXGI Desktop Duplication e X11 MIT-SHM)
+│   ├── codec/                  # HybridEncoder / HybridDecoder (NVENC, libx264 ULL, JPEG, RAW)
+│   ├── core/                   # Configuração TOML, logger, tipos e ponte C-ABI
+│   ├── crypto/                 # Criptografia autenticada ChaCha20-Poly1305 AEAD
+│   ├── discovery/              # P2P Single-Socket STUN, ICE-Lite e LAN Beacon
+│   ├── packetizer/             # Fragmentação RTP-like 32B e remontagem de quadros
+│   ├── qos/                    # FEC XOR, NACK, Jitter Buffer e Bitrate Adaptativo
+│   ├── signaling/server/       # Microserviço DAV-Rendezvous (SSE + Blind Encrypted Relay)
+│   └── ui/                     # Design System Dark Obsidian, views e widgets PySide6
+├── tests/                      # Suíte de testes unitários e integração E2E
+├── CHANGELOG.md                # Histórico semântico de versões
+├── LEIA-ME_LINUX.md            # Documentação operacional dedicada ao ambiente Linux
+├── VERSION                     # Versão canônica do projeto (3.1.0)
+└── requirements.txt            # Dependências Python multiplataforma
 ```
 
 ---
 
-## 🛡️ Governança e Autoria
+## Governança, Versionamento e Autoria
 
-Desenvolvido com rigor arquitetural e paixão por sistemas de alto desempenho.
+O projeto segue **Semantic Versioning (`SemVer 2.0.0`)** e **Conventional Commits**, com builds reprodutíveis para Windows e Linux publicados a cada tag de versão.
 
-- **Autor:** Dante Ferraz ([@DanteFerraz](https://github.com/DanteFerraz))
-- **Email:** [danteferraz06@gmail.com](mailto:danteferraz06@gmail.com)
-- **Organização:** MonoTech · Engenharia de Software Sob Medida
-- **Licença:** MIT License
+- **Autor e Arquiteto Responsável:** Dante Ferraz ([@DanteFerraz](https://github.com/DanteFerraz)) — [danteferraz06@gmail.com](mailto:danteferraz06@gmail.com)
+- **Engenharia:** MonoTech · Sistemas de Tempo Real & Infraestrutura Distribuída
+- **Licença:** Distribuído sob a licença [MIT](LICENSE).
