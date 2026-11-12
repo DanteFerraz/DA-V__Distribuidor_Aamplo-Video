@@ -56,13 +56,13 @@ class TroubleshootView(QWidget):
         btn_clear_log.clicked.connect(lambda: self.txt_logs.clear())
         btn_box.addWidget(btn_clear_log)
 
-        btn_export_zip = QPushButton("📦 Exportar Diagnóstico (.zip)")
+        btn_export_zip = QPushButton("Exportar Diagnóstico (.zip)")
         btn_export_zip.setObjectName("secondaryBtn")
         btn_export_zip.setToolTip("Gera pacote compactado YYYY-MM-DD_HH-MM-SS_DA-V-log.zip com logs e telemetria")
         btn_export_zip.clicked.connect(self.export_logs_requested.emit)
         btn_box.addWidget(btn_export_zip)
 
-        btn_check_update = QPushButton("🔄 Buscar Atualizações")
+        btn_check_update = QPushButton("Buscar Atualizações")
         btn_check_update.setObjectName("secondaryBtn")
         btn_check_update.setToolTip("Verifica se há novas versões do DA-V disponíveis")
         btn_check_update.clicked.connect(self.check_update_requested.emit)

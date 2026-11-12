@@ -27,3 +27,4 @@ def is_newer_version(remote_ver: str, current_ver: str) -> bool:
     r_tuple = parse_semver(remote_ver)
     c_tuple = parse_semver(current_ver)
     return r_tuple > c_tuple
+

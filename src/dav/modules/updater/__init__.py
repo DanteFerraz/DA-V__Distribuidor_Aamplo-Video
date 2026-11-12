@@ -21,3 +21,4 @@ __all__ = [
     "UpdaterService",
     "manifest",
 ]
+

@@ -261,8 +261,8 @@ class DavModernInstaller(QDialog):
 
         # Branding no topo da barra lateral
         brand_row = QHBoxLayout()
-        brand_icon = QLabel("⚡")
-        brand_icon.setStyleSheet(f"font-size: 24px; color: {C_ACCENT};")
+        brand_icon = QLabel("▶")
+        brand_icon.setStyleSheet(f"font-size: 20px; color: {C_ACCENT}; font-weight: 800;")
         brand_row.addWidget(brand_icon)
 
         brand_text_col = QVBoxLayout()
@@ -372,9 +372,9 @@ class DavModernInstaller(QDialog):
         card_layout = QVBoxLayout(card)
         card_layout.setSpacing(12)
 
-        p1 = QLabel("⚡  <b>Subprocesso GPU Desvinculado:</b> Transmissão fluida a 60 FPS sem congelamentos.")
-        p2 = QLabel("🌐  <b>Sinalização Push Instantânea:</b> Pareamento em milissegundos via Server-Sent Events.")
-        p3 = QLabel("🔗  <b>Links Diretos:</b> Suporte a convites <code>dav://connect/PIN</code> em 1 clique.")
+        p1 = QLabel("• <b>Subprocesso GPU Desvinculado:</b> Transmissão fluida a 60 FPS sem congelamentos.")
+        p2 = QLabel("• <b>Sinalização Push Instantânea:</b> Pareamento em milissegundos via Server-Sent Events.")
+        p3 = QLabel("• <b>Links Diretos:</b> Suporte a convites <code>dav://connect/PIN</code> em 1 clique.")
         for p in (p1, p2, p3):
             p.setStyleSheet(f"font-size: 13px; color: {C_TEXT_PRIMARY};")
             card_layout.addWidget(p)
@@ -394,8 +394,8 @@ class DavModernInstaller(QDialog):
         gpu_layout.setContentsMargins(14, 12, 14, 12)
         gpu_layout.setSpacing(12)
 
-        icon_gpu = QLabel("🎮" if has_nv else "⚙️")
-        icon_gpu.setStyleSheet("font-size: 22px;")
+        icon_gpu = QLabel("[GPU]" if has_nv else "[CPU]")
+        icon_gpu.setStyleSheet(f"font-size: 12px; font-weight: 800; color: {C_ACCENT};")
         gpu_layout.addWidget(icon_gpu)
 
         gpu_text_col = QVBoxLayout()
@@ -416,7 +416,7 @@ class DavModernInstaller(QDialog):
         gpu_layout.addLayout(gpu_text_col)
         gpu_layout.addStretch()
 
-        badge_status = QLabel("ATIVO ✓" if has_nv else "PRONTO")
+        badge_status = QLabel("ATIVO" if has_nv else "PRONTO")
         badge_status.setStyleSheet(f"""
             background-color: {C_SUCCESS_BG if has_nv else C_BG_CANVAS};
             color: {C_SUCCESS if has_nv else C_ACCENT};

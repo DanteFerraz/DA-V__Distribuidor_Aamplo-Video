@@ -82,3 +82,4 @@ class UpdaterService:
         except Exception as exc:
             logger.error(f"[UpdaterService] Falha ao exibir diálogo de consentimento: {exc}", exc_info=True)
             return False
+

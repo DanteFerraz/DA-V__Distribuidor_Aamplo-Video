@@ -104,3 +104,4 @@ class AutoInstaller:
         except Exception as exc:
             logger.error(f"[Updater] Falha ao disparar instalador: {exc}", exc_info=True)
             return ServiceResult.fail(str(exc), code="LAUNCH_ERROR")
+

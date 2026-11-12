@@ -132,3 +132,4 @@ class UpdateChecker:
         )
 
         return ServiceResult.ok(info, code="CHECK_COMPLETED")
+

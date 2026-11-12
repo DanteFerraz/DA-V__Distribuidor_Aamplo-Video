@@ -328,21 +328,21 @@ class TupaView(QWidget):
                 if ratio < 0.8:
                     bar_color = cfg["color_ok"]
                     txt_color = Theme.SYS["status_success"]
-                    status = "✓"
+                    status = "OK"
                 elif ratio < 1.0:
                     bar_color = Theme.SYS["status_warning"]
                     txt_color = Theme.SYS["status_warning"]
-                    status = "~"
+                    status = "MODERADO"
                 else:
                     bar_color = Theme.SYS["status_danger"]
                     txt_color = Theme.SYS["status_danger"]
-                    status = "⚠"
+                    status = "ALERTA"
 
                 cfg["bar"].setStyleSheet(f"""
                     QProgressBar {{ border-radius: 4px; background: {Theme.SYS["bg_canvas"]}; }}
                     QProgressBar::chunk {{ background: {bar_color}; border-radius: 4px; }}
                 """)
-                cfg["label"].setText(f"{status} {avg_ms:.1f}ms")
+                cfg["label"].setText(f"[{status}] {avg_ms:.1f}ms")
                 cfg["label"].setStyleSheet(f"font-size: 11px; font-weight: 700; color: {txt_color}; min-width: 70px;")
 
             if self.cur_fps > 0:

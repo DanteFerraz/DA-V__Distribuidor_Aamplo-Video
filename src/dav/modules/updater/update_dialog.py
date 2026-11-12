@@ -73,7 +73,7 @@ class UpdateConsentDialog(QDialog):
         header_row.addWidget(lbl_badge)
         header_row.addStretch()
 
-        lbl_ver_comp = QLabel(f"v{self.info.current_version}  ➔  <b>v{self.info.latest_version}</b>")
+        lbl_ver_comp = QLabel(f"v{self.info.current_version}  ->  <b>v{self.info.latest_version}</b>")
         lbl_ver_comp.setStyleSheet(f"font-size: 13px; color: {s['text_accent']};")
         header_row.addWidget(lbl_ver_comp)
         layout.addLayout(header_row)
@@ -208,3 +208,4 @@ class UpdateConsentDialog(QDialog):
         self.lbl_status.setText(f"Erro: {err_msg}")
         self.btn_update.setEnabled(True)
         self.btn_cancel.setEnabled(True)
+

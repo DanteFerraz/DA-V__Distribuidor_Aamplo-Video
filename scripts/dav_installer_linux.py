@@ -268,8 +268,8 @@ class DavModernLinuxInstaller(QDialog):
         side_layout.setSpacing(16)
 
         brand_row = QHBoxLayout()
-        brand_icon = QLabel("⚡")
-        brand_icon.setStyleSheet(f"font-size: 24px; color: {C_ACCENT};")
+        brand_icon = QLabel("▶")
+        brand_icon.setStyleSheet(f"font-size: 20px; color: {C_ACCENT}; font-weight: 800;")
         brand_row.addWidget(brand_icon)
 
         brand_text_col = QVBoxLayout()
@@ -378,8 +378,8 @@ class DavModernLinuxInstaller(QDialog):
         sess_layout.setContentsMargins(14, 10, 14, 10)
         sess_layout.setSpacing(12)
 
-        icon_sess = QLabel("🖥️")
-        icon_sess.setStyleSheet("font-size: 20px;")
+        icon_sess = QLabel("[DISPLAY]")
+        icon_sess.setStyleSheet(f"font-size: 11px; font-weight: 800; color: {C_ACCENT};")
         sess_layout.addWidget(icon_sess)
 
         sess_col = QVBoxLayout()
@@ -419,8 +419,8 @@ class DavModernLinuxInstaller(QDialog):
         gpu_layout.setContentsMargins(14, 10, 14, 10)
         gpu_layout.setSpacing(12)
 
-        icon_gpu = QLabel("🎮" if has_nv else "⚙️")
-        icon_gpu.setStyleSheet("font-size: 20px;")
+        icon_gpu = QLabel("[GPU]" if has_nv else "[CPU]")
+        icon_gpu.setStyleSheet(f"font-size: 11px; font-weight: 800; color: {C_ACCENT};")
         gpu_layout.addWidget(icon_gpu)
 
         gpu_col = QVBoxLayout()
@@ -440,7 +440,7 @@ class DavModernLinuxInstaller(QDialog):
         gpu_layout.addLayout(gpu_col)
         gpu_layout.addStretch()
 
-        badge_gpu = QLabel("ATIVO ✓" if has_nv else "PRONTO")
+        badge_gpu = QLabel("ATIVO" if has_nv else "PRONTO")
         badge_gpu.setStyleSheet(f"background-color: {C_SUCCESS_BG if has_nv else C_BG_CANVAS}; color: {C_SUCCESS if has_nv else C_ACCENT}; border: 1px solid {C_SUCCESS if has_nv else C_BORDER_SUBTLE}; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 800;")
         gpu_layout.addWidget(badge_gpu)
         layout.addWidget(gpu_card)

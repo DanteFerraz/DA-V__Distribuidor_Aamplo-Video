@@ -128,9 +128,9 @@ class SidebarNavigation(QFrame):
         nav_items = [
             (0, "▶", "Assistir / Receptor"),
             (1, "●", "Compartilhar Tela"),
-            (2, "⚡", "Diagnóstico TUPÃ"),
-            (3, "☊", "Dispositivos LAN"),
-            (4, "🛠", "Troubleshooting"),
+            (2, "◈", "Diagnóstico TUPÃ"),
+            (3, "◎", "Dispositivos LAN"),
+            (4, "≡", "Troubleshooting"),
         ]
 
         for idx, icon, label in nav_items:
@@ -142,7 +142,7 @@ class SidebarNavigation(QFrame):
         layout.addStretch()
 
         # ── Bottom Section: About Author & Collapse ──
-        self.btn_about = QPushButton("✦  Sobre o Autor", self)
+        self.btn_about = QPushButton("Sobre o Autor", self)
         self.btn_about.setObjectName("ghostBtn")
         self.btn_about.setFixedHeight(34)
         self.btn_about.setStyleSheet(f"""
@@ -190,7 +190,7 @@ class SidebarNavigation(QFrame):
         self.setFixedWidth(new_width)
 
         self.lbl_brand_text.setVisible(not self.is_collapsed)
-        self.btn_about.setText("✦" if self.is_collapsed else "✦  Sobre o Autor")
+        self.btn_about.setText("Autor" if self.is_collapsed else "Sobre o Autor")
         self.btn_about.setToolTip("Sobre o Autor (Dante Ferraz)" if self.is_collapsed else "")
         self.btn_collapse.setText("»" if self.is_collapsed else "«  Recolher Menu")
         self.btn_collapse.setToolTip("Expandir Menu" if self.is_collapsed else "Recolher Menu")

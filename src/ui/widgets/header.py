@@ -105,7 +105,7 @@ class TopHeaderBar(QFrame):
         layout.addWidget(self.btn_new_pin)
 
         # Theme Toggle Button (Light/Dark Mode Blocks.so)
-        theme_txt = "☀️ Claro" if Theme.current_mode == "dark" else "🌙 Escuro"
+        theme_txt = "Modo Claro" if Theme.current_mode == "dark" else "Modo Escuro"
         self.btn_theme = QPushButton(theme_txt)
         self.btn_theme.setObjectName("secondaryBtn")
         self.btn_theme.setFixedHeight(30)
@@ -142,7 +142,7 @@ class TopHeaderBar(QFrame):
             color: {s["status_success"]};
             letter-spacing: 1px;
         """)
-        theme_txt = "☀️ Claro" if Theme.current_mode == "dark" else "🌙 Escuro"
+        theme_txt = "Modo Claro" if Theme.current_mode == "dark" else "Modo Escuro"
         self.btn_theme.setText(theme_txt)
 
     def update_pin(self, new_pin: str):
@@ -162,7 +162,7 @@ class TopHeaderBar(QFrame):
         clipboard = QApplication.clipboard()
         if clipboard:
             clipboard.setText(self.current_pin)
-            self.btn_copy_pin.setText("Copiado! ✓")
+            self.btn_copy_pin.setText("Copiado!")
             from scripts.qt_compat import QTimer
             QTimer.singleShot(1500, lambda: self.btn_copy_pin.setText("Copiar PIN"))
 
@@ -171,6 +171,6 @@ class TopHeaderBar(QFrame):
         if clipboard:
             link = f"dav://connect/{self.current_pin}"
             clipboard.setText(link)
-            self.btn_copy_link.setText("Link Copiado! ✓")
+            self.btn_copy_link.setText("Link Copiado!")
             from scripts.qt_compat import QTimer
             QTimer.singleShot(1500, lambda: self.btn_copy_link.setText("Copiar Convite"))
