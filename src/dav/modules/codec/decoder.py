@@ -135,3 +135,4 @@ class VideoDecoder(BaseDecoder):
     def close(self) -> None:
         self._h264_dec = None
         self._hevc_dec = None
+

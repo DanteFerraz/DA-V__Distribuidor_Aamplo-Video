@@ -15,3 +15,4 @@ manifest = ModuleManifest(
     dependencies=[],
     service_factory=lambda: TelemetryService(),
 )
+

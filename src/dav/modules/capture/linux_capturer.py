@@ -115,3 +115,4 @@ class LinuxCapturer(BaseCapturer):
             except Exception:
                 pass
             self._sct = None
+

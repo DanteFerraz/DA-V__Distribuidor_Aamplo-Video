@@ -56,3 +56,4 @@ class TupaNetworkProbe:
             packet_loss_pct=0.0,
             route_mode="Direct",
         )
+

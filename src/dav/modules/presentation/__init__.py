@@ -5,3 +5,4 @@ from src.dav.modules.presentation.service import PresentationService
 from src.dav.modules.presentation.author_dialog import AuthorShowcaseDialog
 
 __all__ = ["PresentationService", "AuthorShowcaseDialog"]
+

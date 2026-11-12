@@ -101,3 +101,4 @@ class ConfigEngine:
             "commercial": self.commercial.__dict__,
             "raw": self.raw_data,
         }
+

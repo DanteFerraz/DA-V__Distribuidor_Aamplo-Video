@@ -23,3 +23,4 @@ def test_presentation_author_dialog_instantiation():
 def test_presentation_service_creation():
     service = PresentationService()
     assert service is not None
+

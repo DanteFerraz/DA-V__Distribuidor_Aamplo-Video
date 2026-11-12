@@ -226,7 +226,16 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.loopback_requested.connect(self._run_loopback_diagnostic)
         self.view_troubleshoot.fix_firewall_requested.connect(self._fix_firewall)
         self.view_troubleshoot.check_firewall_requested.connect(self._check_firewall_status)
+        self.view_troubleshoot.export_logs_requested.connect(self._export_diagnostic_bundle)
         self.stacked_views.addWidget(self.view_troubleshoot)
+
+        # Atalho global para exportação de diagnóstico
+        try:
+            from scripts.qt_compat import QShortcut, QKeySequence
+            self.shortcut_diag = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+            self.shortcut_diag.activated.connect(self._export_diagnostic_bundle)
+        except Exception:
+            pass
 
         self.sidebar.page_changed.connect(self._on_page_changed)
         self.sidebar.about_clicked.connect(self._show_author_showcase)
@@ -248,6 +257,46 @@ class DavMainWindow(QMainWindow):
             dlg.exec()
         except Exception as exc:
             self._append_log("WARN", f"Falha ao abrir diálogo institucional: {exc}")
+
+    def _export_diagnostic_bundle(self):
+        """Coleta logs, telemetria e estado de rede gerando o pacote ZIP 'data-hora_DA-V-log.zip'."""
+        try:
+            from src.dav.modules.telemetry.diagnostic_packager import DiagnosticPackager
+            logs_text = self.view_troubleshoot.txt_logs.toPlainText()
+            extra_telem = {
+                "fps": getattr(self, "cur_fps", 0.0),
+                "bitrate_mbps": getattr(self, "cur_mbps", 0.0),
+                "latency_ms": getattr(self, "cur_lat", 0.0),
+                "frames_count": getattr(self, "frames_count", 0),
+                "packets_count": getattr(self, "pkts_count", 0),
+            }
+            route_info = {
+                "active_pin": getattr(self, "my_pin", ""),
+                "local_ip": getattr(self, "local_ip", ""),
+                "default_port": getattr(self, "default_port", 9000),
+                "is_receiving": getattr(self, "is_receiving", False),
+                "is_sending": getattr(self, "is_sending", False),
+            }
+            res = DiagnosticPackager.generate_bundle(
+                logs_text=logs_text,
+                extra_telemetry=extra_telem,
+                route_info=route_info,
+            )
+            if res.is_success:
+                self._append_log("SUCCESS", f"Pacote de diagnóstico gerado com sucesso: {res.value}")
+                try:
+                    from scripts.qt_compat import QMessageBox
+                    QMessageBox.information(
+                        self,
+                        "Diagnóstico Exportado",
+                        f"Pacote compactado gerado com sucesso em:\n\n{res.value}\n\nVocê pode compartilhar este arquivo para suporte técnico ou análise de rede.",
+                    )
+                except Exception:
+                    pass
+            else:
+                self._append_log("ERROR", f"Falha ao gerar pacote de diagnóstico: {res.error}")
+        except Exception as exc:
+            self._append_log("ERROR", f"Exceção ao gerar diagnóstico: {exc}")
 
     # ------------------------------------------------------------------------
     # CONTROLADOR DO RECEPTOR (VIEWER) — P2P SINGLE-SOCKET & LAN DIRETO

@@ -193,3 +193,4 @@ class VideoEncoder(BaseEncoder):
             except Exception:
                 pass
             self._av_codec = None
+

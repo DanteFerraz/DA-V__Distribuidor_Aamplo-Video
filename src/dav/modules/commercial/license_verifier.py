@@ -59,3 +59,4 @@ class LicenseVerifier:
             code="LICENSE_INVALID_FALLBACK",
             details={"fallback": "COMMUNITY_UNLIMITED"},
         )
+

@@ -67,3 +67,4 @@ def test_telemetry_service_bus_event_integration():
     assert snap.fps == 60.0
     assert snap.bitrate_mbps == 12.5
     assert snap.latency_ms == 3.4
+

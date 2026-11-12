@@ -38,3 +38,4 @@ class BaseCapturer(ABC):
     def close(self) -> None:
         """Libera handles do compositor, buffers de GPU e threads."""
         pass
+

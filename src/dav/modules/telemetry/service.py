@@ -76,3 +76,4 @@ class TelemetryService:
             "jitter_ms": dto.jitter_ms,
         }
         self.exporter.export_metric(payload)
+

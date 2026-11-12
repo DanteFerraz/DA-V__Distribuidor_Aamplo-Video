@@ -56,3 +56,4 @@ def test_license_verifier_free_and_enterprise():
     res_invalid = verifier.verify_token("CHAVE_FALSA_123")
     assert res_invalid.is_error
     assert res_invalid.details["fallback"] == "COMMUNITY_UNLIMITED"
+

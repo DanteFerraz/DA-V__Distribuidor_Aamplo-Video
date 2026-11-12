@@ -42,3 +42,4 @@ class CodecService:
             return ServiceResult.ok(dec, code="DECODER_READY")
         except Exception as exc:
             return ServiceResult.fail(str(exc), code="DECODER_INIT_ERROR")
+

@@ -102,3 +102,4 @@ def test_stream_engine_service_lifecycle():
 
     service.stop_all()
     assert not service.is_receiving
+

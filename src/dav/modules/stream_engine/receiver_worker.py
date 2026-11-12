@@ -284,3 +284,4 @@ class ReceiverWorker:
                 last_stat_time = now
                 total_frames = 0
                 total_bytes = 0
+

@@ -87,3 +87,4 @@ class WindowsCapturer(BaseCapturer):
             except Exception:
                 pass
             self._mss_sct = None
+

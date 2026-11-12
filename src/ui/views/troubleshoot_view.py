@@ -20,6 +20,7 @@ class TroubleshootView(QWidget):
     loopback_requested = Signal()
     fix_firewall_requested = Signal()
     check_firewall_requested = Signal()
+    export_logs_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,6 +54,12 @@ class TroubleshootView(QWidget):
         btn_clear_log.setObjectName("secondaryBtn")
         btn_clear_log.clicked.connect(lambda: self.txt_logs.clear())
         btn_box.addWidget(btn_clear_log)
+
+        btn_export_zip = QPushButton("📦 Exportar Diagnóstico (.zip)")
+        btn_export_zip.setObjectName("secondaryBtn")
+        btn_export_zip.setToolTip("Gera pacote compactado YYYY-MM-DD_HH-MM-SS_DA-V-log.zip com logs e telemetria")
+        btn_export_zip.clicked.connect(self.export_logs_requested.emit)
+        btn_box.addWidget(btn_export_zip)
 
         btn_box.addStretch()
         layout.addLayout(btn_box)

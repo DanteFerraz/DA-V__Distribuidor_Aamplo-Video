@@ -35,3 +35,4 @@ AUTHOR_METADATA: Dict[str, Any] = {
 def get_author_showcase() -> Dict[str, Any]:
     """Retorna os metadados autorais consolidados para exibição na UI e telemetria."""
     return AUTHOR_METADATA.copy()
+

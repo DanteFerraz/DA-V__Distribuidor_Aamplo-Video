@@ -132,7 +132,7 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `src/dav/modules/transport_p2p/__init__.py`, `packetizer.py`, `stun.py`, `candidates.py`, `blind_relay.py`, `service.py`, `manifest.py`
 - `src/dav/modules/stream_engine/__init__.py`, `sender_worker.py`, `receiver_worker.py`, `service.py`, `manifest.py`
 - `src/dav/modules/commercial/__init__.py`, `author_showcase.py`, `edition_policy.py`, `license_verifier.py`, `service.py`, `manifest.py`
-- `src/dav/modules/telemetry/__init__.py`, `tupa_probes.py`, `sde_exporter.py`, `service.py`, `manifest.py`
+- `src/dav/modules/telemetry/__init__.py`, `tupa_probes.py`, `sde_exporter.py`, `service.py`, `manifest.py`, `diagnostic_packager.py`
 - `src/dav/modules/presentation/__init__.py`, `author_dialog.py`, `service.py`, `manifest.py`
 - `tests/test_kernel.py`
 - `tests/test_media_slices.py`
@@ -140,6 +140,7 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `tests/test_commercial.py`
 - `tests/test_telemetry.py`
 - `tests/test_presentation.py`
+- `tests/test_diagnostic_packager.py`
 - `backups/snapshot_v3.2.1_pre_modularizacao/ARCH_V3_SNAPSHOT.md`
 - `backups/snapshot_v3.2.1_pre_modularizacao/dav_v3.2.1_source_snapshot.zip`
 
@@ -150,9 +151,11 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `README.md`: Atualização para versão 4.0.0, diagrama de blocos do MonoTech Core Kernel v2.0, detalhamento das fatias e atribuição institucional.
 - `LEIA-ME_LINUX.md`: Atualizado para versão 4.0.0.
 - `scripts/gui_app.py`: Bootstrap do Kernel MonoTech v4.0 com auto-descoberta e shutdown seguro.
-- `scripts/qt_compat.py`: Adição do binding para `QDialog`.
-- `src/ui/main_window.py`: Conexão do botão Sobre o Autor, sincronização dinâmica da versão.
+- `scripts/qt_compat.py`: Adição do binding para `QDialog`, `QShortcut` e `QKeySequence`.
+- `src/ui/main_window.py`: Conexão do botão Sobre o Autor, exportador de diagnóstico `Ctrl+Shift+L` e sincronização de versão.
 - `src/ui/widgets/sidebar.py`: Adição do botão `"✦ Sobre o Autor"` e sinal `about_clicked`.
+- `src/ui/widgets/canvas.py`: Atalhos interativos (`F11` fullscreen, `ESC` sair, `F2`/`H` ciclar HUD, `F3`/`M` modos de escala 'fit'/'stretch'/'native', `F12` screenshot) e HUD minimalista pílula.
+- `src/ui/views/troubleshoot_view.py`: Botão `"📦 Exportar Diagnóstico (.zip)"`.
 
 ---
 
@@ -160,3 +163,4 @@ A suíte completa de testes unitários e de integração foi executada com **100
 
 1. **Geração de Novas Builds v4.0.0:** Disparar o workflow de CI/CD `.github/workflows/release.yml` para compilação automatizada dos instaladores Windows (`DA-V_Instalador_Windows_x64.exe`) e Linux (`DA-V_Instalador_Linux_x86_64`) com a tag `v4.0.0`.
 2. **Distribuição Comunitária:** Publicar no GitHub Releases e nos canais de tecnologia abertos divulgando o trabalho de Dante Ferraz e o ecossistema MonoTech.
+

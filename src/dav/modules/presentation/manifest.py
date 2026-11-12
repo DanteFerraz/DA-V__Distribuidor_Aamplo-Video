@@ -15,3 +15,4 @@ manifest = ModuleManifest(
     dependencies=["commercial", "telemetry"],
     service_factory=lambda: PresentationService(),
 )
+

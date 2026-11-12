@@ -19,3 +19,4 @@ MANIFEST = ModuleManifest(
         "enumerate_monitors": enumerate_system_monitors,
     },
 )
+

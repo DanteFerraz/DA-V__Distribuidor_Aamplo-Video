@@ -48,3 +48,4 @@ class BaseDecoder(ABC):
     def close(self) -> None:
         """Encerra e libera o contexto do decoder."""
         pass
+

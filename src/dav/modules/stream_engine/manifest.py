@@ -15,3 +15,4 @@ manifest = ModuleManifest(
     dependencies=["capture", "codec", "transport_p2p"],
     service_factory=lambda: StreamEngineService(),
 )
+

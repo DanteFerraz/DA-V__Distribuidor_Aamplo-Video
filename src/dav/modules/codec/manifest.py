@@ -18,3 +18,4 @@ MANIFEST = ModuleManifest(
         "service": CodecService,
     },
 )
+

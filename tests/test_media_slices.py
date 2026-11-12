@@ -66,3 +66,4 @@ def test_codec_encoder_and_decoder_roundtrip():
     assert bgr.shape == (768, 1366, 3)
     assert bgr.flags["C_CONTIGUOUS"] is True
     decoder.close()
+

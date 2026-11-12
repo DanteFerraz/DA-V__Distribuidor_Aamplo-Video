@@ -102,3 +102,4 @@ def build_peer_candidates(peer_info: Dict[str, object], my_public_ip: Optional[s
                     _add(peer_pub_ip, pred_port, "wan-predicted")
 
     return candidates
+

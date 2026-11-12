@@ -69,3 +69,4 @@ class EditionPolicy:
             "limits": "Sem limite de tempo, até 4K 120 FPS",
             "author": "Dante Ferraz",
         }
+

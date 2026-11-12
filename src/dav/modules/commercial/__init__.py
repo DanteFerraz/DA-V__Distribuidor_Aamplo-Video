@@ -6,3 +6,4 @@ from src.dav.modules.commercial.author_showcase import get_author_showcase, AUTH
 from src.dav.modules.commercial.edition_policy import EditionPolicy, COMMUNITY_CAPABILITIES
 
 __all__ = ["CommercialService", "get_author_showcase", "AUTHOR_METADATA", "EditionPolicy", "COMMUNITY_CAPABILITIES"]
+

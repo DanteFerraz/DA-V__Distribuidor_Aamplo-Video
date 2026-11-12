@@ -206,3 +206,4 @@ class SenderWorker:
                 self.sock.sendto(pkt, (self.target_ip, self.target_port))
             except OSError:
                 pass
+

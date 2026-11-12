@@ -31,3 +31,4 @@ def unwrap_relay_packet(data: bytes) -> tuple[str, bytes, bytes] | None:
     role = data[16:17]
     payload = data[17:]
     return pin_tag, role, payload
+

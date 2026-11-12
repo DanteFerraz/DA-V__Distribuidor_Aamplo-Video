@@ -236,3 +236,4 @@ class StreamEngineService:
             "route": self._active_route,
             "latest_stats": self._latest_stats,
         }
+

@@ -47,3 +47,4 @@ class SyntheticCapturer(BaseCapturer):
 
     def close(self) -> None:
         self._is_running = False
+

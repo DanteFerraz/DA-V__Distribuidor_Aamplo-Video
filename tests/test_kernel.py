@@ -147,3 +147,4 @@ def test_config_engine_defaults():
     assert "commercial" in d
     assert cfg.video.fps in (30, 60)
     assert cfg.commercial.edition == "Community"
+

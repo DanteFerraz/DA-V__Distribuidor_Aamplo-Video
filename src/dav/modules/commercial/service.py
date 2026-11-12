@@ -48,3 +48,4 @@ class CommercialService:
     def check_license(self, token: str = "") -> ServiceResult[Dict[str, Any]]:
         """Verifica a licença ou confirma a gratuidade plena."""
         return self.verifier.verify_token(token)
+

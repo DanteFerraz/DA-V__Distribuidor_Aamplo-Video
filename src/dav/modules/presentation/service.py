@@ -26,3 +26,4 @@ class PresentationService:
             dlg.exec()
         except Exception as exc:
             logger.error(f"[Presentation] Falha ao exibir AuthorShowcaseDialog: {exc}")
+

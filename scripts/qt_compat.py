@@ -23,7 +23,7 @@ try:
     )
     from PySide6.QtGui import (
         QIcon, QFont, QColor, QPalette, QPainter, QImage, QPixmap,
-        QPen, QBrush, QLinearGradient
+        QPen, QBrush, QLinearGradient, QShortcut, QKeySequence
     )
     QT_LIB = "PySide6"
 except ImportError:
@@ -43,7 +43,7 @@ except ImportError:
         )
         from PyQt6.QtGui import (
             QIcon, QFont, QColor, QPalette, QPainter, QImage, QPixmap,
-            QPen, QBrush, QLinearGradient
+            QPen, QBrush, QLinearGradient, QShortcut, QKeySequence
         )
         QT_LIB = "PyQt6"
     except ImportError as e:
