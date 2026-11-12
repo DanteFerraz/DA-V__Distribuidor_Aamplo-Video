@@ -89,12 +89,18 @@ jobs:
             --add-data "$ROOT_DIR/installer/dav_icon.ico:." \
             --add-data "$ROOT_DIR/VERSION:." \
             --collect-all av \
+            --collect-all src.dav \
+            --collect-all src.ui \
             --hidden-import scripts.dav_sender_worker \
             --hidden-import scripts.dav_client \
             --hidden-import src.signaling.server.dav_rendezvous \
             --hidden-import src.capture.linux_wayland_portal \
             --hidden-import mss \
             --hidden-import aiohttp \
+            --hidden-import src.dav.modules.updater.update_checker \
+            --hidden-import src.dav.modules.updater.auto_installer \
+            --hidden-import src.dav.modules.updater.service \
+            --hidden-import src.dav.modules.updater.manifest \
             --exclude-module PyQt5 \
             --exclude-module PyQt6 \
             --exclude-module tkinter \
@@ -184,12 +190,18 @@ jobs:
             --add-data "$Root\installer\dav_icon.png;." `
             --add-data "$Root\VERSION;." `
             --collect-all av `
+            --collect-all src.dav `
+            --collect-all src.ui `
             --hidden-import scripts.dav_sender_worker `
             --hidden-import scripts.dav_client `
             --hidden-import src.signaling.server.dav_rendezvous `
             --hidden-import src.capture.linux_wayland_portal `
             --hidden-import mss `
             --hidden-import aiohttp `
+            --hidden-import src.dav.modules.updater.update_checker `
+            --hidden-import src.dav.modules.updater.auto_installer `
+            --hidden-import src.dav.modules.updater.service `
+            --hidden-import src.dav.modules.updater.manifest `
             --exclude-module PyQt5 `
             --exclude-module PyQt6 `
             --exclude-module tkinter `

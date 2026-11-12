@@ -85,6 +85,29 @@ class ModuleRegistry:
                         count += 1
                 except Exception as exc:
                     logger.error(f"Erro ao carregar manifesto de '{child.name}': {exc}")
+
+        if count == 0:
+            # Fallback estático para ambiente congelado (PyInstaller) onde o filesystem não expõe .py
+            static_modules = [
+                "src.dav.modules.capture.manifest",
+                "src.dav.modules.codec.manifest",
+                "src.dav.modules.transport_p2p.manifest",
+                "src.dav.modules.stream_engine.manifest",
+                "src.dav.modules.commercial.manifest",
+                "src.dav.modules.telemetry.manifest",
+                "src.dav.modules.presentation.manifest",
+                "src.dav.modules.updater.manifest",
+            ]
+            for mod_pkg in static_modules:
+                try:
+                    mod = importlib.import_module(mod_pkg)
+                    manifest_obj = getattr(mod, "MANIFEST", getattr(mod, "manifest", None))
+                    if isinstance(manifest_obj, ModuleManifest):
+                        self.register(manifest_obj)
+                        count += 1
+                except Exception as exc:
+                    logger.debug(f"Fallback estático para '{mod_pkg}' não carregado: {exc}")
+
         return count
 
     def startup_all(self) -> None:

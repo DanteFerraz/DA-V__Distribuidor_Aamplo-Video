@@ -29,6 +29,7 @@ build_payload/
 backups/
 dist/
 dist_installer/
+release_assets/
 *.spec
 out/
 bin/

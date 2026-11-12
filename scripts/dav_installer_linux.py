@@ -300,7 +300,7 @@ class DavModernLinuxInstaller(QDialog):
 
         side_layout.addStretch()
 
-        lbl_ver = QLabel("DA-V v3.1.0 (Linux Edition)\nDante Ferraz · MonoTech")
+        lbl_ver = QLabel("DA-V v4.0.0 (Linux Edition)\nDante Ferraz · MonoTech")
         lbl_ver.setStyleSheet(f"font-size: 10px; color: {C_TEXT_MUTED}; line-height: 1.4;")
         side_layout.addWidget(lbl_ver)
 
