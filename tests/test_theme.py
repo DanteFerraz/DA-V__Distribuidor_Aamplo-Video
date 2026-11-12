@@ -48,3 +48,4 @@ def test_theme_stylesheet_generation():
 
     # Restaura tema escuro por padrão
     Theme.set_theme("dark")
+

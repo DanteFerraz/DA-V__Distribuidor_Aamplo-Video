@@ -89,20 +89,32 @@ Implementação da espinha dorsal assíncrona, não-bloqueante e resiliente:
 - Integração na barra lateral [`src/ui/widgets/sidebar.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/ui/widgets/sidebar.py) com botão dedicado `"✦ Sobre o Autor"` e conexão direta na janela principal [`src/ui/main_window.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/ui/main_window.py).
 - Inicialização e encerramento automatizados do Kernel MonoTech v4.0 no ciclo de vida de [`scripts/gui_app.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/scripts/gui_app.py).
 
+### Fase 8: Módulo de Atualizações Automáticas com Consentimento do Usuário (`src/dav/modules/updater/`)
+- [`version_comparator.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/dav/modules/updater/version_comparator.py): Parser e comparador SemVer robusto (`parse_semver`, `is_newer_version`).
+- [`update_checker.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/dav/modules/updater/update_checker.py): Consulta assíncrona da GitHub Releases API protegida por `CircuitBreaker`, localizando o asset binário compatível com o sistema operacional (Windows `.exe` ou Linux `.tar.gz`).
+- [`auto_installer.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/dav/modules/updater/auto_installer.py): Download em streaming com callback de progresso por chunks (64 KB) e disparo desacoplado (`creationflags=DETACHED_PROCESS` no Windows, `chmod +x` no Linux).
+- [`update_dialog.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/dav/modules/updater/update_dialog.py): Diálogo modal Blocks.so com Azul MonoTech, notas de versão renderizadas, barra de progresso em tempo real e ações de consentimento explícito ("Atualizar Agora" vs "Lembrar Mais Tarde").
+- [`service.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/dav/modules/updater/service.py): Orquestrador `UpdaterService` com execução em thread desacoplada sem travar a inicialização do app.
+- [`manifest.py`](file:///c:/Users/Dante/Desktop/Distribuidor_Aamplo-Video/src/dav/modules/updater/manifest.py): Auto-registro no `ModuleRegistry` do MonoTech Core Kernel.
+- Integração no `DavMainWindow`: Verificação não-bloqueante no startup (`QTimer.singleShot(2500)`) e botão manual "🔄 Buscar Atualizações" no console de diagnóstico.
+
 ---
 
 ## 3. Matriz de Validação & Resultados dos Testes Automatizados
 
-A suíte completa de testes unitários e de integração foi executada com **100% de sucesso (30/30 testes aprovados em 11.37s)**:
+A suíte completa de testes unitários e de integração foi executada com **100% de sucesso (43/43 testes aprovados em 10.12s)**:
 
 | Teste Unitário / Arquivo | Foco da Validação | Resultado |
 | :--- | :--- | :---: |
-| `tests/test_kernel.py` (6 testes) | `ServiceResult`, `ModuleRegistry`, `EventBus`, `L1BufferPool`, `CircuitBreaker`, `ConfigEngine` | **PASSED** (0.44s) |
-| `tests/test_media_slices.py` (3 testes) | Captura sintética, enumeração de telas, encoder NVENC/x264 e decoder PyAV C-Contiguous | **PASSED** (3.69s) |
-| `tests/test_stream_engine.py` (2 testes) | Fragmentação MTU 1320, cifragem SIMD roundtrip, ciclo de vida do `StreamEngineService` | **PASSED** (3.20s) |
-| `tests/test_commercial.py` (3 testes) | Showcase do autor Dante Ferraz, política 100% Free e verificador de licença | **PASSED** (0.33s) |
-| `tests/test_telemetry.py` (3 testes) | Jitter TUPÃ RFC 3550, CircuitBreaker no SDE Hub e agregação via EventBus | **PASSED** (2.01s) |
-| `tests/test_presentation.py` (2 testes) | Instanciação e modalidade do diálogo institucional PySide6 | **PASSED** (1.80s) |
+| `tests/test_kernel.py` (6 testes) | `ServiceResult`, `ModuleRegistry`, `EventBus`, `L1BufferPool`, `CircuitBreaker`, `ConfigEngine` | **PASSED** |
+| `tests/test_media_slices.py` (3 testes) | Captura sintética, enumeração de telas, encoder NVENC/x264 e decoder PyAV C-Contiguous | **PASSED** |
+| `tests/test_stream_engine.py` (2 testes) | Fragmentação MTU 1320, cifragem SIMD roundtrip, ciclo de vida do `StreamEngineService` | **PASSED** |
+| `tests/test_commercial.py` (3 testes) | Showcase do autor Dante Ferraz, política 100% Free e verificador de licença | **PASSED** |
+| `tests/test_telemetry.py` (3 testes) | Jitter TUPÃ RFC 3550, CircuitBreaker no SDE Hub e agregação via EventBus | **PASSED** |
+| `tests/test_presentation.py` (2 testes) | Instanciação e modalidade do diálogo institucional PySide6 | **PASSED** |
+| `tests/test_theme.py` (3 testes) | Tokens Blocks.so, alternância Dark/Light e paleta Azul MonoTech (`#0066FF`) | **PASSED** |
+| `tests/test_diagnostic_packager.py` (1 teste) | Empacotamento zip `data-hora_DA-V-log.zip` com logs e telemetria | **PASSED** |
+| `tests/test_updater.py` (9 testes) | SemVer, GitHub Releases API, CircuitBreaker, auto-installer, download seguro e registry | **PASSED** |
 | `tests/test_p2p_e2e.py` (3 testes) | STUN Single-Socket, pareamento H.264 P2P direto e fallback CGNAT com Blind Relay | **PASSED** |
 | `tests/test_packetizer_crypto.py` (1 teste) | Integridade de pacotes e autenticação | **PASSED** |
 | `tests/test_qos_engine.py` (1 teste) | Motor de resiliência e adaptação de bitrate | **PASSED** |
@@ -110,7 +122,7 @@ A suíte completa de testes unitários e de integração foi executada com **100
 | `tests/test_codec_encoder.py` (1 teste) | Pipeline H.264 | **PASSED** |
 | `tests/test_dav_rendezvous.py` (1 teste) | Servidor Rendezvous SSE | **PASSED** |
 
-**Resultado Geral:** **30 passed in 11.37s** (Taxa de Sucesso: **100.0%**).  
+**Resultado Geral:** **43 passed in 10.12s** (Taxa de Sucesso: **100.0%**).  
 **Verificação GUI Desktop:** `py -3.13 scripts/gui_app.py --self-check` retornou **`DAV_SELF_CHECK_OK`** (código 0).
 
 ---
@@ -134,6 +146,7 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `src/dav/modules/commercial/__init__.py`, `author_showcase.py`, `edition_policy.py`, `license_verifier.py`, `service.py`, `manifest.py`
 - `src/dav/modules/telemetry/__init__.py`, `tupa_probes.py`, `sde_exporter.py`, `service.py`, `manifest.py`, `diagnostic_packager.py`
 - `src/dav/modules/presentation/__init__.py`, `author_dialog.py`, `service.py`, `manifest.py`
+- `src/dav/modules/updater/__init__.py`, `version_comparator.py`, `update_checker.py`, `auto_installer.py`, `update_dialog.py`, `service.py`, `manifest.py`
 - `tests/test_kernel.py`
 - `tests/test_media_slices.py`
 - `tests/test_stream_engine.py`
@@ -142,6 +155,7 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `tests/test_presentation.py`
 - `tests/test_diagnostic_packager.py`
 - `tests/test_theme.py`
+- `tests/test_updater.py`
 - `backups/snapshot_v3.2.1_pre_modularizacao/ARCH_V3_SNAPSHOT.md`
 - `backups/snapshot_v3.2.1_pre_modularizacao/dav_v3.2.1_source_snapshot.zip`
 
@@ -154,13 +168,13 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `scripts/gui_app.py`: Bootstrap do Kernel MonoTech v4.0 com auto-descoberta e shutdown seguro.
 - `scripts/qt_compat.py`: Adição do binding para `QDialog`, `QShortcut` e `QKeySequence`.
 - `src/ui/theme.py`: Design System Blocks.so com suporte nativo a temas Claro/Escuro e contraste em Azul MonoTech (`#0066FF`).
-- `src/ui/main_window.py`: Conexão do botão Sobre o Autor, exportador de diagnóstico `Ctrl+Shift+L`, botão de alternância de tema e sincronização de versão.
+- `src/ui/main_window.py`: Conexão do botão Sobre o Autor, exportador de diagnóstico `Ctrl+Shift+L`, botão de alternância de tema, verificação assíncrona de atualizações no startup via `QTimer.singleShot(2500)` e integração ao modal de consentimento.
 - `src/ui/widgets/header.py`: Botão de alternância de tema Claro/Escuro (☀️ Claro / 🌙 Escuro) e atualização dinâmica de tokens.
 - `src/ui/widgets/sidebar.py`: Adição do botão `"✦ Sobre o Autor"` e sinal `about_clicked`, com suporte a repintura em tema claro.
 - `src/ui/widgets/cards.py`: Método `update_theme_display()` para cartões de estatísticas com bordas Blocks.so.
 - `src/ui/widgets/canvas.py`: Atalhos interativos (`F11` fullscreen, `ESC` sair, `F2`/`H` ciclar HUD, `F3`/`M` modos de escala 'fit'/'stretch'/'native', `F12` screenshot) e HUD minimalista pílula.
 - `src/ui/views/sender_view.py`: Suporte a repintura e atualização dinâmica de tema nos cartões de transmissão.
-- `src/ui/views/troubleshoot_view.py`: Botão `"📦 Exportar Diagnóstico (.zip)"`.
+- `src/ui/views/troubleshoot_view.py`: Botão `"📦 Exportar Diagnóstico (.zip)"` e botão `"🔄 Buscar Atualizações"` manual.
 
 ---
 

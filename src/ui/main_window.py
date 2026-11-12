@@ -60,6 +60,7 @@ class DavMainWindow(QMainWindow):
     peers_updated_signal = Signal(list)
     tupa_metrics_signal = Signal(object)
     target_updated_signal = Signal(str, int, str)
+    update_checked_signal = Signal(object, bool)
 
     def __init__(
         self,
@@ -144,12 +145,22 @@ class DavMainWindow(QMainWindow):
         self.setStyleSheet(Theme.build_stylesheet())
         self._init_ui()
 
+        self.updater_service = None
+        try:
+            from src.dav.modules.updater.service import UpdaterService
+            self.updater_service = UpdaterService(current_version=self.version_str)
+        except Exception as exc:
+            self._append_log("WARN", f"Módulo de atualização não inicializado: {exc}")
+
+        self.update_checked_signal.connect(self._handle_update_check_result)
+
         backend_tag = _detect_engine_badge(self.engine.is_native_backend)
         self._append_log(
             "INFO",
             f"DA-V v{self.version_str} pronto em {self.local_ip}:{self.default_port} ({backend_tag}).",
         )
         QTimer.singleShot(1000, self._check_firewall_status)
+        QTimer.singleShot(2500, self._check_updates_on_startup)
 
         if auto_recv:
             recv_auto_ip = "" if p2p_uri_mode else "127.0.0.1"
@@ -227,6 +238,7 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.fix_firewall_requested.connect(self._fix_firewall)
         self.view_troubleshoot.check_firewall_requested.connect(self._check_firewall_status)
         self.view_troubleshoot.export_logs_requested.connect(self._export_diagnostic_bundle)
+        self.view_troubleshoot.check_update_requested.connect(self._manual_check_updates)
         self.stacked_views.addWidget(self.view_troubleshoot)
 
         # Atalho global para exportação de diagnóstico
@@ -312,6 +324,73 @@ class DavMainWindow(QMainWindow):
                 self._append_log("ERROR", f"Falha ao gerar pacote de diagnóstico: {res.error}")
         except Exception as exc:
             self._append_log("ERROR", f"Exceção ao gerar diagnóstico: {exc}")
+
+    # ------------------------------------------------------------------------
+    # CONTROLADOR DE ATUALIZAÇÕES AUTOMÁTICAS (DA-V UPDATER)
+    # ------------------------------------------------------------------------
+    def _check_updates_on_startup(self):
+        """Verifica atualizações em segundo plano sem travar a interface inicial."""
+        if not self.updater_service:
+            return
+        self._append_log("INFO", "Verificando se há atualizações disponíveis no repositório...")
+        self.updater_service.start_background_check(
+            on_complete=lambda res: self.update_checked_signal.emit(res, False)
+        )
+
+    def _manual_check_updates(self):
+        """Dispara verificação manual solicitada pelo usuário no painel de diagnóstico."""
+        if not self.updater_service:
+            self._append_log("WARN", "Serviço de atualização indisponível.")
+            return
+        self._append_log("INFO", "Buscando novas atualizações do DA-V no GitHub...")
+        started = self.updater_service.start_background_check(
+            on_complete=lambda res: self.update_checked_signal.emit(res, True)
+        )
+        if not started:
+            self._append_log("WARN", "Verificação de atualizações já em andamento.")
+
+    @Slot(object, bool)
+    def _handle_update_check_result(self, result, is_manual: bool):
+        """Processa o resultado da verificação de atualizações no thread principal da UI."""
+        if not result.is_success:
+            if is_manual:
+                self._append_log("WARN", f"Não foi possível verificar atualizações: {result.error}")
+                try:
+                    from scripts.qt_compat import QMessageBox
+                    QMessageBox.warning(
+                        self,
+                        "Verificação de Atualizações",
+                        f"Não foi possível consultar os servidores do DA-V no momento.\n\nDetalhe: {result.error}",
+                    )
+                except Exception:
+                    pass
+            return
+
+        info = result.value
+        if info.has_update:
+            self._append_log("INFO", f"Nova versão encontrada: v{info.latest_version} (atual: v{info.current_version}).")
+            self._prompt_update_consent(info)
+        else:
+            self._append_log("INFO", f"DA-V está atualizado (v{info.current_version}).")
+            if is_manual:
+                try:
+                    from scripts.qt_compat import QMessageBox
+                    QMessageBox.information(
+                        self,
+                        "DA-V Atualizado",
+                        f"Você já está utilizando a versão mais recente do DA-V (v{info.current_version}).\n\nNenhuma atualização necessária.",
+                    )
+                except Exception:
+                    pass
+
+    def _prompt_update_consent(self, update_info):
+        """Abre o diálogo modal de consentimento com notas de versão e download/instalação."""
+        try:
+            from src.dav.modules.updater.update_dialog import UpdateConsentDialog
+            dlg = UpdateConsentDialog(update_info=update_info, parent=self)
+            dlg.exec()
+        except Exception as exc:
+            self._append_log("ERROR", f"Falha ao exibir diálogo de atualização: {exc}")
 
     # ------------------------------------------------------------------------
     # CONTROLADOR DO RECEPTOR (VIEWER) — P2P SINGLE-SOCKET & LAN DIRETO
