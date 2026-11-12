@@ -173,3 +173,15 @@ class SenderView(QWidget):
         self.card_mbps.set_value(f"{mbps:.2f} Mbps")
         self.card_frames.set_value(f"{frames:,}")
         self.card_packets.set_value(f"{packets:,}")
+
+    def update_theme_display(self):
+        """Atualiza cartões e rótulos conforme o tema ativo (Blocks.so)."""
+        s = Theme.SYS
+        self.card_fps.update_theme_display()
+        self.card_mbps.update_theme_display()
+        self.card_frames.update_theme_display()
+        self.card_packets.update_theme_display()
+        if self.is_sending:
+            self.lbl_send_status.setStyleSheet(f"color: {s['status_success']}; font-weight: 700; font-size: 14px;")
+        else:
+            self.lbl_send_status.setStyleSheet(f"color: {s['text_muted']}; font-weight: 700; font-size: 14px;")

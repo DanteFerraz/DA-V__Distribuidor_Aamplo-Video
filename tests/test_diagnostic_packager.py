@@ -56,3 +56,4 @@ def test_diagnostic_packager_generate_bundle_and_verify_zip_structure():
             # Valida ambiente do sistema
             env_json = json.loads(zf.read("system_environment.json").decode("utf-8"))
             assert env_json["dav_version"] == "4.0.0"
+

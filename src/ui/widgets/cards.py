@@ -59,6 +59,26 @@ class StatCard(QFrame):
         if self.lbl_subtext and subtext:
             self.lbl_subtext.setText(subtext)
 
+    def update_theme_display(self):
+        """Atualiza cores e bordas conforme o tema ativo (Blocks.so)."""
+        s = Theme.SYS
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {s["bg_surface_card"]};
+                border: 1px solid {s["border_subtle"]};
+                border-radius: {Theme.RADIUS_LG}px;
+                padding: 10px;
+            }}
+        """)
+        self.lbl_title.setStyleSheet(f"""
+            font-size: 11px;
+            font-weight: 700;
+            color: {s["text_muted"]};
+            letter-spacing: 0.5px;
+        """)
+        if self.lbl_subtext:
+            self.lbl_subtext.setStyleSheet(f"font-size: 11px; color: {s['text_muted']};")
+
 
 class StatusPill(QLabel):
     """Pill badge communicating state with a high-contrast label."""

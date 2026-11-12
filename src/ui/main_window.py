@@ -239,6 +239,7 @@ class DavMainWindow(QMainWindow):
 
         self.sidebar.page_changed.connect(self._on_page_changed)
         self.sidebar.about_clicked.connect(self._show_author_showcase)
+        self.top_header.theme_toggled.connect(self._toggle_theme)
         self.top_header.set_receiver_mode(True)
 
         content_layout.addWidget(self.stacked_views, stretch=1)
@@ -257,6 +258,20 @@ class DavMainWindow(QMainWindow):
             dlg.exec()
         except Exception as exc:
             self._append_log("WARN", f"Falha ao abrir diálogo institucional: {exc}")
+
+    def _toggle_theme(self):
+        """Alterna a interface global entre os temas Claro e Escuro (Blocks.so + Azul MonoTech)."""
+        new_mode = Theme.toggle_theme()
+        self.setStyleSheet(Theme.build_stylesheet())
+        self.stacked_views.setStyleSheet(f"background-color: {Theme.SYS['bg_canvas']};")
+        self.top_header.update_theme_display()
+        self.sidebar.update_theme_display()
+        if hasattr(self, "view_viewer") and hasattr(self.view_viewer, "video_canvas"):
+            self.view_viewer.video_canvas.update()
+        if hasattr(self, "view_sender") and hasattr(self.view_sender, "update_theme_display"):
+            self.view_sender.update_theme_display()
+        mode_label = "CLARO" if new_mode == "light" else "ESCURO"
+        self._append_log("INFO", f"Tema comutado para Modo {mode_label} (Blocks.so + Azul MonoTech).")
 
     def _export_diagnostic_bundle(self):
         """Coleta logs, telemetria e estado de rede gerando o pacote ZIP 'data-hora_DA-V-log.zip'."""

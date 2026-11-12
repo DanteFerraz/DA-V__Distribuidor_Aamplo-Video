@@ -126,3 +126,4 @@ class DiagnosticPackager:
         except Exception as exc:
             logger.error(f"[DiagnosticPackager] Falha ao empacotar diagnóstico: {exc}", exc_info=True)
             return ServiceResult.fail(str(exc), code="BUNDLE_ERROR")
+

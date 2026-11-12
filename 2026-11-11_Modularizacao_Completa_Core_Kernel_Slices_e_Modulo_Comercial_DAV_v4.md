@@ -141,6 +141,7 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `tests/test_telemetry.py`
 - `tests/test_presentation.py`
 - `tests/test_diagnostic_packager.py`
+- `tests/test_theme.py`
 - `backups/snapshot_v3.2.1_pre_modularizacao/ARCH_V3_SNAPSHOT.md`
 - `backups/snapshot_v3.2.1_pre_modularizacao/dav_v3.2.1_source_snapshot.zip`
 
@@ -152,9 +153,13 @@ A suíte completa de testes unitários e de integração foi executada com **100
 - `LEIA-ME_LINUX.md`: Atualizado para versão 4.0.0.
 - `scripts/gui_app.py`: Bootstrap do Kernel MonoTech v4.0 com auto-descoberta e shutdown seguro.
 - `scripts/qt_compat.py`: Adição do binding para `QDialog`, `QShortcut` e `QKeySequence`.
-- `src/ui/main_window.py`: Conexão do botão Sobre o Autor, exportador de diagnóstico `Ctrl+Shift+L` e sincronização de versão.
-- `src/ui/widgets/sidebar.py`: Adição do botão `"✦ Sobre o Autor"` e sinal `about_clicked`.
+- `src/ui/theme.py`: Design System Blocks.so com suporte nativo a temas Claro/Escuro e contraste em Azul MonoTech (`#0066FF`).
+- `src/ui/main_window.py`: Conexão do botão Sobre o Autor, exportador de diagnóstico `Ctrl+Shift+L`, botão de alternância de tema e sincronização de versão.
+- `src/ui/widgets/header.py`: Botão de alternância de tema Claro/Escuro (☀️ Claro / 🌙 Escuro) e atualização dinâmica de tokens.
+- `src/ui/widgets/sidebar.py`: Adição do botão `"✦ Sobre o Autor"` e sinal `about_clicked`, com suporte a repintura em tema claro.
+- `src/ui/widgets/cards.py`: Método `update_theme_display()` para cartões de estatísticas com bordas Blocks.so.
 - `src/ui/widgets/canvas.py`: Atalhos interativos (`F11` fullscreen, `ESC` sair, `F2`/`H` ciclar HUD, `F3`/`M` modos de escala 'fit'/'stretch'/'native', `F12` screenshot) e HUD minimalista pílula.
+- `src/ui/views/sender_view.py`: Suporte a repintura e atualização dinâmica de tema nos cartões de transmissão.
 - `src/ui/views/troubleshoot_view.py`: Botão `"📦 Exportar Diagnóstico (.zip)"`.
 
 ---

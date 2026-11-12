@@ -197,3 +197,30 @@ class SidebarNavigation(QFrame):
 
         for btn in self.buttons:
             btn.set_collapsed(self.is_collapsed)
+
+    def update_theme_display(self):
+        """Atualiza a aparência da barra lateral de acordo com o tema ativo (Claro/Escuro)."""
+        s = Theme.SYS
+        self.setStyleSheet(f"""
+            QFrame#sidebarFrame {{
+                background-color: {s["bg_surface"]};
+                border-right: 1px solid {s["border_subtle"]};
+            }}
+        """)
+        self.lbl_brand_text.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {s['text_primary']};")
+        self.btn_about.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {s["text_accent"]};
+                border: 1px solid {s["border_subtle"]};
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {s["bg_surface_hover"]};
+                border-color: {s["accent_primary"]};
+            }}
+        """)
+        for btn in self.buttons:
+            btn._update_appearance()

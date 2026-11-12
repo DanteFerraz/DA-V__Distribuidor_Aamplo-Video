@@ -14,6 +14,7 @@ from src.ui.theme import Theme
 class TopHeaderBar(QFrame):
     """Modern top bar providing global connection identity and access tokens."""
     pin_regenerated = Signal()
+    theme_toggled = Signal()
 
     def __init__(self, local_ip: str, default_port: int, initial_pin: str, engine_tag: str, parent=None):
         super().__init__(parent)
@@ -42,13 +43,13 @@ class TopHeaderBar(QFrame):
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
 
-        lbl_app = QLabel("DA-V · DISTRIBUIDOR AMPLO DE VÍDEO")
-        lbl_app.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Theme.SYS['accent_primary']}; letter-spacing: 0.8px;")
+        self.lbl_app = QLabel("DA-V · DISTRIBUIDOR AMPLO DE VÍDEO")
+        self.lbl_app.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Theme.SYS['accent_primary']}; letter-spacing: 0.8px;")
         
         self.lbl_sub = QLabel(f"Ultra-Low Latency Video Streaming — {self.engine_tag}")
         self.lbl_sub.setStyleSheet(f"font-size: 11px; color: {Theme.SYS['text_muted']};")
 
-        title_box.addWidget(lbl_app)
+        title_box.addWidget(self.lbl_app)
         title_box.addWidget(self.lbl_sub)
         layout.addLayout(title_box)
 
@@ -102,6 +103,47 @@ class TopHeaderBar(QFrame):
         self.btn_new_pin.setFixedHeight(30)
         self.btn_new_pin.clicked.connect(self.pin_regenerated.emit)
         layout.addWidget(self.btn_new_pin)
+
+        # Theme Toggle Button (Light/Dark Mode Blocks.so)
+        theme_txt = "☀️ Claro" if Theme.current_mode == "dark" else "🌙 Escuro"
+        self.btn_theme = QPushButton(theme_txt)
+        self.btn_theme.setObjectName("secondaryBtn")
+        self.btn_theme.setFixedHeight(30)
+        self.btn_theme.setToolTip("Alternar entre modo Claro e Escuro (Blocks.so)")
+        self.btn_theme.clicked.connect(self.theme_toggled.emit)
+        layout.addWidget(self.btn_theme)
+
+    def update_theme_display(self):
+        s = Theme.SYS
+        self.setStyleSheet(f"""
+            QFrame#topHeaderFrame {{
+                background-color: {s["bg_surface"]};
+                border-bottom: 1px solid {s["border_subtle"]};
+            }}
+        """)
+        self.lbl_app.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {s['accent_primary']}; letter-spacing: 0.8px;")
+        self.lbl_sub.setStyleSheet(f"font-size: 11px; color: {s['text_muted']};")
+        self.lbl_ip_badge.setStyleSheet(f"""
+            background-color: {s["bg_surface_elevated"]};
+            border: 1px solid {s["border_subtle"]};
+            border-radius: 6px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: {s["text_secondary"]};
+        """)
+        self.lbl_pin_badge.setStyleSheet(f"""
+            background-color: {s["status_success_bg"]};
+            border: 1px solid {s["status_success"]};
+            border-radius: 6px;
+            padding: 5px 14px;
+            font-size: 13px;
+            font-weight: 800;
+            color: {s["status_success"]};
+            letter-spacing: 1px;
+        """)
+        theme_txt = "☀️ Claro" if Theme.current_mode == "dark" else "🌙 Escuro"
+        self.btn_theme.setText(theme_txt)
 
     def update_pin(self, new_pin: str):
         self.current_pin = new_pin
