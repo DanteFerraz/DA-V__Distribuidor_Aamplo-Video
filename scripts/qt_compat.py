@@ -15,7 +15,7 @@ try:
         QSpinBox, QComboBox, QCheckBox, QGroupBox, QTableWidget,
         QTableWidgetItem, QHeaderView, QTextEdit, QProgressBar,
         QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget,
-        QWizard, QWizardPage
+        QWizard, QWizardPage, QDialog
     )
     from PySide6.QtCore import (
         Qt, QTimer, QThread, Signal, Slot, QSize, QPoint, QRect, QByteArray,
@@ -35,7 +35,7 @@ except ImportError:
             QSpinBox, QComboBox, QCheckBox, QGroupBox, QTableWidget,
             QTableWidgetItem, QHeaderView, QTextEdit, QProgressBar,
             QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget,
-            QWizard, QWizardPage
+            QWizard, QWizardPage, QDialog
         )
         from PyQt6.QtCore import (
             Qt, QTimer, QThread, pyqtSignal as Signal, pyqtSlot as Slot,

@@ -1,4 +1,4 @@
-# DA-V v3.2.0 — Guia Operacional e Técnico para Linux
+# DA-V v4.0.0 — Guia Operacional e Técnico para Linux
 
 Documentação dedicada à instalação, compilação e operação do **DA-V (Distribuidor Amplo de Vídeo)** em distribuições Linux modernas (**Ubuntu 22.04 / 24.04 / 26.04 LTS**, **Debian 12+**, **Fedora 40+** e **Arch Linux**).
 

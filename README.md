@@ -2,15 +2,15 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Release-v3.1.1-0ea5e9?style=for-the-badge)
-![Core](https://img.shields.io/badge/Engine-Python%20SIMD%20%2B%20C%2B%2B23-1e293b?style=for-the-badge)
-![Cadence](https://img.shields.io/badge/Streaming-1080p%20%40%2060%20FPS-10b981?style=for-the-badge)
-![NAT Traversal](https://img.shields.io/badge/P2P-Single--Socket%20STUN%20%2B%20Blind%20Relay-f59e0b?style=for-the-badge)
+![Version](https://img.shields.io/badge/Release-v4.0.0-0ea5e9?style=for-the-badge)
+![Core](https://img.shields.io/badge/Architecture-MonoTech%20Core%20Kernel%20v2.0-1e293b?style=for-the-badge)
+![Cadence](https://img.shields.io/badge/Streaming-Up%20to%204K%20%40%20120%20FPS-10b981?style=for-the-badge)
+![License](https://img.shields.io/badge/Community%20Edition-100%25%20Free%20%26%20Open-8b5cf6?style=for-the-badge)
 ![Platforms](https://img.shields.io/badge/OS-Windows%2010%2F11%20%7C%20Linux%20x64-6366f1?style=for-the-badge)
 
-**Compartilhamento de tela ponto a ponto de baixa latência a 60 FPS reais entre Windows e Linux — com pareamento universal por PIN, perfuração direta de NAT e fallback automático para CGNAT.**
+**Compartilhamento de tela ponto a ponto de ultra-baixa latência (até 4K 120 FPS) entre Windows e Linux — com pareamento universal por PIN, arquitetura modular MonoTech Core Kernel v2.0, perfuração direta de NAT e fallback automático para CGNAT Simétrico.**
 
-[Arquitetura de Software](#arquitetura-de-software) •
+[Arquitetura de Software v4.0](#arquitetura-de-software-v40---monotech-core-kernel) •
 [Protocolo P2P e Travessia de NAT](#engenharia-p2p-stun-single-socket-e-blind-relay) •
 [Formato de Pacote na Rede](#protocolo-binário-de-transporte) •
 [Como Executar](#instalação-e-execução) •
@@ -30,34 +30,62 @@ Em vez de embutir um navegador inteiro (Electron/WebRTC), o DA-V separa estritam
 
 ---
 
-## Arquitetura de Software
+## Arquitetura de Software v4.0 — MonoTech Core Kernel
 
-O projeto adota uma **arquitetura multiprocesso desacoplada** com protocolo de rede unificado entre Windows e Linux, acompanhada de módulos nativos em **C++23** (`libdav_core.so` / `dav_daemon`) para cenários embarcados e *headless*.
+O **DA-V v4.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0** (o mesmo padrão corporativo aplicado nos projetos de alta criticidade do autor, como o SGE). O monólito original foi decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e fatias verticais desacopladas (`src/dav/modules/`), garantindo resiliência, isolamento de falhas e extensibilidade sem acoplamento direto:
 
 ```mermaid
 flowchart TB
-    subgraph TX_HOST ["Nó Transmissor (Windows / Linux)"]
+    subgraph KERNEL ["MonoTech Core Kernel (src/dav/kernel/)"]
         direction TB
-        UI_TX["Interface PySide6 (Controle, Standby e Telemetria TUPÃ)"]
-        subgraph TX_PROC ["Processo Isolado OS (DAV-Sender-Engine · Sem Contenção GIL)"]
-            direction TB
-            CAP["Captura de Tela (Win11: WGC Direct3D / GDI · Linux: X11 MIT-SHM / MSS)"]
-            ENC["HybridEncoder Zero-B-Frames (GPU: NVENC p1 ULL · CPU: libx264 zerolatency)"]
-            CIPHER_TX["Cifragem Vetorizada SIMD + Fragmentador MTU 1320 B"]
-            SOCK_TX["SenderTransportEndpoint (Descritor Único UDP · SO_SNDBUF 32 MB)"]
-            CAP --> ENC --> CIPHER_TX --> SOCK_TX
-        end
-        UI_TX <-->|"IPC Filas (Comandos / Métricas)"| TX_PROC
+        REG["ModuleRegistry (Descoberta & Ciclo de Vida Topológico)"]
+        BUS["EventBus (Pub/Sub Assíncrono com ThreadPool)"]
+        RES["ServiceResult[T] (Tratamento Funcional de Erros)"]
+        POOL["L1BufferPool (Gerenciamento Contíguo O(1) de Quadros)"]
+        CB["CircuitBreaker (Proteção contra Latência de Nuvem Externa)"]
+        CONF["ConfigEngine (dav.toml Hierárquico + Variáveis de Ambiente)"]
     end
 
-    subgraph CLOUD ["Camada de Descoberta e Contingência"]
+    subgraph SLICES ["Fatias Verticais de Mídia & Negócio (src/dav/modules/)"]
         direction TB
-        BEACON["LAN Beacon UDP :9005 (Broadcast + Subnet Sweep Zero-Cloud)"]
-        STUN_PUB["STUN Público RFC 5389 (Google / Cloudflare)"]
-        RDV["Servidor DAV-Rendezvous (HTTP/SSE :80/:8765 + Blind Relay UDP :8768)"]
+        CAP["capture: Fábrica Multiplataforma (WGC Win11, Wayland PipeWire Portal, MSS)"]
+        COD["codec: NVENC GPU + libx264 AVX2 Sliced + PyAV C-Contiguous"]
+        NET["transport_p2p: STUN Single-Socket, ICE-Lite, Blind Relay DAV_RLY1"]
+        ENG["stream_engine: SenderWorker / ReceiverWorker (Cadência 60/120 FPS + PLI)"]
+        COM["commercial: Governança Autoral (MonoTech Community 100% Free & Open)"]
+        TEL["telemetry: Sondas TUPÃ (Jitter RFC 3550, RTT) + Exportador SDE Live Hub"]
+        UI["presentation: Shell PySide6 + Diálogo Institucional Dante Ferraz"]
     end
 
-    subgraph RX_HOST ["Nó Receptor (Windows / Linux)"]
+    REG -->|"Auto-Discovery & Startup"| SLICES
+    SLICES <-->|"Eventos Não-Bloqueantes"| BUS
+    ENG -->|"Pool de Memória"| POOL
+    TEL -->|"Isolamento de Falha"| CB
+```
+
+### Fatias Verticais do Sistema (`src/dav/modules/`)
+
+1. **`capture` (Fábrica de Captura Multiplataforma):**
+   - **Windows:** Windows Graphics Capture (WGC Direct3D) com fallback MSS / GDI.
+   - **Linux:** XDG Desktop Portal (`org.freedesktop.portal.ScreenCast`) integrado via PipeWire e GStreamer no Wayland, além de sentinela anti-black-frame no X11.
+   - **Synthetic:** Gerador sintético com padrão de teste SMPTE para execução em ambientes *headless* e integração contínua (CI/CD).
+2. **`codec` (Compressão e Descompressão de Vídeo):**
+   - **Codificação:** Aceleração por hardware NVIDIA NVENC (`p1` ULL) com *single-pass rescale* SIMD `bgra -> yuv420p` via FFmpeg `libswscale`, e fallback multi-core `libx264` (`ultrafast`, `zerolatency`, `sliced-threads`).
+   - **Decodificação:** PyAV com garantia estrita de buffers NumPy `C_CONTIGUOUS` para resoluções não-múltiplas de 32 bytes (como notebooks `1366x768`).
+3. **`transport_p2p` (Protocolo de Rede & STUN Single-Socket):**
+   - Consulta STUN RFC 5389 sobre o mesmo socket de transmissão de mídia.
+   - Criptografia simétrica com vetorização SIMD derivada do PIN.
+   - Tunelamento Blind Relay UDP (`DAV_RLY1`) com encaminhamento `O(1)` em memória.
+4. **`stream_engine` (Motor de Streaming Ativo):**
+   - `SenderWorker` e `ReceiverWorker` com recuperação instantânea de quadros-chave sob demanda (PLI).
+5. **`commercial` (MonoTech Community Edition 100% Gratuito):**
+   - Sem limites de duração, até 4K UHD 120 FPS liberados para toda a comunidade técnica.
+   - Vitrine institucional com atribuição canônica a **Dante Ferraz** e links para o ecossistema autoral (**TUPÃ**, **SDE**, **SGE**, **OPME**).
+6. **`telemetry` (Observabilidade em Tempo Real):**
+   - Sondas de rede baseadas no protocolo **TUPÃ** para medição de jitter estatístico (RFC 3550) e RTT.
+   - Exportador assíncrono para o **SDE Live Hub** (`http://129.148.26.150:5001/sde/live`) protegido por `CircuitBreaker`.
+7. **`presentation` (Camada Visual & Interativa):**
+   - Diálogo modal nativo *"Sobre o Autor & Tecnologias"* integrado ao menu lateral Obsidian Dark.
         direction TB
         SOCK_RX["Loop Receptor Assíncrono (Descritor Único UDP + Janela 40 Quadros)"]
         DEC_W["DecodeWorker Thread Dedicada (FFmpeg/PyAV Slice Low-Delay · 4 Threads)"]
@@ -309,6 +337,9 @@ Distribuidor_Aamplo-Video/
 │   ├── dav_installer_linux.py  # Assistente gráfico de instalação XDG/UFW para Linux
 │   └── setup_firewall.ps1      # Automação de regras UDP no Windows Defender Firewall
 ├── src/
+│   ├── dav/                    # Arquitetura MonoTech Core v4.0
+│   │   ├── kernel/             # Result[T], Registry, EventBus, BufferPool, CircuitBreaker, Config
+│   │   └── modules/            # Fatias verticais (capture, codec, transport_p2p, stream_engine, commercial, telemetry, presentation)
 │   ├── capture/                # Capturadores C++23 (DXGI Desktop Duplication e X11 MIT-SHM)
 │   ├── codec/                  # HybridEncoder / HybridDecoder (NVENC, libx264 ULL, JPEG, RAW)
 │   ├── core/                   # Configuração TOML, logger, tipos e ponte C-ABI
@@ -321,7 +352,7 @@ Distribuidor_Aamplo-Video/
 ├── tests/                      # Suíte de testes unitários e integração E2E
 ├── CHANGELOG.md                # Histórico semântico de versões
 ├── LEIA-ME_LINUX.md            # Documentação operacional dedicada ao ambiente Linux
-├── VERSION                     # Versão canônica do projeto (3.1.0)
+├── VERSION                     # Versão canônica do projeto (4.0.0)
 └── requirements.txt            # Dependências Python multiplataforma
 ```
 

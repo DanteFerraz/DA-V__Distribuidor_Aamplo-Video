@@ -4,6 +4,26 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [4.0.0] — 2026-11-11
+
+### Arquitetura & Modularização Completa (MonoTech Core Kernel v2.0)
+- **Migração Modular em Fatias Verticais (`src/dav/`):** Refatoração integral do monólito em fatias modulares desacopladas e autônomas:
+  - `src/dav/kernel/`: Núcleo funcional corporativo contendo `result.py` (`ServiceResult[T]`, `FrameDTO`, `RouteDTO`, `TelemetryDTO`), `registry.py` (`ModuleRegistry` & `ModuleManifest` com descoberta dinâmica e ciclo de vida topológico), `event_bus.py` (Barramento de eventos thread-safe não-bloqueante), `buffer_pool.py` (`L1BufferPool` com memória contígua `O(1)` e fallback seguro), `circuit_breaker.py` (Máquina de estados `CLOSED`, `OPEN`, `HALF_OPEN` para isolamento de latência e falhas de rede externa), e `config.py` (`ConfigEngine` hierárquico com suporte a `dav.toml` e variáveis de ambiente).
+  - `src/dav/modules/capture/`: Fatia de captura de tela com fábrica multiplataforma (`WindowsCapturer` com WGC Direct3D / MSS, `LinuxCapturer` com Wayland PipeWire Portal / X11 sentinela anti-black-frame, e `SyntheticCapturer` para ambientes de testes e CI/CD).
+  - `src/dav/modules/codec/`: Fatia de compressão e descompressão de vídeo com suporte a aceleração por hardware NVIDIA NVENC, CPU multi-core `libx264` AVX2 sliced-threads, escala e conversão de espaço de cores SIMD em passe único (`bgra -> yuv420p`), e decodificador PyAV com garantia estrita de buffers C-contíguos para qualquer resolução (ex: notebooks `1366x768`).
+  - `src/dav/modules/transport_p2p/`: Fatia de rede P2P Single-Socket contendo cabeçalho binário de 32 bytes (`DAV_SSRC`), vetor criptográfico simétrico SIMD derivado do PIN, fragmentador/remontador MTU 1320 com autenticação, consulta STUN RFC 5389 sobre o mesmo socket de mídia, agregador de candidatos ICE-lite (LAN, Overlay Tailscale, WAN STUN, portas adjacentes) e tunelamento Blind Relay UDP (`DAV_RLY1`).
+  - `src/dav/modules/stream_engine/`: Motor de streaming ativo desacoplado (`SenderWorker` e `ReceiverWorker`) com cadência precisa de 60/120 FPS, recuperação instantânea de quadros-chave sob demanda (PLI), chaveamento dinâmico LAN Direto / WAN P2P / Blind Relay e orquestrador de alto nível `StreamEngineService`.
+  - `src/dav/modules/commercial/`: Governança autoral e módulo aberto (**MonoTech Community Edition 100% Free**): resolução até 4K UHD, 120 FPS, duração de sessão ilimitada, aceleração por hardware irrestrita, sem paywalls ou limitações artificiais, vitrine autoral oficial com atribuição canônica a **Dante Ferraz** e verificador de licenças criptográfico opcional para clusters empresariais.
+  - `src/dav/modules/telemetry/`: Observabilidade de streaming em tempo real com sondas de rede baseadas no protocolo **TUPÃ** (cálculo instantâneo de jitter RFC 3550, RTT, perda de pacotes e vazão) e exportador resiliente protegido por CircuitBreaker para o Hub **SDE v2.0** na Oracle Cloud VPS.
+  - `src/dav/modules/presentation/`: Diálogo interativo e modal nativo PySide6 *"Sobre o Autor & Tecnologias"* acessível via barra de navegação lateral.
+
+### Segurança, Testes & Governança
+- **Snapshot de Transição Seguro:** Criado branch `snapshot-v3.2.1-pre-modularizacao` e tag `v3.2.1-snapshot`, com preservação em arquivo comprimido (`backups/snapshot_v3.2.1_pre_modularizacao/dav_v3.2.1_source_snapshot.zip`) e inventário arquitetural detalhado (`ARCH_V3_SNAPSHOT.md`).
+- **Suíte de Testes Automatizados (30/30 Passando):** 100% dos testes unitários e de integração aprovados em tempo recorde (`tests/test_kernel.py`, `tests/test_media_slices.py`, `tests/test_stream_engine.py`, `tests/test_commercial.py`, `tests/test_telemetry.py`, `tests/test_presentation.py`, `tests/test_p2p_e2e.py`, etc.).
+- **Compatibilidade Regressiva Total:** Mantida integridade dos scripts de inicialização legados (`scripts/gui_app.py`, `scripts/dav_client.py`).
+
+---
+
 ## [3.2.1] — 2026-11-06
 
 ### Corrigido

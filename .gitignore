@@ -26,6 +26,7 @@ htmlcov/
 build/
 build_linux/
 build_payload/
+backups/
 dist/
 dist_installer/
 *.spec

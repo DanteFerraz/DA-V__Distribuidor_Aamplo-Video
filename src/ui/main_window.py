@@ -86,6 +86,7 @@ class DavMainWindow(QMainWindow):
                             break
         except Exception:
             pass
+        self.version_str = version_str
         self.setWindowTitle(f"DA-V v{version_str} — Distribuidor Amplo de Vídeo")
         self.setMinimumSize(1120, 740)
 
@@ -146,7 +147,7 @@ class DavMainWindow(QMainWindow):
         backend_tag = _detect_engine_badge(self.engine.is_native_backend)
         self._append_log(
             "INFO",
-            f"DA-V v3.1.0 pronto em {self.local_ip}:{self.default_port} ({backend_tag}).",
+            f"DA-V v{self.version_str} pronto em {self.local_ip}:{self.default_port} ({backend_tag}).",
         )
         QTimer.singleShot(1000, self._check_firewall_status)
 
@@ -228,6 +229,7 @@ class DavMainWindow(QMainWindow):
         self.stacked_views.addWidget(self.view_troubleshoot)
 
         self.sidebar.page_changed.connect(self._on_page_changed)
+        self.sidebar.about_clicked.connect(self._show_author_showcase)
         self.top_header.set_receiver_mode(True)
 
         content_layout.addWidget(self.stacked_views, stretch=1)
@@ -237,6 +239,15 @@ class DavMainWindow(QMainWindow):
     def _on_page_changed(self, page_index: int):
         self.stacked_views.setCurrentIndex(page_index)
         self.top_header.set_receiver_mode(page_index == 0)
+
+    def _show_author_showcase(self):
+        """Abre o diálogo de apresentação autoral de Dante Ferraz e MonoTech."""
+        try:
+            from src.dav.modules.presentation.author_dialog import AuthorShowcaseDialog
+            dlg = AuthorShowcaseDialog(self)
+            dlg.exec()
+        except Exception as exc:
+            self._append_log("WARN", f"Falha ao abrir diálogo institucional: {exc}")
 
     # ------------------------------------------------------------------------
     # CONTROLADOR DO RECEPTOR (VIEWER) — P2P SINGLE-SOCKET & LAN DIRETO

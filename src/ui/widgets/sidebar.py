@@ -76,6 +76,7 @@ class SidebarButton(QPushButton):
 class SidebarNavigation(QFrame):
     """Collapsible lateral navigation bar for the main application."""
     page_changed = Signal(int)
+    about_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -140,7 +141,27 @@ class SidebarNavigation(QFrame):
 
         layout.addStretch()
 
-        # ── Bottom Section: Collapse Button ──
+        # ── Bottom Section: About Author & Collapse ──
+        self.btn_about = QPushButton("✦  Sobre o Autor", self)
+        self.btn_about.setObjectName("ghostBtn")
+        self.btn_about.setFixedHeight(34)
+        self.btn_about.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {Theme.SYS["text_accent"]};
+                border: 1px solid {Theme.SYS["border_subtle"]};
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {Theme.SYS["bg_surface_hover"]};
+                border-color: {Theme.SYS["accent_primary"]};
+            }}
+        """)
+        self.btn_about.clicked.connect(self.about_clicked.emit)
+        layout.addWidget(self.btn_about)
+
         self.btn_collapse = QPushButton("«  Recolher Menu", self)
         self.btn_collapse.setObjectName("ghostBtn")
         self.btn_collapse.setFixedHeight(34)
@@ -169,6 +190,8 @@ class SidebarNavigation(QFrame):
         self.setFixedWidth(new_width)
 
         self.lbl_brand_text.setVisible(not self.is_collapsed)
+        self.btn_about.setText("✦" if self.is_collapsed else "✦  Sobre o Autor")
+        self.btn_about.setToolTip("Sobre o Autor (Dante Ferraz)" if self.is_collapsed else "")
         self.btn_collapse.setText("»" if self.is_collapsed else "«  Recolher Menu")
         self.btn_collapse.setToolTip("Expandir Menu" if self.is_collapsed else "Recolher Menu")
 

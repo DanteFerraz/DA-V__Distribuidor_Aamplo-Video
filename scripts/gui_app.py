@@ -66,6 +66,12 @@ if PROJECT_ROOT not in sys.path:
 def main():
     _configure_os_realtime_priority()
 
+    # Inicialização do Kernel MonoTech v4.0 e Descoberta de Módulos
+    from src.dav.kernel.registry import ModuleRegistry
+    kernel_registry = ModuleRegistry()
+    kernel_registry.discover()
+    kernel_registry.startup_all()
+
     from scripts.qt_compat import QApplication
     from src.ui.main_window import DavMainWindow
 
@@ -100,6 +106,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("DA-V Video Hub")
+    app.aboutToQuit.connect(kernel_registry.shutdown_all)
 
     try:
         from PySide6.QtGui import QIcon
