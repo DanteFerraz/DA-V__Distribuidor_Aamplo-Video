@@ -1,48 +1,53 @@
 # -*- coding: utf-8 -*-
 """
-DA-V — Janela Principal da Aplicação (v2.0)
+DA-V — Janela Principal da Aplicacao (v4.1 Glass UI)
 Autor: Dante Ferraz (MonoTech)
 
-Integra o cabeçalho de controle, a barra de navegação lateral e as cinco visões
-operacionais (Receptor, Transmissor, Diagnóstico TUPÃ, Descoberta LAN e Logs)
-ao motor unificado de transporte P2P Single-Socket e decodificação assíncrona.
+Shell principal de tela unica em vidro translucido sobre gradiente mint-teal:
+- Pilula flutuante superior (Configuracoes | Troca de Modo | Telemetria/Estatisticas)
+- Tela de entrada minima (Modo Espectador / Conectando... / Video em tela cheia / Modo Transmissor)
+- Folhas sobrepostas translucidas com todos os controles avancados, TUPA, LAN e Diagnosticos
 """
 
 import os
-import sys
-import time
-import random
-import socket
 import platform
+import random
+import re
+import socket
+import sys
 import threading
+import time
 from typing import Optional
 
+from scripts.dav_client import DavCoreEngine
 from scripts.qt_compat import (
-    QHBoxLayout,
+    QApplication,
+    QKeySequence,
     QMainWindow,
+    QPainter,
+    QShortcut,
     QStackedWidget,
     Qt,
     QTimer,
-    QVBoxLayout,
     QWidget,
     Signal,
     Slot,
 )
-
-from src.ui.theme import Theme
-from src.ui.bridge import DecodeWorker, EngineBridge, find_available_port
-from src.ui.widgets.header import TopHeaderBar
-from src.ui.widgets.sidebar import SidebarNavigation
-from src.ui.views.viewer_view import ViewerView
-from src.ui.views.sender_view import SenderView
-from src.ui.views.tupa_view import TupaView
-from src.ui.views.discovery_view import DiscoveryView
-from src.ui.views.troubleshoot_view import TroubleshootView
-
 from src.discovery.lan_beacon import LanBeaconService, get_local_ip
 from src.discovery.p2p_channel import P2PChannelClient, normalize_pin
-from scripts.dav_client import DavCoreEngine
 from src.telemetry.tupa_checker import TupaHealthChecker, TupaMetricsSnapshot
+from src.ui.bridge import DecodeWorker, EngineBridge, find_available_port
+from src.ui.glass import paint as glass_paint
+from src.ui.glass import tokens as T
+from src.ui.glass.nav_pill import FloatingNavPill
+from src.ui.glass.sheets import SettingsSheet, StatsSheet
+from src.ui.glass.views import (
+    SenderHomePage,
+    ViewerConnectingPage,
+    ViewerIdlePage,
+    parse_access_input,
+)
+from src.ui.widgets.canvas import VideoCanvasWidget
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -54,8 +59,18 @@ def _detect_engine_badge(is_native: bool) -> str:
     return f"Unificado SIMD + H.264 ULL · {os_tag}"
 
 
+def _is_valid_ipv4(ip_str: str) -> bool:
+    parts = ip_str.split(".")
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
 class DavMainWindow(QMainWindow):
-    """Shell principal da interface desktop PySide6 do DA-V."""
+    """Shell principal da interface desktop do DA-V no sistema visual vidro."""
+
+    PAGE_VIEWER_IDLE = 0
+    PAGE_VIEWER_CONN = 1
+    PAGE_VIDEO = 2
+    PAGE_SENDER = 3
 
     peers_updated_signal = Signal(list)
     tupa_metrics_signal = Signal(object)
@@ -74,22 +89,10 @@ class DavMainWindow(QMainWindow):
         parent=None,
     ):
         super().__init__(parent)
-        version_str = "3.2.1"
-        try:
-            base_root = getattr(sys, "_MEIPASS", _PROJECT_ROOT)
-            for cand_root in (base_root, _PROJECT_ROOT):
-                ver_file = os.path.join(cand_root, "VERSION")
-                if os.path.exists(ver_file):
-                    with open(ver_file, "r", encoding="utf-8") as vf:
-                        v = vf.read().strip()
-                        if v:
-                            version_str = v
-                            break
-        except Exception:
-            pass
-        self.version_str = version_str
-        self.setWindowTitle(f"DA-V v{version_str} — Distribuidor Amplo de Vídeo")
+        self.version_str = self._load_version()
+        self.setWindowTitle(f"DA-V v{self.version_str} — Distribuidor Amplo de Vídeo")
         self.setMinimumSize(1120, 740)
+        self.resize(1280, 740)
 
         self.local_ip = get_local_ip()
         self.hostname = socket.gethostname()
@@ -105,8 +108,11 @@ class DavMainWindow(QMainWindow):
         else:
             self.my_pin = f"{random.randint(100, 999)}-{random.randint(100, 999)}"
 
+        self.mode = "viewer"
+        self.active_sheet: Optional[str] = None
         self.is_receiving = False
         self.is_sending = False
+        self._waiting_first_frame = False
         self.cur_fps = 0.0
         self.cur_mbps = 0.0
         self.cur_lat = 0.0
@@ -118,9 +124,12 @@ class DavMainWindow(QMainWindow):
         self._last_tx_log_frames = 0
         self._active_p2p_client: Optional[P2PChannelClient] = None
 
+        self._conn_hint_timer = QTimer(self)
+        self._conn_hint_timer.setSingleShot(True)
+        self._conn_hint_timer.timeout.connect(self._on_conn_wait_timeout)
+
         self.engine = DavCoreEngine()
         self.bridge = EngineBridge()
-
         self.bridge.frame_ready.connect(self._on_frame_rendered)
         self.bridge.telemetry_ready.connect(self._on_telemetry_updated)
         self.bridge.sender_stats.connect(self._on_sender_stats_updated)
@@ -142,7 +151,6 @@ class DavMainWindow(QMainWindow):
         self.target_updated_signal.connect(self._on_target_updated)
         self.tupa_checker.start(lambda snap: self.tupa_metrics_signal.emit(snap))
 
-        self.setStyleSheet(Theme.build_stylesheet())
         self._init_ui()
 
         self.updater_service = None
@@ -164,106 +172,346 @@ class DavMainWindow(QMainWindow):
 
         if auto_recv:
             recv_auto_ip = "" if p2p_uri_mode else "127.0.0.1"
-            self.view_viewer.set_target(recv_auto_ip, self.default_port, self.my_pin)
-            self.sidebar.set_active_page(0)
-            self._on_page_changed(0)
+            self.settings_sheet.set_target(recv_auto_ip, self.default_port, self.my_pin)
+            self.page_viewer_idle.set_access_key(self.my_pin if p2p_uri_mode else f"127.0.0.1:{self.default_port}")
+            self._set_mode("viewer")
             QTimer.singleShot(600, self._toggle_receiver)
 
         if auto_send:
-            self.view_sender.txt_send_ip.setText("127.0.0.1")
-            self.view_sender.spn_send_port.setValue(self.target_default_port)
-            self.view_sender.txt_send_pin.setText(self.my_pin)
-            if monitor_idx < self.view_sender.cmb_monitor.count():
-                self.view_sender.cmb_monitor.setCurrentIndex(monitor_idx)
-            self.sidebar.set_active_page(1)
-            self._on_page_changed(1)
+            self.settings_sheet.txt_send_ip.setText("127.0.0.1")
+            self.settings_sheet.spn_send_port.setValue(self.target_default_port)
+            self.settings_sheet.txt_send_pin.setText(self.my_pin)
+            if 0 <= monitor_idx < self.settings_sheet.cmb_monitor.count():
+                self.settings_sheet.cmb_monitor.setCurrentIndex(monitor_idx)
+            self._set_mode("sender")
             QTimer.singleShot(800, self._toggle_sender)
 
-    def _init_ui(self):
-        root_widget = QWidget(self)
-        root_layout = QVBoxLayout(root_widget)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+    def _load_version(self) -> str:
+        version_str = "4.0.0"
+        try:
+            base_root = getattr(sys, "_MEIPASS", _PROJECT_ROOT)
+            for cand_root in (base_root, _PROJECT_ROOT):
+                ver_file = os.path.join(cand_root, "VERSION")
+                if os.path.exists(ver_file):
+                    with open(ver_file, "r", encoding="utf-8") as vf:
+                        v = vf.read().strip()
+                        if v:
+                            return v
+        except Exception:
+            pass
+        return version_str
 
+    def _init_ui(self):
+        self.central_host = QWidget(self)
+        self.central_host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setCentralWidget(self.central_host)
+
+        # Pilha principal de telas focais (edge-to-edge)
+        self.stage_stack = QStackedWidget(self.central_host)
+        self.stage_stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+
+        self.page_viewer_idle = ViewerIdlePage(self.stage_stack)
+        self.page_viewer_idle.connect_submitted.connect(self._on_viewer_key_submitted)
+        self.stage_stack.addWidget(self.page_viewer_idle)
+
+        self.page_viewer_conn = ViewerConnectingPage(self.stage_stack)
+        self.page_viewer_conn.cancel_requested.connect(self._cancel_connecting)
+        self.stage_stack.addWidget(self.page_viewer_conn)
+
+        self.video_canvas = VideoCanvasWidget(self.stage_stack)
+        self.video_canvas.first_frame_received.connect(self._on_first_video_frame)
+        self.stage_stack.addWidget(self.video_canvas)
+
+        self.page_sender = SenderHomePage(self.stage_stack)
+        self.page_sender.copy_key_clicked.connect(self._copy_sender_access_key)
+        self.page_sender.toggle_send_clicked.connect(self._toggle_sender)
+        self.stage_stack.addWidget(self.page_sender)
+
+        # Folhas sobrepostas translucidas (ocultas ate acionadas pela pilula)
         backend_desc = _detect_engine_badge(self.engine.is_native_backend)
-        self.top_header = TopHeaderBar(
+        self.settings_sheet = SettingsSheet(
             local_ip=self.local_ip,
             default_port=self.default_port,
+            target_default_port=self.target_default_port,
             initial_pin=self.my_pin,
             engine_tag=backend_desc,
-            parent=self,
+            version_str=self.version_str,
+            parent=self.central_host,
         )
-        self.top_header.pin_regenerated.connect(self._regenerate_pin)
-        root_layout.addWidget(self.top_header)
+        self.settings_sheet.hide()
+        self.settings_sheet.close_requested.connect(self._close_sheets)
+        self.settings_sheet.connect_toggled.connect(self._toggle_receiver)
+        self.settings_sheet.send_toggled.connect(self._toggle_sender)
+        self.settings_sheet.hud_toggled.connect(self._on_hud_toggled)
+        self.settings_sheet.hud_mode_changed.connect(self._on_hud_mode_changed)
+        self.settings_sheet.fullscreen_requested.connect(self.video_canvas.toggle_fullscreen)
+        self.settings_sheet.scale_mode_requested.connect(self.video_canvas.toggle_scale_mode)
+        self.settings_sheet.screenshot_requested.connect(self._take_screenshot)
+        self.settings_sheet.copy_pin_requested.connect(self._copy_sender_access_key)
+        self.settings_sheet.copy_invite_requested.connect(self._copy_invite_uri)
+        self.settings_sheet.regenerate_pin_requested.connect(self._regenerate_pin)
+        self.settings_sheet.check_firewall_requested.connect(self._check_firewall_status)
+        self.settings_sheet.fix_firewall_requested.connect(self._fix_firewall)
+        self.settings_sheet.loopback_requested.connect(self._run_loopback_diagnostic)
+        self.settings_sheet.export_logs_requested.connect(self._export_diagnostic_bundle)
+        self.settings_sheet.check_update_requested.connect(self._manual_check_updates)
+        self.settings_sheet.about_requested.connect(self._show_author_showcase)
 
-        content_container = QWidget(root_widget)
-        content_layout = QHBoxLayout(content_container)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        self.stats_sheet = StatsSheet(parent=self.central_host)
+        self.stats_sheet.hide()
+        self.stats_sheet.close_requested.connect(self._close_sheets)
 
-        self.sidebar = SidebarNavigation(parent=content_container)
-        content_layout.addWidget(self.sidebar)
+        self.view_tupa = self.stats_sheet.view_tupa
+        self.view_discovery = self.stats_sheet.view_discovery
+        self.view_troubleshoot = self.stats_sheet.view_troubleshoot
 
-        self.stacked_views = QStackedWidget(content_container)
-        self.stacked_views.setStyleSheet(f"background-color: {Theme.SYS['bg_canvas']};")
-
-        self.view_viewer = ViewerView(
-            initial_ip="",
-            default_port=self.default_port,
-            initial_pin=self.my_pin,
-            parent=self.stacked_views,
-        )
-        self.view_viewer.connect_toggled.connect(self._toggle_receiver)
-        self.stacked_views.addWidget(self.view_viewer)
-
-        self.view_sender = SenderView(
-            initial_target_ip="",
-            default_target_port=self.target_default_port,
-            initial_pin=self.my_pin,
-            parent=self.stacked_views,
-        )
-        self.view_sender.send_toggled.connect(self._toggle_sender)
-        self.stacked_views.addWidget(self.view_sender)
-
-        self.view_tupa = TupaView(parent=self.stacked_views)
-        self.stacked_views.addWidget(self.view_tupa)
-
-        self.view_discovery = DiscoveryView(parent=self.stacked_views)
         self.view_discovery.connect_peer_requested.connect(self._quick_connect_peer)
         self.view_discovery.refresh_requested.connect(self._manual_refresh_peers)
-        self.stacked_views.addWidget(self.view_discovery)
-
-        self.view_troubleshoot = TroubleshootView(parent=self.stacked_views)
         self.view_troubleshoot.loopback_requested.connect(self._run_loopback_diagnostic)
         self.view_troubleshoot.fix_firewall_requested.connect(self._fix_firewall)
         self.view_troubleshoot.check_firewall_requested.connect(self._check_firewall_status)
         self.view_troubleshoot.export_logs_requested.connect(self._export_diagnostic_bundle)
         self.view_troubleshoot.check_update_requested.connect(self._manual_check_updates)
-        self.stacked_views.addWidget(self.view_troubleshoot)
 
-        # Atalho global para exportação de diagnóstico
+        # Pilula flutuante de navegacao no topo central
+        self.nav_pill = FloatingNavPill(self.central_host)
+        self.nav_pill.settings_clicked.connect(lambda: self._toggle_sheet("settings"))
+        self.nav_pill.swap_clicked.connect(self._swap_mode)
+        self.nav_pill.stats_clicked.connect(lambda: self._toggle_sheet("stats"))
+        self.nav_pill.set_swap_tooltip("Alternar para Modo Transmissor")
+        self.nav_pill.raise_()
+
+        # Atalho global para exportacao de diagnostico
         try:
-            from scripts.qt_compat import QShortcut, QKeySequence
             self.shortcut_diag = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
             self.shortcut_diag.activated.connect(self._export_diagnostic_bundle)
         except Exception:
             pass
 
-        self.sidebar.page_changed.connect(self._on_page_changed)
-        self.sidebar.about_clicked.connect(self._show_author_showcase)
-        self.top_header.theme_toggled.connect(self._toggle_theme)
-        self.top_header.set_receiver_mode(True)
+        self._set_mode("viewer")
+        self._sync_layout_geometry()
 
-        content_layout.addWidget(self.stacked_views, stretch=1)
-        root_layout.addWidget(content_container, stretch=1)
-        self.setCentralWidget(root_widget)
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        if w > 0 and h > 0:
+            pix = glass_paint.background_pixmap(w, h, self.devicePixelRatioF())
+            p = QPainter(self)
+            p.drawPixmap(0, 0, pix)
+            p.end()
 
-    def _on_page_changed(self, page_index: int):
-        self.stacked_views.setCurrentIndex(page_index)
-        self.top_header.set_receiver_mode(page_index == 0)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_layout_geometry()
 
+    def _sync_layout_geometry(self):
+        w = self.central_host.width() or self.width()
+        h = self.central_host.height() or self.height()
+        if w < 10 or h < 10:
+            return
+        scale = T.ui_scale(w, h)
+        self.stage_stack.setGeometry(0, 0, w, h)
+        self.settings_sheet.setGeometry(0, 0, w, h)
+        self.stats_sheet.setGeometry(0, 0, w, h)
+
+        self.page_viewer_idle.set_ui_scale(scale)
+        self.page_viewer_conn.set_ui_scale(scale)
+        self.page_sender.set_ui_scale(scale)
+        self.settings_sheet.set_ui_scale(scale)
+        self.stats_sheet.set_ui_scale(scale)
+        self.nav_pill.set_ui_scale(scale)
+        self.nav_pill.reposition()
+
+        if self.active_sheet == "settings":
+            self.settings_sheet.raise_()
+        elif self.active_sheet == "stats":
+            self.stats_sheet.raise_()
+        self.nav_pill.raise_()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            if self.active_sheet is not None:
+                self._close_sheets()
+                event.accept()
+                return
+            if self.isFullScreen():
+                self.showNormal()
+                event.accept()
+                return
+            if self.mode == "viewer" and self.is_receiving and self._waiting_first_frame:
+                self._cancel_connecting()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------------
+    # NAVEGACAO POR MODOS E FOLHAS
+    # ------------------------------------------------------------------------
+    def _set_mode(self, mode: str):
+        self.mode = mode
+        if mode == "sender":
+            self.stage_stack.setCurrentIndex(self.PAGE_SENDER)
+            self.nav_pill.set_swap_tooltip("Alternar para Modo Espectador")
+            self.nav_pill.set_over_video(False)
+            self.nav_pill.set_live(self.is_sending)
+            self.settings_sheet.set_tab(1)
+        else:
+            if self.is_receiving and not self._waiting_first_frame:
+                self.stage_stack.setCurrentIndex(self.PAGE_VIDEO)
+                self.nav_pill.set_over_video(True)
+            elif self.is_receiving:
+                self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_CONN)
+                self.nav_pill.set_over_video(False)
+            else:
+                self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
+                self.nav_pill.set_over_video(False)
+            self.nav_pill.set_swap_tooltip("Alternar para Modo Transmissor")
+            self.nav_pill.set_live(self.is_receiving)
+            self.settings_sheet.set_tab(0)
+        self.nav_pill.raise_()
+
+    def _swap_mode(self):
+        self._close_sheets()
+        if self.mode == "viewer":
+            if self.is_receiving:
+                self._toggle_receiver()
+            self._set_mode("sender")
+            self._append_log("INFO", "Alternado para Modo Transmissor.")
+        else:
+            if self.is_sending:
+                self._toggle_sender()
+            self._set_mode("viewer")
+            self.page_viewer_idle.focus_input()
+            self._append_log("INFO", "Alternado para Modo Espectador.")
+
+    def _toggle_sheet(self, which: str):
+        if self.active_sheet == which:
+            self._close_sheets()
+            return
+        self.settings_sheet.hide()
+        self.stats_sheet.hide()
+        self.active_sheet = which
+        scale = T.ui_scale(self.width(), self.height())
+        if which == "settings":
+            self.settings_sheet.set_ui_scale(scale)
+            self.settings_sheet.setGeometry(0, 0, self.central_host.width(), self.central_host.height())
+            self.settings_sheet.show()
+            self.settings_sheet.raise_()
+            self.settings_sheet.setFocus()
+        else:
+            self.stats_sheet.set_ui_scale(scale)
+            self.stats_sheet.setGeometry(0, 0, self.central_host.width(), self.central_host.height())
+            self.stats_sheet.show()
+            self.stats_sheet.raise_()
+            self.stats_sheet.setFocus()
+        self.nav_pill.set_active(which)
+        self.nav_pill.raise_()
+
+    def _close_sheets(self):
+        self.active_sheet = None
+        self.settings_sheet.hide()
+        self.stats_sheet.hide()
+        self.nav_pill.set_active(None)
+        if self.mode == "viewer" and self.is_receiving and not self._waiting_first_frame:
+            self.video_canvas.setFocus()
+
+    # ------------------------------------------------------------------------
+    # ACOES DA TELA FOCAL DE ESPECTADOR & TRANSMISSOR
+    # ------------------------------------------------------------------------
+    def _on_viewer_key_submitted(self, raw: str):
+        target_ip, target_port, pin = parse_access_input(raw)
+        if not target_ip and not pin:
+            self.page_viewer_idle.set_status(
+                "Chave inválida. Informe um PIN (6 dígitos), link dav:// ou IPv4.",
+                error=True,
+            )
+            return
+        if target_ip and not _is_valid_ipv4(target_ip):
+            resolved_ip = None
+            if not target_ip.replace(".", "").isdigit():
+                try:
+                    resolved_ip = socket.gethostbyname(target_ip)
+                except OSError:
+                    resolved_ip = None
+            if resolved_ip and _is_valid_ipv4(resolved_ip):
+                target_ip = resolved_ip
+            else:
+                self.page_viewer_idle.set_status(
+                    f"Endereço '{target_ip}' inválido ou não resolvido.",
+                    error=True,
+                )
+                return
+
+        self.settings_sheet.txt_recv_ip.setText(target_ip)
+        if target_port is not None:
+            self.settings_sheet.spn_recv_port.setValue(target_port)
+        if pin:
+            self.settings_sheet.txt_recv_pin.setText(pin)
+
+        if self.is_receiving:
+            self._toggle_receiver()
+        self._toggle_receiver()
+
+    def _cancel_connecting(self):
+        if self.is_receiving:
+            self._toggle_receiver()
+        else:
+            self._conn_hint_timer.stop()
+            self._waiting_first_frame = False
+            self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
+
+    def _on_conn_wait_timeout(self):
+        if self.is_receiving and self._waiting_first_frame:
+            self.page_viewer_conn.set_detail("Aguardando primeiro quadro de vídeo... (Esc para cancelar)")
+
+    def _on_first_video_frame(self):
+        if self.mode == "viewer" and self.is_receiving:
+            self._conn_hint_timer.stop()
+            self._waiting_first_frame = False
+            self.stage_stack.setCurrentIndex(self.PAGE_VIDEO)
+            self.nav_pill.set_over_video(True)
+            self.nav_pill.raise_()
+            if self.active_sheet is None:
+                self.video_canvas.setFocus()
+
+    def _on_hud_toggled(self, checked: bool):
+        self.video_canvas.show_hud = checked
+        self.video_canvas.update()
+
+    def _on_hud_mode_changed(self, mode_name: str):
+        self.video_canvas.hud_mode = mode_name
+        self.video_canvas.show_hud = True
+        self.settings_sheet.chk_hud.blockSignals(True)
+        self.settings_sheet.chk_hud.setChecked(True)
+        self.settings_sheet.chk_hud.blockSignals(False)
+        self.video_canvas.update()
+
+    def _take_screenshot(self):
+        path = self.video_canvas.save_screenshot()
+        if path:
+            self._append_log("SUCCESS", f"Captura salva em: {path}")
+        else:
+            self._append_log("WARN", "Nenhum quadro de vídeo disponível para captura.")
+
+    def _copy_sender_access_key(self):
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(self.my_pin)
+        self.page_sender.flash_copied(f"Chave copiada: {self.my_pin}")
+        self._append_log("INFO", f"Chave de acesso copiada: {self.my_pin}")
+
+    def _copy_invite_uri(self):
+        uri = f"dav://connect/{self.my_pin}"
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(uri)
+        self.page_sender.flash_copied(f"Convite copiado: {uri}")
+        self._append_log("INFO", f"Link de convite copiado: {uri}")
+
+    # ------------------------------------------------------------------------
+    # AUXILIARES DE DIAGNOSTICO E ATUALIZACAO
+    # ------------------------------------------------------------------------
     def _show_author_showcase(self):
-        """Abre o diálogo de apresentação autoral de Dante Ferraz e MonoTech."""
+        """Abre o dialogo institucional de apresentacao de Dante Ferraz e MonoTech."""
         try:
             from src.dav.modules.presentation.author_dialog import AuthorShowcaseDialog
             dlg = AuthorShowcaseDialog(self)
@@ -271,22 +519,8 @@ class DavMainWindow(QMainWindow):
         except Exception as exc:
             self._append_log("WARN", f"Falha ao abrir diálogo institucional: {exc}")
 
-    def _toggle_theme(self):
-        """Alterna a interface global entre os temas Claro e Escuro (Blocks.so + Azul MonoTech)."""
-        new_mode = Theme.toggle_theme()
-        self.setStyleSheet(Theme.build_stylesheet())
-        self.stacked_views.setStyleSheet(f"background-color: {Theme.SYS['bg_canvas']};")
-        self.top_header.update_theme_display()
-        self.sidebar.update_theme_display()
-        if hasattr(self, "view_viewer") and hasattr(self.view_viewer, "video_canvas"):
-            self.view_viewer.video_canvas.update()
-        if hasattr(self, "view_sender") and hasattr(self.view_sender, "update_theme_display"):
-            self.view_sender.update_theme_display()
-        mode_label = "CLARO" if new_mode == "light" else "ESCURO"
-        self._append_log("INFO", f"Tema comutado para Modo {mode_label} (Blocks.so + Azul MonoTech).")
-
     def _export_diagnostic_bundle(self):
-        """Coleta logs, telemetria e estado de rede gerando o pacote ZIP 'data-hora_DA-V-log.zip'."""
+        """Coleta logs, telemetria e estado de rede gerando 'data-hora_DA-V-log.zip'."""
         try:
             from src.dav.modules.telemetry.diagnostic_packager import DiagnosticPackager
             logs_text = self.view_troubleshoot.txt_logs.toPlainText()
@@ -316,7 +550,8 @@ class DavMainWindow(QMainWindow):
                     QMessageBox.information(
                         self,
                         "Diagnóstico Exportado",
-                        f"Pacote compactado gerado com sucesso em:\n\n{res.value}\n\nVocê pode compartilhar este arquivo para suporte técnico ou análise de rede.",
+                        f"Pacote compactado gerado com sucesso em:\n\n{res.value}\n\n"
+                        "Você pode compartilhar este arquivo para suporte técnico ou análise de rede.",
                     )
                 except Exception:
                     pass
@@ -325,11 +560,8 @@ class DavMainWindow(QMainWindow):
         except Exception as exc:
             self._append_log("ERROR", f"Exceção ao gerar diagnóstico: {exc}")
 
-    # ------------------------------------------------------------------------
-    # CONTROLADOR DE ATUALIZAÇÕES AUTOMÁTICAS (DA-V UPDATER)
-    # ------------------------------------------------------------------------
     def _check_updates_on_startup(self):
-        """Verifica atualizações em segundo plano sem travar a interface inicial."""
+        """Verifica atualizacoes em segundo plano sem travar a interface inicial."""
         if not self.updater_service:
             return
         self._append_log("INFO", "Verificando se há atualizações disponíveis no repositório...")
@@ -338,7 +570,7 @@ class DavMainWindow(QMainWindow):
         )
 
     def _manual_check_updates(self):
-        """Dispara verificação manual solicitada pelo usuário no painel de diagnóstico."""
+        """Dispara verificacao manual solicitada pelo usuario."""
         if not self.updater_service:
             self._append_log("WARN", "Serviço de atualização indisponível.")
             return
@@ -351,7 +583,7 @@ class DavMainWindow(QMainWindow):
 
     @Slot(object, bool)
     def _handle_update_check_result(self, result, is_manual: bool):
-        """Processa o resultado da verificação de atualizações no thread principal da UI."""
+        """Processa o resultado da verificacao de atualizacoes na thread da UI."""
         if not result.is_success:
             if is_manual:
                 self._append_log("WARN", f"Não foi possível verificar atualizações: {result.error}")
@@ -378,13 +610,14 @@ class DavMainWindow(QMainWindow):
                     QMessageBox.information(
                         self,
                         "DA-V Atualizado",
-                        f"Você já está utilizando a versão mais recente do DA-V (v{info.current_version}).\n\nNenhuma atualização necessária.",
+                        f"Você já está utilizando a versão mais recente do DA-V (v{info.current_version}).\n\n"
+                        "Nenhuma atualização necessária.",
                     )
                 except Exception:
                     pass
 
     def _prompt_update_consent(self, update_info):
-        """Abre o diálogo modal de consentimento com notas de versão e download/instalação."""
+        """Abre o dialogo modal de consentimento com notas de versao e instalacao."""
         try:
             from src.dav.modules.updater.update_dialog import UpdateConsentDialog
             dlg = UpdateConsentDialog(update_info=update_info, parent=self)
@@ -395,22 +628,34 @@ class DavMainWindow(QMainWindow):
     # ------------------------------------------------------------------------
     # CONTROLADOR DO RECEPTOR (VIEWER) — P2P SINGLE-SOCKET & LAN DIRETO
     # ------------------------------------------------------------------------
+    def _fail_receiver(self, message: str):
+        self._conn_hint_timer.stop()
+        self._waiting_first_frame = False
+        if self.mode == "viewer":
+            self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
+            self.page_viewer_idle.set_status(message, error=True)
+        self.nav_pill.set_over_video(False)
+        self.nav_pill.set_live(False)
+
     def _toggle_receiver(self):
         if self.is_receiving:
+            self._conn_hint_timer.stop()
             self.engine.stop()
             self.is_receiving = False
-            self.view_viewer.set_connection_state(False)
+            self._waiting_first_frame = False
+            self.settings_sheet.set_connection_state(False)
+            self.video_canvas.clear_display()
+            self.nav_pill.set_over_video(False)
+            self.nav_pill.set_live(False)
+            if self.mode == "viewer":
+                self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
             self._append_log("INFO", "Receptor desconectado pelo usuário.")
             return
 
-        target_ip = self.view_viewer.txt_recv_ip.text().strip()
-        port = self.view_viewer.spn_recv_port.value()
-        pin = self.view_viewer.txt_recv_pin.text().strip()
+        target_ip = self.settings_sheet.txt_recv_ip.text().strip()
+        port = self.settings_sheet.spn_recv_port.value()
+        pin = self.settings_sheet.txt_recv_pin.text().strip()
         clean_pin = normalize_pin(pin)
-
-        def _is_valid_ipv4(ip_str: str) -> bool:
-            parts = ip_str.split(".")
-            return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
         if target_ip and not _is_valid_ipv4(target_ip):
             if clean_pin:
@@ -419,13 +664,28 @@ class DavMainWindow(QMainWindow):
                     f"[P2P] IP '{target_ip}' inválido ou incompleto. Alternando para Modo PIN Universal ('{pin}')...",
                 )
                 target_ip = ""
-                self.view_viewer.txt_recv_ip.setText("")
+                self.settings_sheet.txt_recv_ip.setText("")
             else:
-                self._append_log(
-                    "ERROR",
-                    f"O IP '{target_ip}' é inválido. Informe um IPv4 completo ou deixe vazio e use o PIN.",
-                )
+                msg = f"O IP '{target_ip}' é inválido. Informe um IPv4 completo ou PIN."
+                self._append_log("ERROR", msg)
+                self._fail_receiver(msg)
                 return
+
+        if not target_ip and not clean_pin:
+            msg = "Informe o PIN de Acesso (6 dígitos) ou o IP do Transmissor."
+            self._append_log("ERROR", msg)
+            self._fail_receiver(msg)
+            return
+
+        # Exibe "Conectando..." imediatamente enquanto resolve P2P/STUN
+        self._close_sheets()
+        self.page_viewer_idle.set_status("")
+        self.page_viewer_conn.reset()
+        self.mode = "viewer"
+        self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_CONN)
+        self.nav_pill.set_over_video(False)
+        self.nav_pill.raise_()
+        QApplication.processEvents()
 
         target_peer = None
         peer_info = None
@@ -434,10 +694,6 @@ class DavMainWindow(QMainWindow):
         eff_bind_port = port
 
         if not target_ip:
-            if not clean_pin:
-                self._append_log("ERROR", "Informe o PIN de Acesso (6 dígitos) ou o IP do Transmissor.")
-                return
-
             self._append_log("INFO", f"[P2P] Alocando socket UDP e consultando STUN RFC 5389 para o PIN '{pin}'...")
             p2p = P2PChannelClient()
             recv_ep = self.engine.prepare_receiver_socket(
@@ -460,7 +716,9 @@ class DavMainWindow(QMainWindow):
                 peer_name = peer_info.get("node_name", "Transmissor")
                 self._append_log(
                     "SUCCESS",
-                    f"[P2P] PIN '{pin}' pareado com '{peer_name}' (WAN {peer_info.get('public_ip')}:{peer_info.get('public_port')} | LAN {peer_info.get('local_ip')}:{peer_info.get('local_port')}).",
+                    f"[P2P] PIN '{pin}' pareado com '{peer_name}' "
+                    f"(WAN {peer_info.get('public_ip')}:{peer_info.get('public_port')} | "
+                    f"LAN {peer_info.get('local_ip')}:{peer_info.get('local_port')}).",
                 )
             else:
                 local_peer = self.beacon_service.find_peer_by_pin(clean_pin)
@@ -470,14 +728,14 @@ class DavMainWindow(QMainWindow):
                     target_peer = (peer_target_ip, peer_target_port)
                     self._append_log(
                         "SUCCESS",
-                        f"[P2P Local] Transmissor localizado via Beacon LAN: {local_peer.get('node_name')} em {peer_target_ip}:{peer_target_port}",
+                        f"[P2P Local] Transmissor localizado via Beacon LAN: "
+                        f"{local_peer.get('node_name')} em {peer_target_ip}:{peer_target_port}",
                     )
                 else:
                     self.engine._close_prepared_recv_sock()
-                    self._append_log(
-                        "WARN",
-                        f"[P2P] PIN '{pin}' não encontrado no servidor Rendezvous nem na rede local. Confirme se o Transmissor já iniciou o compartilhamento.",
-                    )
+                    msg = f"PIN '{pin}' não encontrado. Confirme se o Transmissor está ativo."
+                    self._append_log("WARN", f"[P2P] {msg}")
+                    self._fail_receiver(msg)
                     return
         else:
             target_peer = (target_ip, port)
@@ -513,11 +771,17 @@ class DavMainWindow(QMainWindow):
         )
         if success:
             self.is_receiving = True
-            self.view_viewer.set_connection_state(True)
+            self._waiting_first_frame = True
+            self.video_canvas.is_connected = True
+            self.settings_sheet.set_connection_state(True)
+            self.nav_pill.set_live(True)
+            self._conn_hint_timer.start(3000)
             mode_str = f"PIN Universal {pin}" if not target_ip else f"LAN Direto {target_ip}:{port}"
             self._append_log("INFO", f"Receptor ativo na porta UDP {eff_bind_port} ({mode_str}).")
         else:
-            self._append_log("ERROR", f"Não foi possível iniciar o Receptor na porta UDP {eff_bind_port}.")
+            msg = f"Não foi possível iniciar o Receptor na porta UDP {eff_bind_port}."
+            self._append_log("ERROR", msg)
+            self._fail_receiver(msg)
 
     # ------------------------------------------------------------------------
     # CONTROLADOR DO TRANSMISSOR (SENDER) — P2P SINGLE-SOCKET & STANDBY
@@ -529,26 +793,27 @@ class DavMainWindow(QMainWindow):
                 self._active_p2p_client = None
             self.engine.stop()
             self.is_sending = False
-            self.view_sender.set_sending_state(False)
+            self.settings_sheet.set_sending_state(False)
+            self.page_sender.set_sending_state(False)
+            self.nav_pill.set_live(False)
             self.beacon_service.update_status(False)
             self._append_log("INFO", "Compartilhamento de tela encerrado.")
             return
 
-        target_ip = self.view_sender.txt_send_ip.text().strip()
-        target_port = self.view_sender.spn_send_port.value()
-        pin = self.view_sender.txt_send_pin.text().strip()
+        target_ip = self.settings_sheet.txt_send_ip.text().strip()
+        target_port = self.settings_sheet.spn_send_port.value()
+        pin = self.settings_sheet.txt_send_pin.text().strip()
 
-        import re
-        res_text = self.view_sender.cmb_res.currentText()
+        res_text = self.settings_sheet.cmb_res.currentText()
         m_res = re.search(r"(\d{3,5})x(\d{3,5})", res_text)
         if m_res:
             w = max(320, int(m_res.group(1)) & ~1)
             h = max(240, int(m_res.group(2)) & ~1)
         else:
             w, h = 1280, 720
-        fps = 60 if "60 FPS" in self.view_sender.cmb_fps.currentText() else 30
+        fps = 60 if "60 FPS" in self.settings_sheet.cmb_fps.currentText() else 30
 
-        bitrate_text = self.view_sender.cmb_bitrate.currentText()
+        bitrate_text = self.settings_sheet.cmb_bitrate.currentText()
         bitrate_kbps = 12000
         if "25000" in bitrate_text:
             bitrate_kbps = 25000
@@ -557,15 +822,13 @@ class DavMainWindow(QMainWindow):
         elif "8000" in bitrate_text:
             bitrate_kbps = 8000
 
-        codec_text = self.view_sender.cmb_codec.currentText()
+        codec_text = self.settings_sheet.cmb_codec.currentText()
         codec_type = (
             "h264_nvenc"
             if "H.264" in codec_text
             else ("hevc_nvenc" if "HEVC" in codec_text else ("raw" if "RAW" in codec_text else "jpeg"))
         )
-        monitor_index = self.view_sender.cmb_monitor.currentIndex()
-
-        # Em modo P2P (sem IP fixo), vincula na porta padrão anunciada do host
+        monitor_index = self.settings_sheet.cmb_monitor.currentIndex()
         sender_bind_port = self.default_port if not target_ip else target_port
 
         def _on_sender_stats(frames_sent, cur_fps, cur_mbps, packets, codec="NVENC", frame_kb=24):
@@ -594,20 +857,26 @@ class DavMainWindow(QMainWindow):
             on_log=lambda lvl, msg: self.bridge.log_message.emit(lvl, msg),
         )
         if not success:
-            self._append_log("ERROR", f"Falha ao iniciar o Transmissor ({target_ip}:{target_port}).")
+            err = f"Falha ao iniciar o Transmissor ({target_ip}:{target_port})."
+            self._append_log("ERROR", err)
+            self.page_sender.set_status(err, error=True)
             return
 
         self.is_sending = True
         if target_ip:
             details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}] -> {target_ip}:{target_port}"
+            card_status = f"Transmitindo para {target_ip}:{target_port}"
         else:
             details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}] (Standby · Aguardando PIN {pin})"
-        self.view_sender.set_sending_state(True, details)
+            card_status = f"Transmissão pronta · Chave {pin}"
+
+        self.settings_sheet.set_sending_state(True, details)
+        self.page_sender.set_sending_state(True, card_status)
+        self.nav_pill.set_live(True)
         self.beacon_service.update_status(True, pin=pin)
         dest_str = f"{target_ip}:{target_port}" if target_ip else f"Modo P2P Universal (PIN: {pin})"
         self._append_log("INFO", f"Transmissor iniciado ({dest_str}).")
 
-        # Registra no Rendezvous usando o endpoint STUN descoberto pelo próprio socket do Sender Worker
         def _bg_register_sender():
             try:
                 ep_info = self.engine.wait_sender_endpoint(timeout=3.0)
@@ -654,7 +923,7 @@ class DavMainWindow(QMainWindow):
                 else:
                     self.bridge.log_message.emit(
                         "WARN",
-                        f"[P2P] Servidor Rendezvous indisponível no momento; pareamento por PIN permanece ativo na rede local (Beacon LAN).",
+                        "[P2P] Servidor Rendezvous indisponível no momento; pareamento por PIN permanece ativo na rede local (Beacon LAN).",
                     )
             except Exception as exc:
                 self.bridge.log_message.emit("DEBUG", f"[P2P] Aviso no registro assíncrono: {exc}")
@@ -662,7 +931,7 @@ class DavMainWindow(QMainWindow):
         threading.Thread(target=_bg_register_sender, daemon=True, name=f"P2P-Reg-{pin}").start()
 
     # ------------------------------------------------------------------------
-    # SINAIS E ATUALIZAÇÕES DE TELEMETRIA DA INTERFACE
+    # SINAIS E ATUALIZACOES DE TELEMETRIA DA INTERFACE
     # ------------------------------------------------------------------------
     @Slot(object, float, float, float, int, int)
     def _on_frame_rendered(self, img, fps: float, mbps: float, lat: float, pkts: int, frames: int):
@@ -671,24 +940,29 @@ class DavMainWindow(QMainWindow):
         self.cur_lat = lat
         self.pkts_count = pkts
         self.frames_count = frames
-        self.view_viewer.video_canvas.update_frame(img, fps, mbps, lat, pkts, frames)
+        self.video_canvas.update_frame(img, fps, mbps, lat, pkts, frames)
         self.view_tupa.cur_fps = fps
 
     @Slot(object)
     def _on_decoded_frame(self, img):
-        self.view_viewer.video_canvas.update_frame(
-            img, self.cur_fps, self.cur_mbps, self.cur_lat,
-            self.pkts_count, self.frames_count,
+        self.video_canvas.update_frame(
+            img,
+            self.cur_fps,
+            self.cur_mbps,
+            self.cur_lat,
+            self.pkts_count,
+            self.frames_count,
         )
 
     @Slot(str, int, str)
     def _on_target_updated(self, ip: str, port: int, mode_tag: str):
-        self.view_sender.txt_send_ip.setText(ip)
-        self.view_sender.spn_send_port.setValue(port)
-        res_txt = self.view_sender.cmb_res.currentText().split()[0]
-        fps_txt = self.view_sender.cmb_fps.currentText().split()[0]
+        self.settings_sheet.txt_send_ip.setText(ip)
+        self.settings_sheet.spn_send_port.setValue(port)
+        res_txt = self.settings_sheet.cmb_res.currentText().split()[0]
+        fps_txt = self.settings_sheet.cmb_fps.currentText().split()[0]
         details = f"{res_txt} @ {fps_txt} [{mode_tag} -> {ip}:{port}]"
-        self.view_sender.set_sending_state(True, details)
+        self.settings_sheet.set_sending_state(True, details)
+        self.page_sender.set_sending_state(True, f"Transmitindo -> {ip}:{port}")
 
     @Slot(float, float, float, int, int)
     def _on_telemetry_updated(self, fps: float, mbps: float, lat: float, pkts: int, frames: int):
@@ -697,7 +971,7 @@ class DavMainWindow(QMainWindow):
         self.cur_lat = lat
         self.pkts_count = pkts
         self.frames_count = frames
-        self.view_viewer.video_canvas.update_telemetry_only(fps, mbps, lat, pkts, frames)
+        self.video_canvas.update_telemetry_only(fps, mbps, lat, pkts, frames)
         self.view_tupa.cur_fps = fps
 
         now = time.perf_counter()
@@ -709,22 +983,29 @@ class DavMainWindow(QMainWindow):
             self._last_rx_log_frames = frames
             self._append_log(
                 "TELEMETRY-RX",
-                f"Recepção: {smooth_fps:.1f} FPS | {mbps:.2f} Mbps | Latência: {lat:.2f} ms | Quadros: {frames} | Pacotes: {pkts}",
+                f"Recepção: {smooth_fps:.1f} FPS | {mbps:.2f} Mbps | Latência: {lat:.2f} ms | "
+                f"Quadros: {frames} | Pacotes: {pkts}",
             )
 
     @Slot(int, float, float, int, int, int)
     def _on_sender_stats_updated(
-        self, frames: int, fps: float, mbps: float, packets: int,
-        quality: int = 75, frame_kb: int = 32,
+        self,
+        frames: int,
+        fps: float,
+        mbps: float,
+        packets: int,
+        quality: int = 75,
+        frame_kb: int = 32,
     ):
         self.cur_fps = fps
         self.cur_mbps = mbps
         self.frames_count = frames
         self.pkts_count = packets
 
-        self.view_sender.update_stats(fps, mbps, frames, packets)
-        self.view_viewer.video_canvas.sender_quality = quality
-        self.view_viewer.video_canvas.sender_frame_kb = frame_kb
+        self.settings_sheet.update_stats(fps, mbps, frames, packets)
+        self.page_sender.update_live_stats(fps, mbps)
+        self.video_canvas.sender_quality = quality
+        self.video_canvas.sender_frame_kb = frame_kb
         self.view_tupa.cur_fps = fps
 
         now = time.perf_counter()
@@ -736,7 +1017,8 @@ class DavMainWindow(QMainWindow):
             self._last_tx_log_frames = frames
             self._append_log(
                 "TELEMETRY-TX",
-                f"Envio: {smooth_fps:.1f} FPS | {mbps:.2f} Mbps | {frame_kb} KB/quadro | Quadros: {frames} | Pacotes: {packets}",
+                f"Envio: {smooth_fps:.1f} FPS | {mbps:.2f} Mbps | {frame_kb} KB/quadro | "
+                f"Quadros: {frames} | Pacotes: {packets}",
             )
 
     @Slot(object)
@@ -746,13 +1028,17 @@ class DavMainWindow(QMainWindow):
     @Slot(list)
     def _on_peers_discovered(self, peers: list):
         self.view_discovery.update_peers(peers)
-        active_count = len(peers)
-        self.sidebar.buttons[3].set_badge(str(active_count) if active_count > 0 else "")
+        self.stats_sheet.set_peer_count(len(peers))
 
     def _quick_connect_peer(self, ip: str, port: int):
-        self.view_viewer.set_target(ip, port)
-        self.sidebar.set_active_page(0)
-        self._on_page_changed(0)
+        if self.is_sending:
+            self._toggle_sender()
+        if self.is_receiving:
+            self._toggle_receiver()
+        self.settings_sheet.set_target(ip, port)
+        self.page_viewer_idle.set_access_key(f"{ip}:{port}")
+        self._set_mode("viewer")
+        self._close_sheets()
         self._append_log("INFO", f"Conectando diretamente a {ip}:{port} na rede local...")
         QTimer.singleShot(150, self._toggle_receiver)
 
@@ -766,10 +1052,10 @@ class DavMainWindow(QMainWindow):
 
     def _regenerate_pin(self):
         self.my_pin = f"{random.randint(100, 999)}-{random.randint(100, 999)}"
-        self.top_header.update_pin(self.my_pin)
-        self.view_viewer.txt_recv_pin.setText(self.my_pin)
-        self.view_sender.txt_send_pin.setText(self.my_pin)
+        self.settings_sheet.update_pin(self.my_pin)
+        self.settings_sheet.txt_recv_pin.setText(self.my_pin)
         self.beacon_service.update_status(self.is_sending, self.my_pin)
+        self.page_sender.flash_copied(f"Novo PIN gerado: {self.my_pin}")
         self._append_log("INFO", f"Novo código PIN gerado: {self.my_pin}")
 
     def _check_firewall_status(self):
@@ -790,7 +1076,7 @@ class DavMainWindow(QMainWindow):
                 else:
                     self._append_log(
                         "WARN",
-                        "Windows Firewall: Regra UDP não encontrada. Use 'Liberar Portas no Firewall' na aba Troubleshooting.",
+                        "Windows Firewall: Regra UDP não encontrada. Use 'Liberar Portas' na aba Sistema ou Registros.",
                     )
             else:
                 res = subprocess.run(["which", "ufw"], capture_output=True)
@@ -831,10 +1117,10 @@ class DavMainWindow(QMainWindow):
 
     def _run_loopback_diagnostic(self):
         self._append_log("INFO", "Iniciando autodiagnóstico de Loopback em 127.0.0.1...")
-        self.view_viewer.set_target("127.0.0.1", self.default_port, self.my_pin)
-        self.view_sender.txt_send_ip.setText("127.0.0.1")
-        self.view_sender.spn_send_port.setValue(self.default_port)
-        self.view_sender.txt_send_pin.setText(self.my_pin)
+        self.settings_sheet.set_target("127.0.0.1", self.default_port, self.my_pin)
+        self.settings_sheet.txt_send_ip.setText("127.0.0.1")
+        self.settings_sheet.spn_send_port.setValue(self.default_port)
+        self.settings_sheet.txt_send_pin.setText(self.my_pin)
         self._toggle_receiver()
         time.sleep(0.1)
         self._toggle_sender()
@@ -843,6 +1129,7 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.append_log(level, text)
 
     def closeEvent(self, event):
+        self._conn_hint_timer.stop()
         if self._active_p2p_client:
             self._active_p2p_client.stop()
         if hasattr(self, "tupa_checker") and self.tupa_checker:

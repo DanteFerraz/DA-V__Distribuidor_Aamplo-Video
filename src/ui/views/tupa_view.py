@@ -17,6 +17,15 @@ from scripts.qt_compat import (
 from src.ui.theme import Theme
 from src.telemetry.tupa_checker import TupaMetricsSnapshot
 
+_GLASS_CARD_BG = "rgba(255, 255, 255, 0.10)"
+_GLASS_TRACK_BG = "rgba(255, 255, 255, 0.16)"
+_GLASS_OK = "#86efac"
+_GLASS_WARN = "#fde68a"
+_GLASS_DANGER = "#fca5a5"
+_GLASS_ACCENT = "#7dd3fc"
+_GLASS_TEXT = "#f2fbfb"
+_GLASS_MUTED = "#cfe8e8"
+
 
 class TupaView(QWidget):
     """View dedicated to TUPÃ hardware observability and pipeline latency benchmarking."""
@@ -49,11 +58,12 @@ class TupaView(QWidget):
 
         # ── 1. Health Status Banner ──
         self.tupa_health_card = QFrame()
+        self.tupa_health_card.setObjectName("tupaHealthCard")
         self.tupa_health_card.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Theme.SYS["bg_surface_card"]};
-                border-radius: {Theme.RADIUS_MD}px;
-                border: 1px solid {Theme.SYS["status_success"]};
+            QFrame#tupaHealthCard {{
+                background-color: {_GLASS_CARD_BG};
+                border-radius: 14px;
+                border: 1px solid {_GLASS_OK};
             }}
         """)
         health_layout = QHBoxLayout(self.tupa_health_card)
@@ -61,9 +71,9 @@ class TupaView(QWidget):
 
         v_info = QVBoxLayout()
         self.lbl_tupa_health_badge = QLabel("SAÚDE DO SISTEMA: ÓTIMO")
-        self.lbl_tupa_health_badge.setStyleSheet(f"font-size: 14px; font-weight: 800; color: {Theme.SYS['status_success']};")
+        self.lbl_tupa_health_badge.setStyleSheet(f"font-size: 14px; font-weight: 800; color: {_GLASS_OK};")
         self.lbl_tupa_health_desc = QLabel("Sistema e hardware operando em condições ideais para 60-120 FPS.")
-        self.lbl_tupa_health_desc.setStyleSheet(f"font-size: 12px; color: {Theme.SYS['text_muted']};")
+        self.lbl_tupa_health_desc.setStyleSheet(f"font-size: 12px; color: {_GLASS_MUTED};")
         v_info.addWidget(self.lbl_tupa_health_badge)
         v_info.addWidget(self.lbl_tupa_health_desc)
         health_layout.addLayout(v_info)
@@ -71,12 +81,12 @@ class TupaView(QWidget):
 
         lbl_tupa_tag = QLabel("TUPÃ TELEMETRY v2.0")
         lbl_tupa_tag.setStyleSheet(f"""
-            background: {Theme.SYS["bg_canvas"]};
+            background: rgba(255, 255, 255, 0.14);
             padding: 6px 14px;
-            border-radius: 6px;
+            border-radius: 10px;
             font-weight: 800;
-            color: {Theme.SYS["accent_primary"]};
-            border: 1px solid {Theme.SYS["border_subtle"]};
+            color: {_GLASS_TEXT};
+            border: 1px solid rgba(255, 255, 255, 0.55);
         """)
         health_layout.addWidget(lbl_tupa_tag)
         layout.addWidget(self.tupa_health_card)
@@ -93,7 +103,7 @@ class TupaView(QWidget):
         top_cpu = QHBoxLayout()
         top_cpu.addWidget(QLabel("Carga Global da CPU:"))
         self.lbl_cpu_global = QLabel("0.0%")
-        self.lbl_cpu_global.setStyleSheet(f"font-weight: 800; color: {Theme.SYS['accent_primary']};")
+        self.lbl_cpu_global.setStyleSheet(f"font-weight: 800; color: {_GLASS_ACCENT};")
         top_cpu.addWidget(self.lbl_cpu_global)
         top_cpu.addStretch()
         cpu_layout.addLayout(top_cpu)
@@ -102,8 +112,8 @@ class TupaView(QWidget):
         self.pbar_cpu_global.setRange(0, 100)
         self.pbar_cpu_global.setValue(0)
         self.pbar_cpu_global.setStyleSheet(f"""
-            QProgressBar {{ height: 14px; border-radius: 4px; background: {Theme.SYS["bg_canvas"]}; text-align: center; }}
-            QProgressBar::chunk {{ background: {Theme.SYS["accent_primary"]}; border-radius: 4px; }}
+            QProgressBar {{ height: 14px; border-radius: 4px; background: {_GLASS_TRACK_BG}; text-align: center; }}
+            QProgressBar::chunk {{ background: {_GLASS_ACCENT}; border-radius: 4px; }}
         """)
         cpu_layout.addWidget(self.pbar_cpu_global)
 
@@ -114,15 +124,15 @@ class TupaView(QWidget):
         self.lbl_cores = []
         for i in range(12):
             lbl_c = QLabel(f"C{i+1}: 0%")
-            lbl_c.setStyleSheet(f"font-size: 11px; color: {Theme.SYS['text_muted']};")
+            lbl_c.setStyleSheet(f"font-size: 11px; color: {_GLASS_MUTED};")
             pb = QProgressBar()
             pb.setRange(0, 100)
             pb.setValue(0)
             pb.setTextVisible(False)
             pb.setFixedHeight(8)
             pb.setStyleSheet(f"""
-                QProgressBar {{ border-radius: 3px; background: {Theme.SYS["bg_canvas"]}; }}
-                QProgressBar::chunk {{ background: {Theme.SYS["status_success"]}; border-radius: 3px; }}
+                QProgressBar {{ border-radius: 3px; background: {_GLASS_TRACK_BG}; }}
+                QProgressBar::chunk {{ background: {_GLASS_OK}; border-radius: 3px; }}
             """)
             row = i % 6
             col = (i // 6) * 2
@@ -142,7 +152,7 @@ class TupaView(QWidget):
         mem_top = QHBoxLayout()
         mem_top.addWidget(QLabel("Uso de RAM:"))
         self.lbl_ram_text = QLabel("0.0 GB / 16.0 GB (0%)")
-        self.lbl_ram_text.setStyleSheet(f"font-weight: 800; color: {Theme.SYS['status_info']};")
+        self.lbl_ram_text.setStyleSheet(f"font-weight: 800; color: {_GLASS_ACCENT};")
         mem_top.addWidget(self.lbl_ram_text)
         mem_top.addStretch()
         mem_layout.addLayout(mem_top)
@@ -151,8 +161,8 @@ class TupaView(QWidget):
         self.pbar_ram.setRange(0, 100)
         self.pbar_ram.setValue(0)
         self.pbar_ram.setStyleSheet(f"""
-            QProgressBar {{ height: 14px; border-radius: 4px; background: {Theme.SYS["bg_canvas"]}; text-align: center; }}
-            QProgressBar::chunk {{ background: {Theme.SYS["status_info"]}; border-radius: 4px; }}
+            QProgressBar {{ height: 14px; border-radius: 4px; background: {_GLASS_TRACK_BG}; text-align: center; }}
+            QProgressBar::chunk {{ background: {_GLASS_ACCENT}; border-radius: 4px; }}
         """)
         mem_layout.addWidget(self.pbar_ram)
         right_box.addWidget(mem_group)
@@ -166,7 +176,7 @@ class TupaView(QWidget):
         self.lbl_proc_snd_cpu = QLabel("Transmissor CPU: --%")
 
         for l in (self.lbl_proc_gui_ram, self.lbl_proc_gui_cpu, self.lbl_proc_snd_ram, self.lbl_proc_snd_cpu):
-            l.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {Theme.SYS['text_primary']};")
+            l.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {_GLASS_TEXT};")
 
         proc_layout.addWidget(self.lbl_proc_gui_ram, 0, 0)
         proc_layout.addWidget(self.lbl_proc_gui_cpu, 0, 1)
@@ -179,8 +189,8 @@ class TupaView(QWidget):
         net_layout = QHBoxLayout(net_group)
         self.lbl_net_tx = QLabel("Envio: 0.0 KB/s")
         self.lbl_net_rx = QLabel("Recepção: 0.0 KB/s")
-        self.lbl_net_tx.setStyleSheet(f"font-weight: 700; color: {Theme.SYS['status_success']};")
-        self.lbl_net_rx.setStyleSheet(f"font-weight: 700; color: {Theme.SYS['accent_primary']};")
+        self.lbl_net_tx.setStyleSheet(f"font-weight: 700; color: {_GLASS_OK};")
+        self.lbl_net_rx.setStyleSheet(f"font-weight: 700; color: {_GLASS_ACCENT};")
         net_layout.addWidget(self.lbl_net_tx)
         net_layout.addWidget(self.lbl_net_rx)
         right_box.addWidget(net_group)
@@ -196,20 +206,20 @@ class TupaView(QWidget):
 
         self._bench_stage_bars = {}
         stages_cfg = [
-            ("capture", "WGC GPU Captura (Direct3D)", 5.0,  Theme.SYS["status_success"]),
-            ("encode",  "NVENC H.264 Encode",        10.0, Theme.SYS["accent_primary"]),
-            ("send",    "UDP Envio Fragmentado",     3.0,  Theme.SYS["status_info"]),
-            ("recv",    "UDP Recebimento",            3.0,  Theme.SYS["status_warning"]),
-            ("decode",  "Ryzen Slice Decode (4T)",   12.0, "#f472b6"),
-            ("render",  "Qt paintEvent Render",      8.0,  "#fbbf24"),
+            ("capture", "WGC GPU Captura (Direct3D)", 5.0,  _GLASS_OK),
+            ("encode",  "NVENC H.264 Encode",        10.0, _GLASS_ACCENT),
+            ("send",    "UDP Envio Fragmentado",     3.0,  "#93c5fd"),
+            ("recv",    "UDP Recebimento",            3.0,  _GLASS_WARN),
+            ("decode",  "Ryzen Slice Decode (4T)",   12.0, "#f9a8d4"),
+            ("render",  "Qt paintEvent Render",      8.0,  "#fcd34d"),
         ]
         bench_grid = QGridLayout()
         bench_grid.setSpacing(8)
 
         for row_idx, (stage_key, stage_name, limit_ms, bar_color) in enumerate(stages_cfg):
             lbl_name = QLabel(stage_name)
-            lbl_name.setStyleSheet(f"font-size: 11px; color: {Theme.SYS['text_secondary']}; min-width: 175px;")
-            lbl_name.setFixedWidth(175)
+            lbl_name.setStyleSheet(f"font-size: 11px; color: {_GLASS_TEXT}; min-width: 160px;")
+            lbl_name.setFixedWidth(160)
 
             pb = QProgressBar()
             pb.setRange(0, int(limit_ms * 2 * 10))
@@ -217,16 +227,16 @@ class TupaView(QWidget):
             pb.setTextVisible(False)
             pb.setFixedHeight(10)
             pb.setStyleSheet(f"""
-                QProgressBar {{ border-radius: 4px; background: {Theme.SYS["bg_canvas"]}; }}
+                QProgressBar {{ border-radius: 4px; background: {_GLASS_TRACK_BG}; }}
                 QProgressBar::chunk {{ background: {bar_color}; border-radius: 4px; }}
             """)
 
             lbl_ms = QLabel("—")
-            lbl_ms.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {Theme.SYS['text_primary']}; min-width: 70px;")
-            lbl_ms.setFixedWidth(70)
+            lbl_ms.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {_GLASS_TEXT}; min-width: 78px;")
+            lbl_ms.setFixedWidth(78)
 
             lbl_limit = QLabel(f"limite {limit_ms:.0f}ms")
-            lbl_limit.setStyleSheet(f"font-size: 10px; color: {Theme.SYS['text_muted']};")
+            lbl_limit.setStyleSheet(f"font-size: 10px; color: {_GLASS_MUTED};")
 
             bench_grid.addWidget(lbl_name,  row_idx, 0)
             bench_grid.addWidget(pb,        row_idx, 1)
@@ -245,11 +255,11 @@ class TupaView(QWidget):
         self._fps_hist_labels = []
         for _ in range(10):
             sq = QLabel("—")
-            sq.setFixedSize(40, 22)
+            sq.setFixedSize(32, 22)
             sq.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sq.setStyleSheet(f"""
                 border-radius: 4px; font-size: 10px; font-weight: 700;
-                background: {Theme.SYS["bg_surface_elevated"]}; color: {Theme.SYS["text_muted"]};
+                background: {_GLASS_TRACK_BG}; color: {_GLASS_MUTED};
             """)
             fps_row.addWidget(sq)
             self._fps_hist_labels.append(sq)
@@ -266,10 +276,10 @@ class TupaView(QWidget):
 
         # 1. Health Badge
         self.lbl_tupa_health_badge.setText(f"SAÚDE DO SISTEMA: {snap.health_status}")
-        health_col = Theme.SYS["status_success"] if "OTIMO" in snap.health_status or "ÓTIMO" in snap.health_status else (Theme.SYS["status_warning"] if "MODERADO" in snap.health_status else Theme.SYS["status_danger"])
+        health_col = _GLASS_OK if "OTIMO" in snap.health_status or "ÓTIMO" in snap.health_status else (_GLASS_WARN if "MODERADO" in snap.health_status else _GLASS_DANGER)
         self.lbl_tupa_health_badge.setStyleSheet(f"font-size: 14px; font-weight: 800; color: {health_col};")
         self.lbl_tupa_health_desc.setText(snap.health_alert)
-        self.tupa_health_card.setStyleSheet(f"background-color: {Theme.SYS['bg_surface_card']}; border-radius: {Theme.RADIUS_MD}px; border: 1px solid {health_col};")
+        self.tupa_health_card.setStyleSheet(f"QFrame#tupaHealthCard {{ background-color: {_GLASS_CARD_BG}; border-radius: 14px; border: 1px solid {health_col}; }}")
 
         # 2. CPU Global
         self.lbl_cpu_global.setText(f"{snap.cpu_global_percent:.1f}%")
@@ -280,8 +290,8 @@ class TupaView(QWidget):
             if i < len(self.pbar_cores):
                 self.pbar_cores[i].setValue(int(val))
                 self.lbl_cores[i].setText(f"C{i+1}: {val:.0f}%")
-                c_col = Theme.SYS["status_success"] if val < 60 else (Theme.SYS["status_warning"] if val < 85 else Theme.SYS["status_danger"])
-                self.pbar_cores[i].setStyleSheet(f"QProgressBar {{ border-radius: 3px; background: {Theme.SYS['bg_canvas']}; }} QProgressBar::chunk {{ background: {c_col}; border-radius: 3px; }}")
+                c_col = _GLASS_OK if val < 60 else (_GLASS_WARN if val < 85 else _GLASS_DANGER)
+                self.pbar_cores[i].setStyleSheet(f"QProgressBar {{ border-radius: 3px; background: {_GLASS_TRACK_BG}; }} QProgressBar::chunk {{ background: {c_col}; border-radius: 3px; }}")
 
         # 4. RAM
         self.lbl_ram_text.setText(f"{snap.ram_used_gb:.2f} GB / {snap.ram_total_gb:.2f} GB ({snap.ram_percent:.1f}%)")
@@ -313,7 +323,7 @@ class TupaView(QWidget):
                 samples = stage_data.get(stage_key, [])
                 if not samples:
                     cfg["label"].setText("aguardando...")
-                    cfg["label"].setStyleSheet(f"font-size: 11px; color: {Theme.SYS['text_muted']}; min-width: 70px;")
+                    cfg["label"].setStyleSheet(f"font-size: 11px; color: {_GLASS_MUTED}; min-width: 88px;")
                     continue
 
                 avg_ms  = statistics.mean(samples)
@@ -327,23 +337,23 @@ class TupaView(QWidget):
                 ratio = avg_ms / limit
                 if ratio < 0.8:
                     bar_color = cfg["color_ok"]
-                    txt_color = Theme.SYS["status_success"]
+                    txt_color = _GLASS_OK
                     status = "OK"
                 elif ratio < 1.0:
-                    bar_color = Theme.SYS["status_warning"]
-                    txt_color = Theme.SYS["status_warning"]
+                    bar_color = _GLASS_WARN
+                    txt_color = _GLASS_WARN
                     status = "MODERADO"
                 else:
-                    bar_color = Theme.SYS["status_danger"]
-                    txt_color = Theme.SYS["status_danger"]
+                    bar_color = _GLASS_DANGER
+                    txt_color = _GLASS_DANGER
                     status = "ALERTA"
 
                 cfg["bar"].setStyleSheet(f"""
-                    QProgressBar {{ border-radius: 4px; background: {Theme.SYS["bg_canvas"]}; }}
+                    QProgressBar {{ border-radius: 4px; background: {_GLASS_TRACK_BG}; }}
                     QProgressBar::chunk {{ background: {bar_color}; border-radius: 4px; }}
                 """)
                 cfg["label"].setText(f"[{status}] {avg_ms:.1f}ms")
-                cfg["label"].setStyleSheet(f"font-size: 11px; font-weight: 700; color: {txt_color}; min-width: 70px;")
+                cfg["label"].setStyleSheet(f"font-size: 11px; font-weight: 700; color: {txt_color}; min-width: 88px;")
 
             if self.cur_fps > 0:
                 self._bench_fps_history.append(self.cur_fps)
@@ -356,16 +366,16 @@ class TupaView(QWidget):
                 if i >= offset:
                     fps_val = hist[i - offset]
                     if fps_val >= 58:
-                        bg, fg = Theme.SYS["status_success_bg"], Theme.SYS["status_success"]
+                        bg, fg = "rgba(134, 239, 172, 0.22)", _GLASS_OK
                     elif fps_val >= 45:
-                        bg, fg = Theme.SYS["status_warning_bg"], Theme.SYS["status_warning"]
+                        bg, fg = "rgba(253, 230, 138, 0.22)", _GLASS_WARN
                     else:
-                        bg, fg = Theme.SYS["status_danger_bg"], Theme.SYS["status_danger"]
+                        bg, fg = "rgba(252, 165, 165, 0.22)", _GLASS_DANGER
                     lbl.setText(f"{fps_val:.0f}")
                     lbl.setStyleSheet(f"border-radius: 4px; font-size: 10px; font-weight: 700; background: {bg}; color: {fg};")
                 else:
                     lbl.setText("—")
-                    lbl.setStyleSheet(f"border-radius: 4px; font-size: 10px; font-weight: 700; background: {Theme.SYS['bg_surface_elevated']}; color: {Theme.SYS['text_muted']};")
+                    lbl.setStyleSheet(f"border-radius: 4px; font-size: 10px; font-weight: 700; background: {_GLASS_TRACK_BG}; color: {_GLASS_MUTED};")
         except Exception:
             pass
 

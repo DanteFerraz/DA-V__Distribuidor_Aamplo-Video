@@ -6,7 +6,7 @@ Table and card presentation for local network peers discovered via UDP Beacons a
 
 from scripts.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, Signal, Qt
+    QTableWidget, QTableWidgetItem, QHeaderView, QBrush, QColor, Signal, Qt
 )
 from src.ui.theme import Theme
 
@@ -26,8 +26,9 @@ class DiscoveryView(QWidget):
         layout.setSpacing(Theme.SPACE_MD)
 
         header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("Dispositivos com DA-V Detectados na Rede Local (Beacon UDP):"))
-        header_layout.addStretch()
+        lbl_title = QLabel("Dispositivos com DA-V Detectados na Rede Local (Beacon UDP):")
+        lbl_title.setWordWrap(True)
+        header_layout.addWidget(lbl_title, stretch=1)
 
         self.btn_refresh = QPushButton("Atualizar Lista (Varredura)")
         self.btn_refresh.setObjectName("secondaryBtn")
@@ -36,7 +37,11 @@ class DiscoveryView(QWidget):
         layout.addLayout(header_layout)
 
         self.tbl_peers = QTableWidget(0, 5)
+        self.tbl_peers.setMinimumHeight(220)
         self.tbl_peers.setHorizontalHeaderLabels(["Nome do Host", "IP na Rede", "Porta", "Status", "Ação"])
+        self.tbl_peers.verticalHeader().setVisible(False)
+        self.tbl_peers.verticalHeader().setDefaultSectionSize(44)
+        self.tbl_peers.setAlternatingRowColors(True)
         self.tbl_peers.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tbl_peers.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.tbl_peers.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -55,7 +60,7 @@ class DiscoveryView(QWidget):
             status_text = "Compartilhando (Ao Vivo)" if is_sharing else "Disponível"
             item_status = QTableWidgetItem(status_text)
             if is_sharing:
-                item_status.setForeground(Theme.SYS["status_success"])
+                item_status.setForeground(QBrush(QColor("#86efac")))
             self.tbl_peers.setItem(row, 3, item_status)
 
             btn_conn = QPushButton("Conectar")

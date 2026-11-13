@@ -10,7 +10,7 @@ from typing import Optional
 
 from scripts.qt_compat import (
     QWidget, QPainter, QImage, QColor, QFont, QRect,
-    QBrush, QPen, QLinearGradient, Qt
+    QBrush, QPen, QLinearGradient, Qt, Signal
 )
 from src.ui.theme import Theme
 
@@ -27,6 +27,8 @@ class VideoCanvasWidget(QWidget):
     Features an in-canvas HUD overlay with glassmorphism styling and full-screen toggle.
     """
 
+    first_frame_received = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_image: Optional[QImage] = None
@@ -36,7 +38,7 @@ class VideoCanvasWidget(QWidget):
         self.packets_count = 0
         self.frames_count = 0
         self.show_hud = True
-        self.hud_mode = "full"  # "full" | "pill" | "hidden"
+        self.hud_mode = "pill"  # "full" | "pill" | "hidden" (compacto por padrao: nao cobre o video)
         self.scale_mode = "fit"  # "fit" | "stretch" | "native"
         self.is_connected = False
         self._frame_times = deque(maxlen=60)
@@ -51,6 +53,7 @@ class VideoCanvasWidget(QWidget):
     def update_frame(self, image: QImage, fps: float, bitrate: float, latency: float, packets: int, frames: int):
         """Called when a new frame is decoded and ready to display."""
         _t_render_start = time.perf_counter()
+        is_first = self.current_image is None
         self.current_image = image
         now = _t_render_start
         self._frame_times.append(now)
@@ -67,6 +70,8 @@ class VideoCanvasWidget(QWidget):
         self.frames_count = frames
         self.is_connected = True
         self.update()  # Repaint on Qt UI thread
+        if is_first:
+            self.first_frame_received.emit()
 
         if _probe_send is not None:
             _probe_send("render", _t_render_start, time.perf_counter(), frames)
@@ -210,9 +215,10 @@ class VideoCanvasWidget(QWidget):
         pill_w, pill_h = 240, 28
         pill_rect = QRect(self.width() - pill_w - 16, 16, pill_w, pill_h)
 
-        painter.setBrush(QBrush(QColor(11, 16, 26, 210)))
-        painter.setPen(QPen(QColor(56, 189, 248, 120), 1))
-        painter.drawRoundedRect(pill_rect, 6, 6)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(QBrush(QColor(8, 52, 70, 190)))
+        painter.setPen(QPen(QColor(255, 255, 255, 190), 1.5))
+        painter.drawRoundedRect(pill_rect, pill_h / 2, pill_h / 2)
 
         painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         fps_color = QColor(Theme.SYS["status_success"]) if self.fps >= 55 else (
@@ -233,12 +239,13 @@ class VideoCanvasWidget(QWidget):
 
         # Glassmorphism panel with subtle gradient and border
         grad = QLinearGradient(hud_rect.topLeft(), hud_rect.bottomLeft())
-        grad.setColorAt(0.0, QColor(11, 16, 26, 230))
-        grad.setColorAt(1.0, QColor(15, 23, 42, 245))
+        grad.setColorAt(0.0, QColor(8, 52, 70, 214))
+        grad.setColorAt(1.0, QColor(6, 40, 56, 230))
 
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setBrush(QBrush(grad))
-        painter.setPen(QPen(QColor(56, 189, 248, 140), 1))
-        painter.drawRoundedRect(hud_rect, Theme.RADIUS_LG, Theme.RADIUS_LG)
+        painter.setPen(QPen(QColor(255, 255, 255, 190), 1.5))
+        painter.drawRoundedRect(hud_rect, 16, 16)
 
         # Header Title
         f_title = QFont("Segoe UI", 9, QFont.Weight.Bold)

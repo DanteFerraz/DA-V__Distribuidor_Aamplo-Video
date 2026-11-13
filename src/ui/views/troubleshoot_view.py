@@ -7,7 +7,7 @@ Diagnostics console, local loopback tests, firewall status checker and script tr
 import os
 import time
 from scripts.qt_compat import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit,
+    QWidget, QVBoxLayout, QGridLayout, QPushButton, QTextEdit,
     Signal, Qt
 )
 from src.ui.theme import Theme
@@ -32,57 +32,67 @@ class TroubleshootView(QWidget):
         layout.setContentsMargins(Theme.SPACE_MD, Theme.SPACE_MD, Theme.SPACE_MD, Theme.SPACE_MD)
         layout.setSpacing(Theme.SPACE_MD)
 
-        # ── Action Buttons ──
-        btn_box = QHBoxLayout()
-        btn_box.setSpacing(Theme.SPACE_SM)
+        # ── Action Buttons (grade 3x2 para caber sem corte na folha) ──
+        btn_grid = QGridLayout()
+        btn_grid.setSpacing(Theme.SPACE_SM)
+        btn_grid.setColumnStretch(0, 1)
+        btn_grid.setColumnStretch(1, 1)
+        btn_grid.setColumnStretch(2, 1)
 
         btn_loopback = QPushButton("Testar Loopback Local")
+        btn_loopback.setMinimumWidth(0)
         btn_loopback.setObjectName("secondaryBtn")
         btn_loopback.clicked.connect(self.loopback_requested.emit)
-        btn_box.addWidget(btn_loopback)
+        btn_grid.addWidget(btn_loopback, 0, 0)
 
-        btn_firewall = QPushButton("Liberar Portas no Firewall (UDP 9000-9020 / 9005)")
+        btn_firewall = QPushButton("Liberar Portas Firewall")
+        btn_firewall.setMinimumWidth(0)
+        btn_firewall.setToolTip("Libera UDP 9000-9020 e Beacon 9005 no firewall")
         btn_firewall.setObjectName("secondaryBtn")
         btn_firewall.clicked.connect(self.fix_firewall_requested.emit)
-        btn_box.addWidget(btn_firewall)
+        btn_grid.addWidget(btn_firewall, 0, 1)
 
         btn_check_fw = QPushButton("Verificar Firewall")
+        btn_check_fw.setMinimumWidth(0)
         btn_check_fw.setObjectName("secondaryBtn")
         btn_check_fw.clicked.connect(self.check_firewall_requested.emit)
-        btn_box.addWidget(btn_check_fw)
+        btn_grid.addWidget(btn_check_fw, 0, 2)
 
         btn_clear_log = QPushButton("Limpar Console")
+        btn_clear_log.setMinimumWidth(0)
         btn_clear_log.setObjectName("secondaryBtn")
         btn_clear_log.clicked.connect(lambda: self.txt_logs.clear())
-        btn_box.addWidget(btn_clear_log)
+        btn_grid.addWidget(btn_clear_log, 1, 0)
 
         btn_export_zip = QPushButton("Exportar Diagnóstico (.zip)")
+        btn_export_zip.setMinimumWidth(0)
         btn_export_zip.setObjectName("secondaryBtn")
         btn_export_zip.setToolTip("Gera pacote compactado YYYY-MM-DD_HH-MM-SS_DA-V-log.zip com logs e telemetria")
         btn_export_zip.clicked.connect(self.export_logs_requested.emit)
-        btn_box.addWidget(btn_export_zip)
+        btn_grid.addWidget(btn_export_zip, 1, 1)
 
         btn_check_update = QPushButton("Buscar Atualizações")
+        btn_check_update.setMinimumWidth(0)
         btn_check_update.setObjectName("secondaryBtn")
         btn_check_update.setToolTip("Verifica se há novas versões do DA-V disponíveis")
         btn_check_update.clicked.connect(self.check_update_requested.emit)
-        btn_box.addWidget(btn_check_update)
+        btn_grid.addWidget(btn_check_update, 1, 2)
 
-        btn_box.addStretch()
-        layout.addLayout(btn_box)
+        layout.addLayout(btn_grid)
 
         # ── Formatted Log Terminal ──
         self.txt_logs = QTextEdit()
         self.txt_logs.setReadOnly(True)
-        layout.addWidget(self.txt_logs)
+        self.txt_logs.setMinimumHeight(240)
+        layout.addWidget(self.txt_logs, stretch=1)
 
     def append_log(self, level: str, text: str):
-        color = "#38bdf8" if level == "INFO" else ("#f59e0b" if level == "WARN" else ("#ef4444" if level == "ERROR" else "#34d399"))
+        color = "#7dd3fc" if level == "INFO" else ("#fcd34d" if level == "WARN" else ("#fca5a5" if level == "ERROR" else "#86efac"))
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         self.txt_logs.append(
-            f"<span style='color:#64748b;'>[{ts[11:]}]</span> "
+            f"<span style='color:#9ccfd8;'>[{ts[11:]}]</span> "
             f"<span style='color:{color}; font-weight:bold;'>[{level}]</span> "
-            f"<span style='color:#e2e8f0;'>{text}</span>"
+            f"<span style='color:#f2fbfb;'>{text}</span>"
         )
         try:
             import sys

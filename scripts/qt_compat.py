@@ -15,15 +15,17 @@ try:
         QSpinBox, QComboBox, QCheckBox, QGroupBox, QTableWidget,
         QTableWidgetItem, QHeaderView, QTextEdit, QProgressBar,
         QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget,
-        QWizard, QWizardPage, QDialog
+        QWizard, QWizardPage, QDialog, QScrollArea, QSizePolicy, QToolTip
     )
     from PySide6.QtCore import (
         Qt, QTimer, QThread, Signal, Slot, QSize, QPoint, QRect, QByteArray,
-        QBuffer, QIODevice, QObject
+        QBuffer, QIODevice, QObject, QRectF, QPointF, QPropertyAnimation,
+        QEasingCurve, Property
     )
     from PySide6.QtGui import (
         QIcon, QFont, QColor, QPalette, QPainter, QImage, QPixmap,
-        QPen, QBrush, QLinearGradient, QShortcut, QKeySequence
+        QPen, QBrush, QLinearGradient, QShortcut, QKeySequence,
+        QRadialGradient, QPainterPath, QCursor
     )
     QT_LIB = "PySide6"
 except ImportError:
@@ -35,15 +37,18 @@ except ImportError:
             QSpinBox, QComboBox, QCheckBox, QGroupBox, QTableWidget,
             QTableWidgetItem, QHeaderView, QTextEdit, QProgressBar,
             QSplitter, QFrame, QMessageBox, QFileDialog, QStackedWidget,
-            QWizard, QWizardPage, QDialog
+            QWizard, QWizardPage, QDialog, QScrollArea, QSizePolicy, QToolTip
         )
         from PyQt6.QtCore import (
             Qt, QTimer, QThread, pyqtSignal as Signal, pyqtSlot as Slot,
-            QSize, QPoint, QRect, QByteArray, QBuffer, QIODevice, QObject
+            QSize, QPoint, QRect, QByteArray, QBuffer, QIODevice, QObject,
+            QRectF, QPointF, QPropertyAnimation, QEasingCurve,
+            pyqtProperty as Property
         )
         from PyQt6.QtGui import (
             QIcon, QFont, QColor, QPalette, QPainter, QImage, QPixmap,
-            QPen, QBrush, QLinearGradient, QShortcut, QKeySequence
+            QPen, QBrush, QLinearGradient, QShortcut, QKeySequence,
+            QRadialGradient, QPainterPath, QCursor
         )
         QT_LIB = "PyQt6"
     except ImportError as e:
