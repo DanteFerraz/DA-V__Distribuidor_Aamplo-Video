@@ -14,13 +14,27 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 from src.ui.qt_compat import (
-    QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+    QApplication, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
     QPointF, QRadialGradient, QRectF, Qt, QBrush,
 )
 from src.ui.glass import tokens as T
 
 _CACHE: Dict[Tuple, QPixmap] = {}
 _CACHE_LIMIT = 12
+_QUIT_HOOKED = False
+
+
+def _ensure_quit_hook() -> None:
+    global _QUIT_HOOKED
+    if _QUIT_HOOKED:
+        return
+    app = QApplication.instance()
+    if app is not None:
+        try:
+            app.aboutToQuit.connect(clear_cache)
+            _QUIT_HOOKED = True
+        except Exception:
+            pass
 
 
 def _cache_get(key: Tuple):
@@ -28,6 +42,7 @@ def _cache_get(key: Tuple):
 
 
 def _cache_put(key: Tuple, pix: QPixmap) -> QPixmap:
+    _ensure_quit_hook()
     if len(_CACHE) >= _CACHE_LIMIT:
         _CACHE.pop(next(iter(_CACHE)))
     _CACHE[key] = pix

@@ -128,9 +128,7 @@ class ReceiverWorker:
 
     def _request_pli(self) -> None:
         now = time.perf_counter()
-        congested_rx = (self.dp.latest_latency_ms > 80.0) or (self.dp.sqp_tracker.owd_gradient_ms > 10.0)
-        cooldown = 0.90 if congested_rx else 0.45
-        if now - self._last_pli_time < cooldown:
+        if now - self._last_pli_time < 0.15:
             return
         self._last_pli_time = now
         pli_msg = f"{MAGIC_PLI.decode('ascii')}:{self.clean_pin}".encode("ascii")
@@ -144,6 +142,9 @@ class ReceiverWorker:
         last_stat_time = time.perf_counter()
         last_punch_burst = time.perf_counter()
         last_lan_upgrade_probe = 0.0
+        last_sqp_ack_sent = 0.0
+        awaiting_clean_idr = False
+        awaiting_idr_since = 0.0
         start_mono = time.monotonic()
         last_relay_bind = 0.0
 
@@ -258,8 +259,9 @@ class ReceiverWorker:
                     self._use_relay = False
                 self._punch_locked = True
 
-            if ev["sqp_ack_pkt"] is not None:
+            if ev["sqp_ack_pkt"] is not None and (mono_now - last_sqp_ack_sent >= 0.045):
                 self._send_to_sender(ev["sqp_ack_pkt"])
+                last_sqp_ack_sent = mono_now
 
             if ev["need_pli"]:
                 self._request_pli()
@@ -268,25 +270,38 @@ class ReceiverWorker:
                 self.on_audio(ev["audio_frame_id"], ev["tx_ts_us"], ev["audio_payload"])
 
             elif kind == "video_frame" and ev["frame_bytes"]:
-                if self.on_encoded_frame is not None:
-                    interval_frames += 1
-                    cumulative_frames += 1
-                    self.on_encoded_frame(
-                        ev["frame_bytes"],
-                        1920,
-                        1080,
-                        ev["tx_ts_us"],
-                        ev["is_keyframe"],
-                    )
-                if self.decoder is not None:
-                    decoded_frames = self.decoder.decode_all(ev["frame_bytes"])
-                    if decoded_frames:
-                        if self.on_encoded_frame is None:
-                            interval_frames += len(decoded_frames)
-                            cumulative_frames += len(decoded_frames)
-                        if self.on_frame:
-                            for f in decoded_frames:
-                                self.on_frame(f)
+                if ev["is_keyframe"]:
+                    awaiting_clean_idr = False
+                elif ev.get("ref_gap"):
+                    awaiting_clean_idr = True
+                    awaiting_idr_since = mono_now
+                    self._request_pli()
+                elif awaiting_clean_idr:
+                    if (mono_now - awaiting_idr_since) < 0.45:
+                        self._request_pli()
+                    else:
+                        awaiting_clean_idr = False
+
+                if not awaiting_clean_idr:
+                    if self.on_encoded_frame is not None:
+                        interval_frames += 1
+                        cumulative_frames += 1
+                        self.on_encoded_frame(
+                            ev["frame_bytes"],
+                            1920,
+                            1080,
+                            ev["tx_ts_us"],
+                            ev["is_keyframe"],
+                        )
+                    if self.decoder is not None:
+                        decoded_frames = self.decoder.decode_all(ev["frame_bytes"])
+                        if decoded_frames:
+                            if self.on_encoded_frame is None:
+                                interval_frames += len(decoded_frames)
+                                cumulative_frames += len(decoded_frames)
+                            if self.on_frame:
+                                for f in decoded_frames:
+                                    self.on_frame(f)
 
             now = time.perf_counter()
             if now - last_stat_time >= 0.5:

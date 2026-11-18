@@ -376,6 +376,8 @@ class MicroPacer:
             self._high_prio.append(datagram)
 
     def flush_high_priority(self) -> int:
+        if not self._high_prio:
+            return 0
         sent = 0
         while True:
             with self._lock:

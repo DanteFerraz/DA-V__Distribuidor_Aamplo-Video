@@ -49,6 +49,7 @@ class TupaHealthChecker:
     def __init__(self, sample_interval_sec: float = 1.0):
         self._interval = sample_interval_sec
         self._running = False
+        self._stop_evt = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._callback = None
         self._latest_snapshot: Optional[TupaMetricsSnapshot] = None
@@ -82,28 +83,32 @@ class TupaHealthChecker:
     def start(self, on_snapshot_callback=None):
         self._callback = on_snapshot_callback
         self._running = True
+        self._stop_evt.clear()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="TUPA-HealthChecker")
         self._thread.start()
 
     def stop(self):
         self._running = False
+        self._stop_evt.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.5)
+        self._thread = None
 
     def get_latest_snapshot(self) -> Optional[TupaMetricsSnapshot]:
         return self._latest_snapshot
 
     def _run_loop(self):
         import psutil
-        while self._running:
+        while self._running and not self._stop_evt.is_set():
             try:
                 snapshot = self._collect_snapshot(psutil)
                 self._latest_snapshot = snapshot
-                if self._callback and snapshot:
+                if self._callback and snapshot and self._running:
                     self._callback(snapshot)
             except Exception:
                 pass
-            time.sleep(self._interval)
+            if self._stop_evt.wait(timeout=self._interval):
+                break
 
     def _collect_snapshot(self, psutil_mod) -> TupaMetricsSnapshot:
         try:

@@ -169,11 +169,12 @@ class DataPlaneSender:
         if k_data == 0:
             return 0, 0, 0
 
+        eff_owd_for_fec = self.sqp.owd_gradient_ms if self.sqp.loss_rate >= 0.005 else 0.0
         m_parity = AdaptiveFecPolicy.choose_parity(
             k_data=k_data,
             is_keyframe=is_keyframe,
             loss_rate=self.sqp.loss_rate,
-            owd_gradient_ms=self.sqp.owd_gradient_ms,
+            owd_gradient_ms=eff_owd_for_fec,
         )
         self.last_fec_parity_m = m_parity
 
@@ -216,13 +217,14 @@ class DataPlaneSender:
                 )
             self.fec_shards_sent += len(parity_payloads)
 
-        eff_max_span = 0.005 if (is_keyframe and self.sqp.is_congested and k_data >= 30) else 0.002
+        heavy_loss_congested = (self.sqp.loss_rate >= 0.08) and (self.sqp.owd_gradient_ms >= 15.0)
+        eff_max_span = 0.005 if (is_keyframe and heavy_loss_congested and k_data >= 30) else 0.002
         bytes_sent = self.pacer.send_frame_paced(
             datagrams=datagrams,
             pacing_bps=max(self.sqp.min_bps, self.sqp.estimated_bps * 1.08),
             frame_interval_sec=frame_interval_sec,
             stop_check=stop_check,
-            cut_through=not self.sqp.is_congested,
+            cut_through=not heavy_loss_congested,
             max_span_sec=eff_max_span,
         )
         self.sqp.record_frame_sent(frame_id, bytes_sent)
@@ -250,6 +252,7 @@ class DataPlaneReceiver:
         self._latency_ema_ms: float = 0.0
         self.latest_latency_ms: float = 0.0
         self.has_seen_keyframe = False
+        self._last_completed_frame_id: int = 0
 
     def build_pake_syn(self) -> bytes:
         return self.pake.build_syn()
@@ -405,14 +408,14 @@ class DataPlaneReceiver:
                     entry["k_data"] = k_data
                 entry["parity"][hdr.frag_idx] = plaintext
 
-        # Expiracao adaptativa de quadros antigos (acompanha latencia WAN para evitar PLI prematuro)
-        now_p = time.perf_counter()
-        adaptive_ttl = min(0.220, max(0.120, (self.latest_latency_ms * 1.5) / 1000.0))
-        expired = [fid for fid, e in self._pending.items() if (now_p - e["created_mono"]) > adaptive_ttl]
-        for efid in expired:
-            if efid != frame_id:
-                del self._pending[efid]
-                res["need_pli"] = True
+        # Limpeza seletiva apenas quando houver acumulo na fila de remontagem (> 8 quadros / 350 ms)
+        if len(self._pending) > 8:
+            now_p = time.perf_counter()
+            expired = [fid for fid, e in self._pending.items() if (now_p - e["created_mono"]) > 0.350]
+            for efid in expired:
+                if efid != frame_id:
+                    del self._pending[efid]
+                    res["need_pli"] = True
 
         k_data = entry["k_data"]
         n_data = len(entry["data"])
@@ -426,8 +429,26 @@ class DataPlaneReceiver:
                 self._mark_completed(frame_id)
                 if used_fec:
                     self.fec_recovered_frames += 1
+
+                # Descarta fragmentos incompletos de quadros mais antigos e detecta quebra de referencia P-frame
+                older_incomplete = [k for k in self._pending if k < frame_id]
+                for old_fid in older_incomplete:
+                    del self._pending[old_fid]
+
                 if entry["is_kf"]:
                     self.has_seen_keyframe = True
+                    res["ref_gap"] = False
+                elif (
+                    self._last_completed_frame_id > 0
+                    and frame_id > (self._last_completed_frame_id + 1)
+                ) or older_incomplete:
+                    res["need_pli"] = True
+                    res["ref_gap"] = True
+                else:
+                    res["ref_gap"] = False
+
+                if frame_id > self._last_completed_frame_id or entry["is_kf"]:
+                    self._last_completed_frame_id = frame_id
 
                 rx_queue_ahead = sum(1 for k in self._pending if k > frame_id)
                 ack_data = self.sqp_tracker.on_frame_completed(

@@ -330,3 +330,52 @@ def test_sqp_base_rtt_immunity_and_hold_zone():
     sqp.record_frame_sent(99, int((sqp.estimated_bps / 60.0 / 8.0) * 3.5))
     budget = sqp.allocate_frame_budget(audio_reserved_bytes=240)
     assert budget.skip_frame is True
+
+
+def test_unthrottled_default_encoder_and_reference_gap_pli_guard():
+    """
+    Garante que o VideoEncoder inicia sem estrangulamento VBV (_vbv_clamp_active=False)
+    preservando fidelidade visual 1ms, e que DataPlaneReceiver sinaliza ref_gap + need_pli
+    quando um P-frame intermediario e perdido, evitando interpolacao de macroblocos corrompidos.
+    """
+    enc = VideoEncoder(codec_type="libx264", width=640, height=360, fps=60, bitrate_kbps=12000)
+    try:
+        assert enc._vbv_clamp_active is False
+    finally:
+        enc.close()
+
+    wire = []
+    dp_tx = DataPlaneSender(pin="888-999", send_raw_fn=wire.append, initial_bitrate_kbps=12000, fps=60)
+    dp_rx = DataPlaneReceiver(pin="888-999")
+    _, ack_s = dp_tx.handle_incoming_packet(dp_rx.build_pake_syn())
+    res_rx = dp_rx.process_packet(ack_s)
+    evt, _ = dp_tx.handle_incoming_packet(res_rx["reply_pake"])
+    assert evt == "pake_confirmed"
+
+    # Frame 1 (Keyframe): entregue integralmente
+    wire.clear()
+    dp_tx.send_video_frame(b"DAV_H264:" + (b"K" * 2000), is_keyframe=True, frame_interval_sec=1.0 / 60.0)
+    ev1 = None
+    for pkt in wire:
+        r = dp_rx.process_packet(pkt)
+        if r["kind"] == "video_frame":
+            ev1 = r
+    assert ev1 is not None and ev1["ref_gap"] is False
+
+    # Frame 2 (P-frame): perde todos os pacotes (ou chega apenas 1 fragmento sem paridade)
+    wire.clear()
+    dp_tx.send_video_frame(b"DAV_H264:" + (b"P" * 3000), is_keyframe=False, frame_interval_sec=1.0 / 60.0)
+    dp_rx.process_packet(wire[0])  # Apenas fragmento 0 do frame 2 fica pendente
+
+    # Frame 3 (P-frame): chega completo -> deve descartar frame 2 incompleto e sinalizar ref_gap + need_pli
+    wire.clear()
+    dp_tx.send_video_frame(b"DAV_H264:" + (b"Q" * 2000), is_keyframe=False, frame_interval_sec=1.0 / 60.0)
+    ev3 = None
+    for pkt in wire:
+        r = dp_rx.process_packet(pkt)
+        if r["kind"] == "video_frame":
+            ev3 = r
+    assert ev3 is not None
+    assert ev3["ref_gap"] is True
+    assert ev3["need_pli"] is True
+    assert 2 not in dp_rx._pending

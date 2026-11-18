@@ -207,12 +207,7 @@ class SenderWorker:
                 self._send_lan_upgrade_probe()
 
             if self.dp.pake.confirmed and self._is_streaming_active:
-                self._poll_incoming_control()
-                budget = self.dp.allocate_budget(
-                    audio_reserved_bytes=0 if self._audio_muted else 240
-                )
-                if not budget.skip_frame and self.capturer.grab_into(self._frame_buffer):
-                    self.encoder.update_rate_budget(budget.target_codec_kbps, pir_mode=budget.enable_pir)
+                if self.capturer.grab_into(self._frame_buffer):
                     payload = self.encoder.encode(self._frame_buffer)
                     if payload:
                         total_frames += 1
@@ -221,7 +216,7 @@ class SenderWorker:
                             payload,
                             is_keyframe=is_kf,
                             frame_interval_sec=frame_interval,
-                            pir_mode=budget.enable_pir,
+                            pir_mode=False,
                             stop_check=lambda: not self._running,
                         )
                         total_packets += pkts
@@ -256,11 +251,14 @@ class SenderWorker:
     def _control_rx_loop(self) -> None:
         while self._running:
             try:
-                rlist, _, _ = select.select([self.sock], [], [], 0.002)
-                if rlist:
+                if self.dp.pake.confirmed and self._is_streaming_active:
+                    time.sleep(0.05)
+                    continue
+                rlist, _, _ = select.select([self.sock], [], [], 0.005)
+                if rlist or not self.dp.pake.confirmed:
                     self._poll_incoming_control()
             except Exception:
-                time.sleep(0.002)
+                time.sleep(0.005)
 
     def _poll_incoming_control(self) -> None:
         if not self._ctrl_lock.acquire(blocking=False):
@@ -299,13 +297,19 @@ class SenderWorker:
                     except Exception:
                         pass
                 if evt == "pake_confirmed":
-                    self.encoder.request_keyframe()
+                    try:
+                        self.encoder.request_keyframe(force=True)
+                    except TypeError:
+                        self.encoder.request_keyframe()
                 continue
             elif evt == "sqp_ack":
                 continue
 
             if pkt.startswith(MAGIC_PLI):
-                self.encoder.request_keyframe()
+                try:
+                    self.encoder.request_keyframe(force=True)
+                except TypeError:
+                    self.encoder.request_keyframe()
             elif pkt in (b"DAV_RLY_ACK", b"DAV_RLY_PEER_READY"):
                 if not self._punch_locked and self.relay_addr:
                     self._use_relay = True

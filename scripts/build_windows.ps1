@@ -1,4 +1,4 @@
-# scripts/build_windows.ps1
+﻿# scripts/build_windows.ps1
 # Script de Compilação Local de Build e Instalador — DA-V v4.9.0
 # Autor: Dante Ferraz (MonoTech)
 
@@ -9,6 +9,9 @@ $Ver = (Get-Content "$Root\VERSION" -Raw).Trim()
 Write-Host "============================================================"
 Write-Host "INICIANDO COMPILACAO DA-V v$Ver (Windows x64)"
 Write-Host "============================================================"
+
+Get-Process -Name "DA-V" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 400
 
 # 1. Compilação da Aplicação Desacoplada (onedir)
 Write-Host "[1/4] Compilando aplicacao principal DA-V com PyInstaller..."
@@ -50,12 +53,12 @@ Copy-Item "$Root\installer\dav_icon.ico" "$Root\dist\DA-V\" -Force
 
 # 2. Teste de Sanidade do Executável Gerado
 Write-Host "[2/4] Executando auto-teste do executavel compilado (--self-check)..."
-$testOutput = & "$Root\dist\DA-V\DA-V.exe" --self-check
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "FALHA: Auto-teste do executavel retornou codigo $LASTEXITCODE"
+$procCheck = Start-Process -FilePath "$Root\dist\DA-V\DA-V.exe" -ArgumentList "--self-check" -Wait -PassThru -NoNewWindow
+if ($procCheck.ExitCode -ne 0) {
+    Write-Error "FALHA: Auto-teste do executavel retornou codigo $($procCheck.ExitCode)"
     exit 1
 }
-Write-Host "Auto-teste do binario: SUCESSO ($testOutput)"
+Write-Host "Auto-teste do binario: SUCESSO (ExitCode=0)"
 
 # 3. Compactação do Payload para o Instalador Autossuficiente
 Write-Host "[3/4] Empacotando payload da aplicacao em build_payload/dav_app_payload.zip..."

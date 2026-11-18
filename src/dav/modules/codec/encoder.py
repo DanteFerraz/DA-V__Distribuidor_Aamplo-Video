@@ -66,6 +66,7 @@ class VideoEncoder(BaseEncoder):
         self._frame_seq = 0
         self._force_next_idr = True
         self._last_idr_mono = 0.0
+        self._vbv_clamp_active = False
         self.last_frame_was_keyframe = False
 
         self._init_encoder()
@@ -83,7 +84,7 @@ class VideoEncoder(BaseEncoder):
         maxrate_kbps = max(800, int(self.bitrate_kbps * 1.15))
         bufsize_kbps = max(1500, int(self.bitrate_kbps // 3))
 
-        # 1. Tentativa primária: NVENC GPU
+        # 1. Tentativa primária: NVENC GPU (perfil p1 ULL fiel ao baseline de 1 ms)
         if self.codec_type in ("h264_nvenc", "hevc_nvenc"):
             try:
                 ctx = av.CodecContext.create(self.codec_type, "w")
@@ -91,10 +92,9 @@ class VideoEncoder(BaseEncoder):
                 ctx.height = self.height
                 ctx.pix_fmt = "yuv420p"
                 ctx.time_base = Fraction(1, self.fps)
-                ctx.framerate = Fraction(self.fps, 1)
                 ctx.bit_rate = self.bitrate_kbps * 1000
                 ctx.max_b_frames = 0
-                ctx.options = {
+                nv_opts = {
                     "preset": "p1",
                     "tune": "ull",
                     "zerolatency": "1",
@@ -103,14 +103,16 @@ class VideoEncoder(BaseEncoder):
                     "delay": "0",
                     "rc": "cbr",
                     "b": f"{self.bitrate_kbps}k",
-                    "maxrate": f"{maxrate_kbps}k",
-                    "bufsize": f"{bufsize_kbps}k",
-                    "g": str(self.fps * 2),
+                    "g": str(self.fps * 3),
                     "forced-idr": "1",
                     "repeat-headers": "1",
                     "bf": "0",
                     "b_ref_mode": "disabled",
                 }
+                if self._vbv_clamp_active:
+                    nv_opts["maxrate"] = f"{maxrate_kbps}k"
+                    nv_opts["bufsize"] = f"{bufsize_kbps}k"
+                ctx.options = nv_opts
                 ctx.open()
                 self._av_codec = ctx
                 self._wire_magic = MAGIC_HEVC if self.codec_type == "hevc_nvenc" else MAGIC_H264
@@ -120,7 +122,7 @@ class VideoEncoder(BaseEncoder):
             except Exception as exc:
                 logger.warning(f"[Codec] {self.codec_type} indisponível ({exc}). Alternando para libx264...")
 
-        # 2. Fallback universal: libx264 multi-core SIMD com VBV estrito e reconfig dinamico
+        # 2. Fallback universal: libx264 multi-core SIMD sem estrangulamento VBV por padrao
         cpu_threads = min(8, max(4, os.cpu_count() or 4))
         for sw_name in ("libx264", "h264"):
             try:
@@ -129,22 +131,24 @@ class VideoEncoder(BaseEncoder):
                 ctx.height = self.height
                 ctx.pix_fmt = "yuv420p"
                 ctx.time_base = Fraction(1, self.fps)
-                ctx.framerate = Fraction(self.fps, 1)
                 ctx.bit_rate = self.bitrate_kbps * 1000
                 ctx.max_b_frames = 0
                 ctx.thread_count = cpu_threads
-                ctx.options = {
+                x264_params = (
+                    f"repeat-headers=1:keyint={self.fps * 2}:min-keyint=1:"
+                    f"sliced-threads=1:threads={cpu_threads}:sync-lookahead=0:rc-lookahead=0"
+                )
+                sw_opts = {
                     "preset": "ultrafast",
                     "tune": "zerolatency",
                     "b": f"{self.bitrate_kbps}k",
-                    "maxrate": f"{maxrate_kbps}k",
-                    "bufsize": f"{bufsize_kbps}k",
-                    "x264-params": (
-                        f"repeat-headers=1:keyint={self.fps * 2}:min-keyint=1:"
-                        f"sliced-threads=1:threads={cpu_threads}:sync-lookahead=0:rc-lookahead=0:"
-                        f"vbv-maxrate={maxrate_kbps}:vbv-bufsize={bufsize_kbps}"
-                    ),
                 }
+                if self._vbv_clamp_active:
+                    sw_opts["maxrate"] = f"{maxrate_kbps}k"
+                    sw_opts["bufsize"] = f"{bufsize_kbps}k"
+                    x264_params += f":vbv-maxrate={maxrate_kbps}:vbv-bufsize={bufsize_kbps}"
+                sw_opts["x264-params"] = x264_params
+                ctx.options = sw_opts
                 ctx.open()
                 self._av_codec = ctx
                 self.codec_type = "libx264"
@@ -162,11 +166,11 @@ class VideoEncoder(BaseEncoder):
 
     def request_keyframe(self, force: bool = False) -> None:
         now = time.monotonic()
-        if force or self._frame_seq == 0 or (now - self._last_idr_mono) >= 0.60:
+        if force or self._frame_seq == 0 or (now - self._last_idr_mono) >= 0.08:
             self._force_next_idr = True
 
     def update_rate_budget(self, bitrate_kbps: int, pir_mode: bool = False) -> None:
-        """Acoplamento Salsify com histerese (>= 12% e >= 400 ms) para manter VBV estavel."""
+        """Acoplamento opcional de orcamento de taxa com histerese (>= 12% e >= 400 ms)."""
         clamped = max(400, min(50000, int(bitrate_kbps)))
         self._target_frame_bytes = int((clamped * 1024 / 8) / self.fps)
         self.bitrate_kbps = clamped
@@ -178,6 +182,7 @@ class VideoEncoder(BaseEncoder):
         threshold = max(400, int(self._applied_bitrate_kbps * 0.12))
         if delta >= threshold and (now - self._last_bitrate_update_mono) >= 0.40:
             try:
+                self._vbv_clamp_active = True
                 if (
                     self.codec_type == "libx264"
                     and delta >= max(800, int(self._applied_bitrate_kbps * 0.20))

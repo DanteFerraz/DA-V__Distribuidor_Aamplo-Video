@@ -68,6 +68,7 @@ class LanBeaconService:
         self.local_ip = get_local_ip()
         self.is_sharing = False
         self.running = False
+        self._stop_evt = threading.Event()
 
         self.discovered_peers: Dict[str, dict] = {}
         self._lock = threading.Lock()
@@ -80,6 +81,7 @@ class LanBeaconService:
         if self.running:
             return
         self.running = True
+        self._stop_evt.clear()
 
         try:
             self._listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -102,11 +104,17 @@ class LanBeaconService:
 
     def stop(self):
         self.running = False
+        self._stop_evt.set()
         if self._listen_sock:
             try:
                 self._listen_sock.close()
             except Exception:
                 pass
+            self._listen_sock = None
+        for t in self._threads:
+            if t.is_alive():
+                t.join(timeout=0.25)
+        self._threads.clear()
 
     def update_status(self, is_sharing: bool, pin: Optional[str] = None):
         self.is_sharing = is_sharing
@@ -184,12 +192,14 @@ class LanBeaconService:
                         pass
             except Exception:
                 pass
-            time.sleep(2.0)
+            if self._stop_evt.wait(timeout=2.0):
+                break
 
     def _listen_loop(self):
-        while self.running:
+        while self.running and not self._stop_evt.is_set():
             if not self._listen_sock:
-                time.sleep(0.5)
+                if self._stop_evt.wait(timeout=0.5):
+                    break
                 continue
             try:
                 data, addr = self._listen_sock.recvfrom(4096)
@@ -259,8 +269,9 @@ class LanBeaconService:
                 continue
 
     def _prune_loop(self):
-        while self.running:
-            time.sleep(3.0)
+        while self.running and not self._stop_evt.is_set():
+            if self._stop_evt.wait(timeout=3.0):
+                break
             now = time.time()
             changed = False
             with self._lock:

@@ -292,7 +292,7 @@ class SenderTransportEndpoint:
                     print(f"[Sender P2P] Hole-Punching PAKE concorrente para candidatos: {self.candidates}")
                 elif action in ("REQUEST_KEYFRAME", "request_idr"):
                     if encoder is not None:
-                        encoder.request_keyframe()
+                        encoder.request_keyframe(force=True)
                 elif action in ("PAUSE_STREAM", "STOP_STREAM"):
                     self.is_streaming_active.clear()
                     self.candidates.clear()
@@ -349,14 +349,14 @@ class SenderTransportEndpoint:
                         pass
 
                 if evt == "pake_confirmed" and encoder is not None:
-                    encoder.request_keyframe()
+                    encoder.request_keyframe(force=True)
                 continue
             elif evt == "sqp_ack":
                 continue
 
             if in_pkt.startswith(MAGIC_PLI):
                 if encoder is not None:
-                    encoder.request_keyframe()
+                    encoder.request_keyframe(force=True)
             elif in_pkt in (b"DAV_RLY_ACK", b"DAV_RLY_PEER_READY"):
                 if (not self.punch_locked or not self.dp.pake.confirmed) and self.relay_addr:
                     was_relay = self.use_relay
@@ -885,15 +885,7 @@ def run_sender_subprocess(
         if not transport.dp.pake.confirmed:
             return
 
-        transport.poll_control(encoder)
         frame_interval = 1.0 / float(max(1, fps))
-        budget = transport.dp.allocate_budget(
-            audio_reserved_bytes=0 if audio_muted_evt.is_set() else 240
-        )
-        if budget.skip_frame:
-            return
-
-        encoder.update_rate_budget(budget.target_codec_kbps, pir_mode=budget.enable_pir)
 
         t_enc_start = time.perf_counter()
         payload = encoder.encode(frame_bgra)
@@ -912,7 +904,7 @@ def run_sender_subprocess(
             payload,
             is_keyframe=is_keyframe,
             frame_interval_sec=frame_interval,
-            pir_mode=budget.enable_pir,
+            pir_mode=False,
             stop_check=stop_event.is_set,
         )
         t_send_end = time.perf_counter()
@@ -1017,6 +1009,7 @@ def run_sender_subprocess(
     def _audio_tx_worker():
         audio_cap = None
         audio_enc = None
+        silent_run = 0
         try:
             audio_cap = create_audio_capturer()
             audio_enc = OpusAudioEncoder(bitrate_bps=96000, enable_lbrr_piggyback=True)
@@ -1026,7 +1019,13 @@ def run_sender_subprocess(
                     continue
                 if audio_muted_evt.is_set() or not is_streaming_active.is_set() or not transport.dp.pake.confirmed:
                     continue
-                use_lbrr = transport.dp.sqp.loss_rate > 0.002
+                if int(np.max(np.abs(pcm))) <= 2:
+                    silent_run += 1
+                    if silent_run > 2 and (silent_run % 20) != 0:
+                        continue
+                else:
+                    silent_run = 0
+                use_lbrr = transport.dp.sqp.loss_rate > 0.005
                 enc_pkt = audio_enc.encode(pcm, lbrr_active=use_lbrr)
                 if enc_pkt:
                     transport.dp.send_audio_frame(enc_pkt, is_lbrr=use_lbrr)
@@ -1041,13 +1040,14 @@ def run_sender_subprocess(
     def _control_rx_worker():
         while not stop_event.is_set():
             try:
-                rlist, _, _ = select.select([transport.sock], [], [], 0.002)
-                if rlist:
-                    transport.poll_control()
-                elif not transport.dp.pake.confirmed:
+                if transport.dp.pake.confirmed and is_streaming_active.is_set():
+                    time.sleep(0.05)
+                    continue
+                rlist, _, _ = select.select([transport.sock], [], [], 0.005)
+                if rlist or not transport.dp.pake.confirmed:
                     transport.poll_control()
             except Exception:
-                time.sleep(0.002)
+                time.sleep(0.005)
 
     t_ctrl = threading.Thread(target=_control_rx_worker, daemon=True, name="DAV-Control-RX")
     t_ctrl.start()
