@@ -144,6 +144,7 @@ class DavMainWindow(QMainWindow):
         self._active_p2p_client: Optional[P2PChannelClient] = None
         self._sender_session_epoch: int = 0
         self._active_peer_endpoint: Optional[tuple[str, int]] = None
+        self._is_closing: bool = False
 
         self._conn_hint_timer = QTimer(self)
         self._conn_hint_timer.setSingleShot(True)
@@ -192,8 +193,15 @@ class DavMainWindow(QMainWindow):
             "INFO",
             f"DA-V v{self.version_str} pronto em {self.local_ip}:{self.default_port} ({backend_tag}).",
         )
-        QTimer.singleShot(1000, self._check_firewall_status)
-        QTimer.singleShot(2500, self._check_updates_on_startup)
+        self._fw_init_timer = QTimer(self)
+        self._fw_init_timer.setSingleShot(True)
+        self._fw_init_timer.timeout.connect(self._check_firewall_status)
+        self._fw_init_timer.start(1000)
+
+        self._upd_init_timer = QTimer(self)
+        self._upd_init_timer.setSingleShot(True)
+        self._upd_init_timer.timeout.connect(self._check_updates_on_startup)
+        self._upd_init_timer.start(2500)
 
         if auto_recv:
             recv_auto_ip = "" if p2p_uri_mode else "127.0.0.1"
@@ -1009,13 +1017,20 @@ class DavMainWindow(QMainWindow):
         self._append_log("INFO", f"Transmissor iniciado ({dest_str}).")
 
         def _bg_register_sender():
+            def _emit_log(level: str, msg: str):
+                if not self._is_closing:
+                    try:
+                        self.bridge.log_message.emit(level, msg)
+                    except RuntimeError:
+                        pass
+
             try:
                 ep_info = self.engine.wait_sender_endpoint(timeout=3.0)
-                if not self.is_sending or session_epoch != self._sender_session_epoch:
+                if self._is_closing or not self.is_sending or session_epoch != self._sender_session_epoch:
                     return
 
                 p2p = P2PChannelClient()
-                if not self.is_sending or session_epoch != self._sender_session_epoch:
+                if self._is_closing or not self.is_sending or session_epoch != self._sender_session_epoch:
                     p2p.stop()
                     return
                 self._active_p2p_client = p2p
@@ -1027,11 +1042,11 @@ class DavMainWindow(QMainWindow):
                 reg_holder = {}
 
                 def _on_receiver_paired(peer: dict):
-                    if not self.is_sending or session_epoch != self._sender_session_epoch:
+                    if self._is_closing or not self.is_sending or session_epoch != self._sender_session_epoch:
                         return
                     my_pub_ip = reg_holder.get("your_public_ip") or (ep_info or {}).get("public_ip")
                     node_name = peer.get("node_name", "Receptor Remoto")
-                    self.bridge.log_message.emit(
+                    _emit_log(
                         "INFO",
                         f"[P2P] Receptor '{node_name}' solicitou conexão via PIN '{pin}'. Iniciando Hole-Punching...",
                     )
@@ -1048,24 +1063,24 @@ class DavMainWindow(QMainWindow):
                     on_paired_callback=_on_receiver_paired,
                     endpoint_info=ep_info,
                 )
-                if not self.is_sending or session_epoch != self._sender_session_epoch:
+                if self._is_closing or not self.is_sending or session_epoch != self._sender_session_epoch:
                     p2p.stop()
                     return
                 if reg:
                     reg_holder.update(reg)
                     pub_ep_str = f"{reg.get('your_public_ip')}:{(ep_info or {}).get('public_port', eff_local_port)}"
                     nat_str = (ep_info or {}).get("nat_type", "auto")
-                    self.bridge.log_message.emit(
+                    _emit_log(
                         "SUCCESS",
                         f"[P2P] PIN '{pin}' ativo no Rendezvous (Endpoint Público: {pub_ep_str} · NAT: {nat_str}).",
                     )
                 else:
-                    self.bridge.log_message.emit(
+                    _emit_log(
                         "WARN",
                         "[P2P] Servidor Rendezvous indisponível no momento; pareamento por PIN permanece ativo na rede local (Beacon LAN).",
                     )
             except Exception as exc:
-                self.bridge.log_message.emit("DEBUG", f"[P2P] Aviso no registro assíncrono: {exc}")
+                _emit_log("DEBUG", f"[P2P] Aviso no registro assíncrono: {exc}")
 
         threading.Thread(target=_bg_register_sender, daemon=True, name=f"P2P-Reg-{pin}").start()
 
@@ -1289,6 +1304,12 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.append_log(level, text)
 
     def closeEvent(self, event):
+        self._is_closing = True
+        self._sender_session_epoch += 1
+        if hasattr(self, "_fw_init_timer"):
+            self._fw_init_timer.stop()
+        if hasattr(self, "_upd_init_timer"):
+            self._upd_init_timer.stop()
         self._conn_hint_timer.stop()
         if self._active_p2p_client:
             self._active_p2p_client.stop()
@@ -1297,6 +1318,7 @@ class DavMainWindow(QMainWindow):
         if hasattr(self, "_decode_worker") and self._decode_worker:
             self._decode_worker.stop()
         if hasattr(self, "beacon_service") and self.beacon_service:
+            self.beacon_service.on_peers_updated = None
             self.beacon_service.stop()
         if hasattr(self, "audio_player") and self.audio_player:
             self.audio_player.stop()

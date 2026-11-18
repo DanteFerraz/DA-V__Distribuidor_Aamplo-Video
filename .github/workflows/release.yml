@@ -58,13 +58,16 @@ jobs:
       - name: Install Python runtime & packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt Pillow aiohttp opencv-python-headless pyinstaller
+          python -m pip install -r requirements.txt Pillow aiohttp "opencv-python-headless>=4.10.0,<5.1.0" pyinstaller
 
       - name: Execute Unit & P2P End-to-End Validation Suite
         env:
           QT_QPA_PLATFORM: offscreen
+          DAV_HEADLESS_SYNTHETIC: "1"
+          PYTHONFAULTHANDLER: "1"
+          PYTHONUNBUFFERED: "1"
         run: |
-          python -m pytest tests/ -v
+          python -m pytest tests/ -v --tb=short
           python tests/test_p2p_e2e.py
 
       - name: Compile Self-Contained Linux Application & Payload Installer

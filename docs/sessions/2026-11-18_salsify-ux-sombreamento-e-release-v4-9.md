@@ -34,24 +34,27 @@ Consolidada a arquitetura modular com controle de congestionamento Salsify/SQP e
 | `src/dav/modules/codec/encoder.py` | Modificado | `codec` | Clamping VBV seguro no `libx264` via reabertura com histerese e debounce de PLI. |
 | `src/dav/modules/stream_engine/service.py`, `subprocess_sender.py`, `sender_worker.py` | Criado / Modificado | `stream_engine` | Subprocesso TX lockless, tupla atômica `_target_ep` e `join` síncrono após `terminate()` em `stop()`. |
 | `src/ui/glass/tokens.py`, `icons.py`, `paint.py`, `widgets.py`, `views.py`, `__init__.py` | Modificado | `ui.glass` | Tokens e renderização com drop-shadow vetorial/tipográfico, `VideoOverlayControls` e `SenderHomePage.flash_warning`. |
-| `src/ui/main_window.py`, `src/ui/qt_compat.py` | Modificado | `ui` | Integração de controles flutuantes, proteção em `_swap_mode()`, controle de época `_sender_session_epoch` e preservação de `txt_send_ip` em `_on_target_updated()`. |
-| `scripts/build_linux_source_tarball.py`, `scripts/build_windows.ps1`, `.github/workflows/release.yml` | Criado / Modificado | `build / ci` | Gerador POSIX LF reproduzível `.tar.gz`, build Windows v4.9.0 e inclusão de `-r requirements.txt` no workflow Linux CI. |
-| `tests/test_glass_ui.py`, `tests/test_salsify_subms_perf.py`, `tests/test_audio_pipeline.py`, `tests/test_pake_crypto.py`, `tests/test_sqp_fec.py`, `tests/test_architecture_boundaries.py` | Criado / Modificado | `tests` | Cobertura completa de UX, proteção `ZONE_SWAP`, reinício PIN P2P, QoS WAN, áudio Opus, PAKE AEAD e fronteiras arquiteturais. |
+| `src/ui/main_window.py`, `src/ui/bridge.py`, `src/ui/qt_compat.py` | Modificado | `ui` | Integração de controles flutuantes, proteção em `_swap_mode()`, controle de época `_sender_session_epoch`, preservação de `txt_send_ip` em `_on_target_updated()`, timers de inicialização canceláveis em `closeEvent()` e `join()` no `DecodeWorker.stop()`. |
+| `scripts/build_linux_source_tarball.py`, `scripts/build_linux_bundle.sh`, `scripts/build_windows.ps1`, `.github/workflows/release.yml` | Criado / Modificado | `build / ci` | Gerador POSIX LF reproduzível `.tar.gz`, build Windows v4.9.0, restrição `opencv-python-headless>=4.10.0,<5.1.0` e variáveis `DAV_HEADLESS_SYNTHETIC=1` / `PYTHONFAULTHANDLER=1` no CI Linux. |
+| `tests/test_glass_ui.py`, `tests/test_salsify_subms_perf.py`, `tests/test_audio_pipeline.py`, `tests/test_pake_crypto.py`, `tests/test_sqp_fec.py`, `tests/test_architecture_boundaries.py` | Criado / Modificado | `tests` | Cobertura completa de UX, proteção `ZONE_SWAP`, reinício PIN P2P com mock de sinalização WAN, QoS WAN, áudio Opus, PAKE AEAD e fronteiras arquiteturais. |
 
 ## Decisões arquiteturais e justificativas
 
 - **Preservação de configuração manual vs. endpoint efêmero P2P:** Armazenar o endpoint remoto confirmado durante o handshake em `_active_peer_endpoint` em vez de sobrescrever `txt_send_ip` e `spn_send_port` evita que reinícios subsequentes em Modo PIN saltem a descoberta STUN em `subprocess_sender.py` ou tentem vincular portas NAT remotas.
 - **Proteção não-destrutiva no botão central (`ZONE_SWAP`):** Bloquear a troca de modo apenas enquanto `mode == "sender"` e `is_sending == True`, com feedback temporário de aviso em vermelho suave no card, elimina desligamentos acidentais sem adicionar diálogos modais bloqueantes ou alterar o layout das referências.
 - **Drop-shadow em `QPainter` compartilhado (`paint_shadowed_text` e `_render_shadowed`):** Renderizar dupla camada suave diretamente nos helpers compartilhados evita overhead e recorte de `QGraphicsDropShadowEffect` sob `WA_TranslucentBackground` e garante consistência entre `GlassLabel`, `GlassButton`, `GlassSegmented`, `FloatingNavPill` e `VideoOverlayControls`.
+- **Teardown determinístico de threads e timers Qt:** Cancelar timers de inicialização, invalidar `_sender_session_epoch`, limpar callbacks do beacon e aguardar `DecodeWorker.stop()` em conjunto com fixação da faixa do OpenCV no Linux evita condições de corrida e falhas `SIGABRT` durante encerramento sob `QT_QPA_PLATFORM=offscreen`.
 
 ## Evidências de verificação e testes
 
 - **Suíte unitária e de integração:** `py -m pytest tests/ -v`
-  - **Resultado observado:** `79 passed in 12.82s` (executado após as edições de código e atualização de versão para `4.9.0`; 0 falhas, 0 skips).
+  - **Resultado observado:** `79 passed in 12.13s` (executado após as edições finais; 0 falhas, 0 skips).
+- **Suíte P2P e Relay end-to-end:** `py tests/test_p2p_e2e.py`
+  - **Resultado observado:** todos os 3 cenários aprovados (Single-Socket STUN, P2P Direto H.264 e Blind Encrypted UDP Relay).
 - **Sanidade GUI e carregamento de versão:** `py scripts/gui_app.py --self-check`
-  - **Resultado observado:** `DAV_SELF_CHECK_OK` e `VER: 4.9.0`.
+  - **Resultado observado:** `DAV_SELF_CHECK_OK`.
 - **Compilação Windows e empacotamento multiplataforma:** `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1` e `py scripts/build_linux_source_tarball.py`
-  - **Resultado observado:** `dist/DA-V/DA-V.exe` (`7.545.662` bytes, `--self-check` `ExitCode=0`), `release_assets/DA-V_Instalador_Windows_x64.exe` (`197.821.653` bytes), `release_assets/DA-V_v4.9.0_Windows_x64_Portable.zip` (`152.416.352` bytes, `VERSION` interno `4.9.0`) e `release_assets/DA-V_v4.9.0_Linux_Source_Portable.tar.gz` (`339.540` bytes, `234` arquivos, `sh_exec=True`, sem `\r\n`).
+  - **Resultado observado:** `dist/DA-V/DA-V.exe` (`6.971.678` bytes, `--self-check` `ExitCode=0`), `release_assets/DA-V_Instalador_Windows_x64.exe` (`191.484.247` bytes), `release_assets/DA-V_v4.9.0_Windows_x64_Portable.zip` (`146.072.337` bytes) e `release_assets/DA-V_v4.9.0_Linux_Source_Portable.tar.gz` (`340.018` bytes, `234` arquivos).
 - **Compilação ELF Linux local:** Não executada localmente porque WSL2 neste host reportou ausência de Hyper-V (`HCS_E_HYPERV_NOT_INSTALLED`); compensada via empacotamento portátil POSIX e pipeline GitHub Actions em `ubuntu-24.04`.
 
 ## Riscos, dívida técnica e desvios conhecidos

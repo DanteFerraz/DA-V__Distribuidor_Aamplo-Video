@@ -54,6 +54,9 @@ class DecodeWorker(QObject):
             self._q.put_nowait(None)
         except Exception:
             pass
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        self._thread = None
 
     def submit(self, data: bytes, w: int, h: int):
         """Non-blocking submit maintaining ultra-low latency; drains backlog if burst saturates queue."""

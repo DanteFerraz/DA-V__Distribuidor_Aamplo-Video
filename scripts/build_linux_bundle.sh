@@ -57,12 +57,12 @@ fi
 source "$VENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip
-python -m pip install -r "$ROOT_DIR/requirements.txt" aiohttp Pillow opencv-python-headless pyinstaller
+python -m pip install -r "$ROOT_DIR/requirements.txt" aiohttp Pillow "opencv-python-headless>=4.10.0,<5.1.0" pyinstaller
 
 # 3. Executar validacao de testes antes do empacotamento (opcional)
 if [ "$RUN_TESTS" -eq 1 ]; then
     echo "[3/5] Executando suite pytest..."
-    QT_QPA_PLATFORM=offscreen python -m pytest tests/ -v
+    QT_QPA_PLATFORM=offscreen DAV_HEADLESS_SYNTHETIC=1 PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python -m pytest tests/ -v --tb=short
 else
     echo "[3/5] Testes ignorados (--skip-tests)."
 fi

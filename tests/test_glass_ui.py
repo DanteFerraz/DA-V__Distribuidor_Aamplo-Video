@@ -192,20 +192,33 @@ def test_shadowed_vector_icons_and_overlay_controls():
     assert not img.isNull()
 
     ctrl = VideoOverlayControls()
-    audio_hits = []
-    fs_hits = []
-    ctrl.audio_toggled.connect(lambda: audio_hits.append(True))
-    ctrl.fullscreen_toggled.connect(lambda: fs_hits.append(True))
-    ctrl.set_ui_scale(1.0)
+    try:
+        audio_hits = []
+        fs_hits = []
+        ctrl.audio_toggled.connect(lambda: audio_hits.append(True))
+        ctrl.fullscreen_toggled.connect(lambda: fs_hits.append(True))
+        ctrl.set_ui_scale(1.0)
 
-    r_audio = ctrl._zone_rect(ctrl.ZONE_AUDIO)
-    r_fs = ctrl._zone_rect(ctrl.ZONE_FULLSCREEN)
-    assert ctrl._zone_at(r_audio.center()) == ctrl.ZONE_AUDIO
-    assert ctrl._zone_at(r_fs.center()) == ctrl.ZONE_FULLSCREEN
-    assert ctrl._zone_at(QPointF(-10, -10)) == -1
+        r_audio = ctrl._zone_rect(ctrl.ZONE_AUDIO)
+        r_fs = ctrl._zone_rect(ctrl.ZONE_FULLSCREEN)
+        assert ctrl._zone_at(r_audio.center()) == ctrl.ZONE_AUDIO
+        assert ctrl._zone_at(r_fs.center()) == ctrl.ZONE_FULLSCREEN
+        assert ctrl._zone_at(QPointF(-10, -10)) == -1
+    finally:
+        ctrl.close()
+        ctrl.deleteLater()
+        app.processEvents()
 
 
 def test_sender_zone_swap_protection_and_clean_restart(monkeypatch):
+    class _StubP2PClient:
+        def register_as_sender(self, *args, **kwargs):
+            return {"status": "registered", "your_public_ip": "127.0.0.1"}
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr("src.ui.main_window.P2PChannelClient", _StubP2PClient)
     win = DavMainWindow(custom_pin="300-631")
     win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     try:
@@ -280,6 +293,7 @@ def test_sender_zone_swap_protection_and_clean_restart(monkeypatch):
     finally:
         win.is_sending = False
         win.close()
+        app.processEvents()
 
 
 def test_no_emojis_in_glass_ui():
