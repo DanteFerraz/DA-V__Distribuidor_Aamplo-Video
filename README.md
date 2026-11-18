@@ -10,7 +10,7 @@
 
 **Compartilhamento de tela ponto a ponto de ultra-baixa latência (até 4K 120 FPS) entre Windows e Linux — com pareamento universal por PIN, arquitetura modular MonoTech Core Kernel v2.0, perfuração direta de NAT e fallback automático para CGNAT Simétrico.**
 
-[Arquitetura de Software v4.0](#arquitetura-de-software-v40---monotech-core-kernel) •
+[Arquitetura de Software v4.9](#arquitetura-de-software-v49--monotech-core-kernel) •
 [Protocolo P2P e Travessia de NAT](#engenharia-p2p-stun-single-socket-e-blind-relay) •
 [Formato de Pacote na Rede](#protocolo-binário-de-transporte) •
 [Como Executar](#instalação-e-execução) •
@@ -30,37 +30,45 @@ Em vez de embutir um navegador inteiro (Electron/WebRTC), o DA-V separa estritam
 
 ---
 
-## Arquitetura de Software v4.0 — MonoTech Core Kernel
+## Arquitetura de Software v4.9 — MonoTech Core Kernel
 
-O **DA-V v4.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0** (o mesmo padrão corporativo aplicado nos projetos de alta criticidade do autor, como o SGE). O monólito original foi decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e fatias verticais desacopladas (`src/dav/modules/`), garantindo resiliência, isolamento de falhas e extensibilidade sem acoplamento direto:
+O **DA-V v4.9.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0**. O sistema é decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e fatias verticais desacopladas (`src/dav/modules/`), garantindo isolamento de falhas, latência sub-milissegundo e extensibilidade sem acoplamento direto:
 
 ```mermaid
 flowchart TB
-    subgraph KERNEL ["MonoTech Core Kernel (src/dav/kernel/)"]
+    subgraph KERNEL["MonoTech Core Kernel - src/dav/kernel"]
         direction TB
-        REG["ModuleRegistry (Descoberta & Ciclo de Vida Topológico)"]
-        BUS["EventBus (Pub/Sub Assíncrono com ThreadPool)"]
-        RES["ServiceResult[T] (Tratamento Funcional de Erros)"]
-        POOL["L1BufferPool (Gerenciamento Contíguo O(1) de Quadros)"]
-        CB["CircuitBreaker (Proteção contra Latência de Nuvem Externa)"]
-        CONF["ConfigEngine (dav.toml Hierárquico + Variáveis de Ambiente)"]
+        REG["ModuleRegistry: Descoberta e Ciclo de Vida"]
+        BUS["EventBus: Pub/Sub Nao-Bloqueante"]
+        RES["ServiceResult: Tratamento Funcional de Erros"]
+        POOL["L1BufferPool: Pool Contiguo O1"]
+        CB["CircuitBreaker: Isolamento de Falhas"]
+        CONF["ConfigEngine: dav.toml e Ambiente"]
     end
 
-    subgraph SLICES ["Fatias Verticais de Mídia & Negócio (src/dav/modules/)"]
+    subgraph SLICES["Fatias Verticais de Midia e Negocio - src/dav/modules"]
         direction TB
-        CAP["capture: Fábrica Multiplataforma (WGC Win11, Wayland PipeWire Portal, MSS)"]
-        COD["codec: NVENC GPU + libx264 AVX2 Sliced + PyAV C-Contiguous"]
-        NET["transport_p2p: STUN Single-Socket, ICE-Lite, Blind Relay DAV_RLY1"]
-        ENG["stream_engine: SenderWorker / ReceiverWorker (Cadência 60/120 FPS + PLI)"]
-        COM["commercial: Governança Autoral (MonoTech Community 100% Free & Open)"]
-        TEL["telemetry: Sondas TUPÃ (Jitter RFC 3550, RTT) + Exportador SDE Live Hub"]
-        UI["presentation: Shell PySide6 + Diálogo Institucional Dante Ferraz"]
+        CAP["capture: WGC Win11, Wayland PipeWire Portal e MSS"]
+        COD["codec: NVENC GPU, libx264 AVX2 e PyAV"]
+        NET["transport_p2p: STUN, ICE-Lite, PAKE, SQP, FEC e Blind Relay"]
+        AUD["audio: WASAPI/PipeWire, Resampler, Opus 48 kHz e ASRC"]
+        ENG["stream_engine: Subprocesso TX Lockless e ReceiverWorker"]
+        COM["commercial: MonoTech Community Edition 100% Free e Open"]
+        TEL["telemetry: Sondas TUPA (Jitter/RTT) e Hub SDE"]
+        UI["presentation: Shell Glassmorphism PySide6 e Updater"]
     end
 
-    REG -->|"Auto-Discovery & Startup"| SLICES
-    SLICES <-->|"Eventos Não-Bloqueantes"| BUS
-    ENG -->|"Pool de Memória"| POOL
-    TEL -->|"Isolamento de Falha"| CB
+    REG -->|"Auto-Discovery"| ENG
+    CAP -->|"Quadros Capturados"| ENG
+    COD -->|"Compressao H.264"| ENG
+    AUD -->|"Mux Opus PCM"| ENG
+    NET -->|"Controle SQP/PAKE/FEC"| ENG
+    ENG -->|"Eventos"| BUS
+    ENG -->|"Alocacao"| POOL
+    ENG -->|"Retorno"| RES
+    TEL -->|"Protecao HTTP"| CB
+    UI -->|"Parametros"| CONF
+    COM -->|"Governanca"| UI
 ```
 
 ### Fatias Verticais do Sistema (`src/dav/modules/`)
@@ -70,40 +78,61 @@ flowchart TB
    - **Linux:** XDG Desktop Portal (`org.freedesktop.portal.ScreenCast`) integrado via PipeWire e GStreamer no Wayland, além de sentinela anti-black-frame no X11.
    - **Synthetic:** Gerador sintético com padrão de teste SMPTE para execução em ambientes *headless* e integração contínua (CI/CD).
 2. **`codec` (Compressão e Descompressão de Vídeo):**
-   - **Codificação:** Aceleração por hardware NVIDIA NVENC (`p1` ULL) com *single-pass rescale* SIMD `bgra -> yuv420p` via FFmpeg `libswscale`, e fallback multi-core `libx264` (`ultrafast`, `zerolatency`, `sliced-threads`).
+   - **Codificação:** Aceleração por hardware NVIDIA NVENC (`p1` ULL) com *single-pass rescale* SIMD `bgra -> yuv420p` via FFmpeg `libswscale`, e fallback multi-core `libx264` (`ultrafast`, `zerolatency`, `sliced-threads`) com clamping VBV e histerese segura.
    - **Decodificação:** PyAV com garantia estrita de buffers NumPy `C_CONTIGUOUS` para resoluções não-múltiplas de 32 bytes (como notebooks `1366x768`).
-3. **`transport_p2p` (Protocolo de Rede & STUN Single-Socket):**
+3. **`transport_p2p` (Protocolo Salsify/SQP, PAKE & STUN Single-Socket):**
    - Consulta STUN RFC 5389 sobre o mesmo socket de transmissão de mídia.
-   - Criptografia simétrica com vetorização SIMD derivada do PIN.
+   - Criptografia autenticada ChaCha20-Poly1305 AEAD derivada via PAKE com separação de domínio vídeo/áudio.
+   - Controle de congestionamento SQP em 3 zonas com RTT base (`15 s`), pacing cut-through, pré-empção de áudio e FEC adaptativo GF(2^8).
    - Tunelamento Blind Relay UDP (`DAV_RLY1`) com encaminhamento `O(1)` em memória.
-4. **`stream_engine` (Motor de Streaming Ativo):**
-   - `SenderWorker` e `ReceiverWorker` com recuperação instantânea de quadros-chave sob demanda (PLI).
-5. **`commercial` (MonoTech Community Edition 100% Gratuito):**
-   - Sem limites de duração, até 4K UHD 120 FPS liberados para toda a comunidade técnica.
-   - Vitrine institucional com atribuição canônica a **Dante Ferraz** e links para o ecossistema autoral (**TUPÃ**, **SDE**, **SGE**, **OPME**).
-6. **`telemetry` (Observabilidade em Tempo Real):**
-   - Sondas de rede baseadas no protocolo **TUPÃ** para medição de jitter estatístico (RFC 3550) e RTT.
-   - Exportador assíncrono para o **SDE Live Hub** (`http://129.148.26.150:5001/sde/live`) protegido por `CircuitBreaker`.
-7. **`presentation` (Camada Visual & Interativa):**
-   - Diálogo modal nativo *"Sobre o Autor & Tecnologias"* integrado ao menu lateral Obsidian Dark.
+4. **`audio` (Captura, Codec Opus & ASRC):**
+   - Captura loopback (WASAPI/PipeWire) resamplada para 48 kHz estéreo, codificada em Opus low-delay com LBRR e reconstruída com ASRC adaptativo em `DesktopAudioPlayer`.
+5. **`stream_engine` (Motor de Streaming Ativo):**
+   - `SubprocessSenderWorker` GIL-free com filas desacopladas e `ReceiverWorker` com recuperação instantânea de quadros-chave sob demanda (PLI).
+6. **`commercial` (MonoTech Community Edition 100% Gratuito):**
+   - Sem limites de duração, até 4K UHD 120 FPS liberados para toda a comunidade técnica com atribuição canônica a **Dante Ferraz**.
+7. **`telemetry` (Observabilidade em Tempo Real):**
+   - Sondas **TUPÃ** para medição de jitter estatístico (RFC 3550) e RTT, mais exportador assíncrono para o Hub SDE protegido por `CircuitBreaker`.
+8. **`presentation` & UI Glassmorphism (`src/ui/glass/`):**
+   - Interface focal em vidro translúcido com barra superior retrátil, controles flutuantes de áudio e tela cheia com sombreamento vetorial/tipográfico e navegação resiliente.
+
+```mermaid
+flowchart LR
+    subgraph TX["No Transmissor"]
         direction TB
-        SOCK_RX["Loop Receptor Assíncrono (Descritor Único UDP + Janela 40 Quadros)"]
-        DEC_W["DecodeWorker Thread Dedicada (FFmpeg/PyAV Slice Low-Delay · 4 Threads)"]
-        CANVAS["VideoCanvasWidget (Zero-Copy QImage · VSync Off)"]
-        SOCK_RX --> DEC_W --> CANVAS
+        UI_TX["UI Glassmorphism PySide6"]
+        SUB_TX["DAV-Sender-Engine Subprocesso"]
+        SOCK_TX["Socket Unico UDP TX"]
+        UI_TX <-->|"IPC Comandos e Metricas"| SUB_TX
+        SUB_TX -->|"Cut-Through Pacing"| SOCK_TX
     end
 
-    SOCK_TX -.->|"1. Binding Request (Mesmo Socket)"| STUN_PUB
-    SOCK_RX -.->|"1. Binding Request (Mesmo Socket)"| STUN_PUB
-    UI_TX -.->|"2. Registro PIN + Escuta SSE"| RDV
-    SOCK_RX -.->|"2. Resolução PIN"| RDV
-    UI_TX <-->|"Descoberta Local"| BEACON
-    BEACON <-->|"Varredura LAN"| SOCK_RX
+    subgraph NET["Descoberta e Contingencia"]
+        direction TB
+        STUN["STUN RFC 5389"]
+        RDV["DAV-Rendezvous SSE e Blind Relay"]
+        BCN["LAN Beacon UDP 9005"]
+    end
 
-    SOCK_TX ==>|"3a. Túnel Direto UDP (LAN / Overlay / WAN Hole-Punch)"| SOCK_RX
-    SOCK_RX -.->|"PLI (Pedido Instantâneo de Keyframe IDR)"| SOCK_TX
-    SOCK_TX -.->|"3b. Fallback CGNAT Simétrico (DAV_RLY1)"| RDV
-    RDV -.->|"Encaminhamento O(1) Cego"| SOCK_RX
+    subgraph RX["No Receptor"]
+        direction TB
+        SOCK_RX["ReceiverWorker UDP e FEC"]
+        DEC_W["DecodeWorker + AudioPlayer"]
+        UI_RX["VideoCanvasWidget Zero-Copy"]
+        SOCK_RX -->|"H.264 / Opus"| DEC_W
+        DEC_W -->|"QImage + Audio"| UI_RX
+    end
+
+    SOCK_TX -.->|"1. STUN Binding"| STUN
+    SOCK_RX -.->|"1. STUN Binding"| STUN
+    UI_TX -.->|"2. Registro PIN"| RDV
+    SOCK_RX -.->|"2. Resolucao PIN"| RDV
+    UI_TX <-->|"Discovery"| BCN
+    BCN <-->|"LAN Sweep"| SOCK_RX
+    SOCK_TX ==>|"3a. Tunel Direto PAKE AEAD"| SOCK_RX
+    SOCK_RX -.->|"PLI IDR"| SOCK_TX
+    SOCK_TX -.->|"3b. Fallback Blind Relay"| RDV
+    RDV -.->|"Encaminhamento O1"| SOCK_RX
 ```
 
 ### Decisões de Projeto que Sustentam os 60 FPS
@@ -231,7 +260,7 @@ Valores aferidos no pipeline real de captura + codificação + rede + decodifica
 
 Baixe o instalador correspondente ao seu sistema operacional na aba [**Releases**](https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video/releases):
 - **Windows 10/11 (x64):** Execute `DA-V_Instalador_Windows_x64.exe` (extrai os binários autossuficientes em `%LOCALAPPDATA%\Programs\DA-V`, configura regras do Windows Firewall, cria atalhos na Área de Trabalho / Menu Iniciar e registra o protocolo `dav://`).
-- **Linux (x86_64):** Execute o instalador autossuficiente `./DA-V_Instalador_Linux_x86_64` (instala em `~/.local/share/dav`) ou extraia `DA-V_v3.1.1_Linux_x86_64.tar.gz`.
+- **Linux (x86_64):** Execute o instalador autossuficiente `./DA-V_Instalador_Linux_x86_64` (instala em `~/.local/share/dav`) ou extraia `DA-V_v4.9.0_Linux_x86_64.tar.gz` / `DA-V_v4.9.0_Linux_Source_Portable.tar.gz`.
 
 ---
 
@@ -337,9 +366,9 @@ Distribuidor_Aamplo-Video/
 │   ├── dav_installer_linux.py  # Assistente gráfico de instalação XDG/UFW para Linux
 │   └── setup_firewall.ps1      # Automação de regras UDP no Windows Defender Firewall
 ├── src/
-│   ├── dav/                    # Arquitetura MonoTech Core v4.0
-│   │   ├── kernel/             # Result[T], Registry, EventBus, BufferPool, CircuitBreaker, Config
-│   │   └── modules/            # Fatias verticais (capture, codec, transport_p2p, stream_engine, commercial, telemetry, presentation)
+│   ├── dav/                    # Arquitetura MonoTech Core v4.9.0
+│   │   ├── kernel/             # Result, Registry, EventBus, BufferPool, CircuitBreaker, Config
+│   │   └── modules/            # Fatias verticais (audio, capture, codec, transport_p2p, stream_engine, commercial, telemetry, presentation, updater)
 │   ├── capture/                # Capturadores C++23 (DXGI Desktop Duplication e X11 MIT-SHM)
 │   ├── codec/                  # HybridEncoder / HybridDecoder (NVENC, libx264 ULL, JPEG, RAW)
 │   ├── core/                   # Configuração TOML, logger, tipos e ponte C-ABI
@@ -352,7 +381,7 @@ Distribuidor_Aamplo-Video/
 ├── tests/                      # Suíte de testes unitários e integração E2E
 ├── CHANGELOG.md                # Histórico semântico de versões
 ├── LEIA-ME_LINUX.md            # Documentação operacional dedicada ao ambiente Linux
-├── VERSION                     # Versão canônica do projeto (4.0.0)
+├── VERSION                     # Versão canônica do projeto (4.9.0)
 └── requirements.txt            # Dependências Python multiplataforma
 ```
 

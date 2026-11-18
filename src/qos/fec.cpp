@@ -3,6 +3,7 @@
 #include <array>
 #include <cstring>
 #include <map>
+#include <utility>
 
 namespace dav {
 
@@ -14,7 +15,7 @@ struct Gf256Tables {
     std::array<uint8_t, 256> inv{};
     std::array<uint8_t, 256 * 256> mul{};
 
-    constexpr Gf256Tables() {
+    Gf256Tables() noexcept {
         uint16_t x = 1;
         for (int i = 0; i < 255; ++i) {
             exp[i] = static_cast<uint8_t>(x);
@@ -37,16 +38,19 @@ struct Gf256Tables {
     }
 };
 
-constexpr Gf256Tables kGfTables{};
+inline const Gf256Tables& gf_tables() noexcept {
+    static const Gf256Tables tables;
+    return tables;
+}
 
 inline uint8_t gf_mul(uint8_t a, uint8_t b) noexcept {
-    return kGfTables.mul[static_cast<size_t>(a) * 256 + b];
+    return gf_tables().mul[static_cast<size_t>(a) * 256 + b];
 }
 
 inline uint8_t cauchy_coef(uint16_t parity_idx, uint16_t data_idx, uint16_t k_data) noexcept {
     uint16_t x_i = k_data + parity_idx;
     uint16_t y_j = data_idx;
-    return kGfTables.inv[x_i ^ y_j];
+    return gf_tables().inv[x_i ^ y_j];
 }
 
 bool invert_gf_matrix(std::vector<std::vector<uint8_t>>& mat, std::vector<std::vector<uint8_t>>& inv_out) {
@@ -71,7 +75,7 @@ bool invert_gf_matrix(std::vector<std::vector<uint8_t>>& mat, std::vector<std::v
             std::swap(inv_out[col], inv_out[pivot]);
         }
 
-        uint8_t inv_piv = kGfTables.inv[mat[col][col]];
+        uint8_t inv_piv = gf_tables().inv[mat[col][col]];
         if (inv_piv != 1) {
             for (size_t c = 0; c < n; ++c) {
                 mat[col][c] = gf_mul(mat[col][c], inv_piv);
@@ -142,7 +146,7 @@ bool FecHandler::encode_gf256_raw(
             if (c == 1) {
                 for (size_t b = 0; b < shard_len; ++b) dst[b] ^= src[b];
             } else if (c != 0) {
-                const uint8_t* mul_row = &kGfTables.mul[static_cast<size_t>(c) * 256];
+                const uint8_t* mul_row = &gf_tables().mul[static_cast<size_t>(c) * 256];
                 for (size_t b = 0; b < shard_len; ++b) dst[b] ^= mul_row[src[b]];
             }
         }
@@ -211,7 +215,7 @@ bool FecHandler::recover_gf256_raw(
             if (c == 1) {
                 for (size_t b = 0; b < shard_len; ++b) rhs[row][b] ^= src[b];
             } else {
-                const uint8_t* mul_row = &kGfTables.mul[static_cast<size_t>(c) * 256];
+                const uint8_t* mul_row = &gf_tables().mul[static_cast<size_t>(c) * 256];
                 for (size_t b = 0; b < shard_len; ++b) rhs[row][b] ^= mul_row[src[b]];
             }
         }
@@ -234,7 +238,7 @@ bool FecHandler::recover_gf256_raw(
             if (c == 1) {
                 for (size_t b = 0; b < shard_len; ++b) dst[b] ^= rhs[k][b];
             } else if (c != 0) {
-                const uint8_t* mul_row = &kGfTables.mul[static_cast<size_t>(c) * 256];
+                const uint8_t* mul_row = &gf_tables().mul[static_cast<size_t>(c) * 256];
                 for (size_t b = 0; b < shard_len; ++b) dst[b] ^= mul_row[rhs[k][b]];
             }
         }

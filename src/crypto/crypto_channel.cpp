@@ -351,7 +351,7 @@ VoidResult CryptoChannel::encrypt_packet(DavPacket& packet) {
     packet.auth_tag.resize(TagSize);
 
     auto aad = packet.header.to_wire_bytes();
-    uint32_t domain_ssrc = packet.header.ssrc ^ (static_cast<uint32_t>(packet.header.payload_type) << 24);
+    uint32_t domain_ssrc = packet.header.ssrc ^ (static_cast<uint32_t>(packet.header.packet_type) << 24);
     auto nonce = derive_nonce(domain_ssrc, packet.header.frame_id, packet.header.sequence_number);
     Buffer ciphertext(packet.payload.size());
     if (!seal_aead_raw(
@@ -373,7 +373,7 @@ VoidResult CryptoChannel::decrypt_packet(DavPacket& packet) {
     }
 
     auto aad = packet.header.to_wire_bytes();
-    uint32_t domain_ssrc = packet.header.ssrc ^ (static_cast<uint32_t>(packet.header.payload_type) << 24);
+    uint32_t domain_ssrc = packet.header.ssrc ^ (static_cast<uint32_t>(packet.header.packet_type) << 24);
     auto nonce = derive_nonce(domain_ssrc, packet.header.frame_id, packet.header.sequence_number);
     Buffer plaintext(packet.payload.size());
     if (!open_aead_raw(
