@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from fractions import Fraction
 from typing import Optional
 import numpy as np
@@ -56,17 +57,31 @@ class VideoEncoder(BaseEncoder):
 
         self._av_codec = None
         self._wire_magic = MAGIC_H264
+        self._current_quality = 75
+        self._target_frame_bytes = int((bitrate_kbps * 1024 / 8) / self.fps)
+        self._pir_active = False
+        self._applied_bitrate_kbps = int(bitrate_kbps)
+        self._last_bitrate_update_mono = time.monotonic()
+        self._last_libx264_reopen_mono = 0.0
         self._frame_seq = 0
         self._force_next_idr = True
+        self._last_idr_mono = 0.0
         self.last_frame_was_keyframe = False
 
         self._init_encoder()
 
     def _init_encoder(self) -> None:
-        if not HAS_AV:
-            self.codec_type = "raw"
-            self.active_backend_name = "RAW"
+        if self.codec_type in ("raw", "jpeg"):
+            self.active_backend_name = self.codec_type.upper()
             return
+
+        if not HAS_AV:
+            self.codec_type = "jpeg" if HAS_CV2 else "raw"
+            self.active_backend_name = self.codec_type.upper()
+            return
+
+        maxrate_kbps = max(800, int(self.bitrate_kbps * 1.15))
+        bufsize_kbps = max(1500, int(self.bitrate_kbps // 3))
 
         # 1. Tentativa primária: NVENC GPU
         if self.codec_type in ("h264_nvenc", "hevc_nvenc"):
@@ -76,6 +91,8 @@ class VideoEncoder(BaseEncoder):
                 ctx.height = self.height
                 ctx.pix_fmt = "yuv420p"
                 ctx.time_base = Fraction(1, self.fps)
+                ctx.framerate = Fraction(self.fps, 1)
+                ctx.bit_rate = self.bitrate_kbps * 1000
                 ctx.max_b_frames = 0
                 ctx.options = {
                     "preset": "p1",
@@ -86,6 +103,8 @@ class VideoEncoder(BaseEncoder):
                     "delay": "0",
                     "rc": "cbr",
                     "b": f"{self.bitrate_kbps}k",
+                    "maxrate": f"{maxrate_kbps}k",
+                    "bufsize": f"{bufsize_kbps}k",
                     "g": str(self.fps * 2),
                     "forced-idr": "1",
                     "repeat-headers": "1",
@@ -101,7 +120,7 @@ class VideoEncoder(BaseEncoder):
             except Exception as exc:
                 logger.warning(f"[Codec] {self.codec_type} indisponível ({exc}). Alternando para libx264...")
 
-        # 2. Fallback universal: libx264 multi-core SIMD
+        # 2. Fallback universal: libx264 multi-core SIMD com VBV estrito e reconfig dinamico
         cpu_threads = min(8, max(4, os.cpu_count() or 4))
         for sw_name in ("libx264", "h264"):
             try:
@@ -110,15 +129,20 @@ class VideoEncoder(BaseEncoder):
                 ctx.height = self.height
                 ctx.pix_fmt = "yuv420p"
                 ctx.time_base = Fraction(1, self.fps)
+                ctx.framerate = Fraction(self.fps, 1)
+                ctx.bit_rate = self.bitrate_kbps * 1000
                 ctx.max_b_frames = 0
                 ctx.thread_count = cpu_threads
                 ctx.options = {
                     "preset": "ultrafast",
                     "tune": "zerolatency",
                     "b": f"{self.bitrate_kbps}k",
+                    "maxrate": f"{maxrate_kbps}k",
+                    "bufsize": f"{bufsize_kbps}k",
                     "x264-params": (
                         f"repeat-headers=1:keyint={self.fps * 2}:min-keyint=1:"
-                        f"sliced-threads=1:threads={cpu_threads}:sync-lookahead=0:rc-lookahead=0"
+                        f"sliced-threads=1:threads={cpu_threads}:sync-lookahead=0:rc-lookahead=0:"
+                        f"vbv-maxrate={maxrate_kbps}:vbv-bufsize={bufsize_kbps}"
                     ),
                 }
                 ctx.open()
@@ -136,8 +160,38 @@ class VideoEncoder(BaseEncoder):
         self.active_backend_name = "RAW"
         self._av_codec = None
 
-    def request_keyframe(self) -> None:
-        self._force_next_idr = True
+    def request_keyframe(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if force or self._frame_seq == 0 or (now - self._last_idr_mono) >= 0.60:
+            self._force_next_idr = True
+
+    def update_rate_budget(self, bitrate_kbps: int, pir_mode: bool = False) -> None:
+        """Acoplamento Salsify com histerese (>= 12% e >= 400 ms) para manter VBV estavel."""
+        clamped = max(400, min(50000, int(bitrate_kbps)))
+        self._target_frame_bytes = int((clamped * 1024 / 8) / self.fps)
+        self.bitrate_kbps = clamped
+        self._pir_active = bool(pir_mode)
+        if self._av_codec is None:
+            return
+        now = time.monotonic()
+        delta = abs(clamped - self._applied_bitrate_kbps)
+        threshold = max(400, int(self._applied_bitrate_kbps * 0.12))
+        if delta >= threshold and (now - self._last_bitrate_update_mono) >= 0.40:
+            try:
+                if (
+                    self.codec_type == "libx264"
+                    and delta >= max(800, int(self._applied_bitrate_kbps * 0.20))
+                    and (now - self._last_libx264_reopen_mono) >= 1.20
+                ):
+                    self.close()
+                    self._init_encoder()
+                    self._last_libx264_reopen_mono = now
+                if self._av_codec is not None:
+                    self._av_codec.bit_rate = clamped * 1000
+                self._applied_bitrate_kbps = clamped
+                self._last_bitrate_update_mono = now
+            except Exception:
+                pass
 
     def encode(self, frame_bgra: np.ndarray) -> bytes:
         self._frame_seq += 1
@@ -169,12 +223,14 @@ class VideoEncoder(BaseEncoder):
                 if self._force_next_idr or self._frame_seq == 1:
                     av_frame.pict_type = 1  # AV_PICTURE_TYPE_I
                     self._force_next_idr = False
+                    self._last_idr_mono = time.monotonic()
                     self.last_frame_was_keyframe = True
 
                 packets = self._av_codec.encode(av_frame)
                 if packets:
                     if any(getattr(p, "is_keyframe", False) for p in packets):
                         self.last_frame_was_keyframe = True
+                        self._last_idr_mono = time.monotonic()
                     raw_nal = b"".join(bytes(p) for p in packets)
                     return self._wire_magic + raw_nal
             except Exception as exc:
@@ -183,6 +239,22 @@ class VideoEncoder(BaseEncoder):
         if self.codec_type == "raw":
             self.last_frame_was_keyframe = True
             return MAGIC_RAW + frame_bgra.tobytes()
+
+        if HAS_CV2:
+            ok, enc = cv2.imencode(
+                ".jpg",
+                frame_bgra,
+                [cv2.IMWRITE_JPEG_QUALITY, self._current_quality, cv2.IMWRITE_JPEG_OPTIMIZE, 0],
+            )
+            if ok:
+                self.last_frame_was_keyframe = True
+                payload = enc.tobytes()
+                flen = len(payload)
+                if flen > self._target_frame_bytes * 1.3 and self._current_quality > 45:
+                    self._current_quality -= 1
+                elif flen < self._target_frame_bytes * 0.8 and self._current_quality < 85:
+                    self._current_quality += 1
+                return payload
 
         return b""
 
@@ -193,4 +265,7 @@ class VideoEncoder(BaseEncoder):
             except Exception:
                 pass
             self._av_codec = None
+
+
+HybridEncoder = VideoEncoder
 

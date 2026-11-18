@@ -13,6 +13,7 @@ import logging
 import threading
 from typing import Callable, Optional
 
+from src.dav import __version__ as _DAV_VERSION
 from src.dav.kernel.result import ServiceResult
 from src.dav.modules.updater.update_checker import UpdateChecker, UpdateInfo
 from src.dav.modules.updater.update_dialog import UpdateConsentDialog
@@ -29,7 +30,7 @@ class UpdaterService:
     def __init__(
         self,
         checker: Optional[UpdateChecker] = None,
-        current_version: str = "4.0.0",
+        current_version: str = _DAV_VERSION,
     ):
         self.checker = checker or UpdateChecker()
         self.current_version = current_version

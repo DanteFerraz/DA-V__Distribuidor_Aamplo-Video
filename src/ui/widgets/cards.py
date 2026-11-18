@@ -4,7 +4,7 @@ DA-V Reusable Metric Cards and Status Badges
 Consistent presentation components adhering to the 4pt/8pt spatial grid.
 """
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
     Qt, QFont
 )

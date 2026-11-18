@@ -8,14 +8,16 @@ import glob
 import os
 import re
 
-from scripts.qt_compat import QApplication, QImage, Qt
+from scripts.qt_compat import QApplication, QImage, QPainter, QPointF, QRectF, Qt
 from src.ui.glass import (
     FloatingNavPill,
     SenderHomePage,
     SettingsSheet,
     StatsSheet,
+    VideoOverlayControls,
     ViewerConnectingPage,
     ViewerIdlePage,
+    icons,
     parse_access_input,
     tokens as T,
 )
@@ -153,7 +155,130 @@ def test_main_window_glass_transitions():
 
         assert not win._waiting_first_frame
         assert win.stage_stack.currentIndex() == win.PAGE_VIDEO
+        assert win.overlay_controls.isVisible()
+
+        # Controle flutuante de audio no Modo Espectador sincronizado com SettingsSheet
+        assert not win.overlay_controls.audio_muted
+        win._on_overlay_audio_clicked()
+        assert not win.settings_sheet.chk_audio_rx.isChecked()
+        assert win.overlay_controls.audio_muted
+        assert win.audio_player.is_muted
+        win.settings_sheet.chk_audio_rx.setChecked(True)
+        assert not win.overlay_controls.audio_muted
+        assert not win.audio_player.is_muted
     finally:
+        win.close()
+
+
+def test_shadowed_vector_icons_and_overlay_controls():
+    img = QImage(96, 96, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    p = QPainter(img)
+    box = QRectF(16, 16, 64, 64)
+    for fn in (
+        icons.draw_menu,
+        icons.draw_gear,
+        icons.draw_refresh,
+        icons.draw_chart,
+        lambda qp, b: icons.draw_speaker(qp, b, muted=False),
+        lambda qp, b: icons.draw_speaker(qp, b, muted=True),
+        lambda qp, b: icons.draw_fullscreen_corners(qp, b, is_fullscreen=False),
+        lambda qp, b: icons.draw_fullscreen_corners(qp, b, is_fullscreen=True),
+    ):
+        fn(p, box)
+    p.end()
+
+    # Garante que pixels foram desenhados na imagem
+    assert not img.isNull()
+
+    ctrl = VideoOverlayControls()
+    audio_hits = []
+    fs_hits = []
+    ctrl.audio_toggled.connect(lambda: audio_hits.append(True))
+    ctrl.fullscreen_toggled.connect(lambda: fs_hits.append(True))
+    ctrl.set_ui_scale(1.0)
+
+    r_audio = ctrl._zone_rect(ctrl.ZONE_AUDIO)
+    r_fs = ctrl._zone_rect(ctrl.ZONE_FULLSCREEN)
+    assert ctrl._zone_at(r_audio.center()) == ctrl.ZONE_AUDIO
+    assert ctrl._zone_at(r_fs.center()) == ctrl.ZONE_FULLSCREEN
+    assert ctrl._zone_at(QPointF(-10, -10)) == -1
+
+
+def test_sender_zone_swap_protection_and_clean_restart(monkeypatch):
+    win = DavMainWindow(custom_pin="300-631")
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    try:
+        win.resize(1280, 740)
+        win.show()
+        app.processEvents()
+
+        start_calls = []
+        stop_calls = []
+
+        def fake_start_sender(target_ip, target_port, pin, **kwargs):
+            start_calls.append({"target_ip": target_ip, "target_port": target_port, "bind_port": kwargs.get("bind_port")})
+            return True
+
+        monkeypatch.setattr(win.engine, "start_sender", fake_start_sender)
+        monkeypatch.setattr(win.engine, "stop", lambda: stop_calls.append(True))
+        monkeypatch.setattr(win.engine, "wait_sender_endpoint", lambda timeout=3.0: None)
+
+        win._set_mode("sender")
+        assert win.settings_sheet.txt_send_ip.text() == ""
+        orig_port = win.settings_sheet.spn_send_port.value()
+        assert not win.overlay_controls.isVisible()
+
+        # 1. Inicia transmissao em modo PIN P2P
+        win._toggle_sender()
+        assert win.is_sending
+        assert win.overlay_controls.isVisible()
+        assert len(start_calls) == 1
+        assert start_calls[0]["target_ip"] == ""
+        assert start_calls[0]["bind_port"] == win.default_port
+
+        # 2. Pareamento P2P nao deve corromper txt_send_ip / spn_send_port
+        win._on_target_updated("170.239.227.109", 11450, "WAN P2P Direto")
+        assert win._active_peer_endpoint == ("170.239.227.109", 11450)
+        assert win.settings_sheet.txt_send_ip.text() == ""
+        assert win.settings_sheet.spn_send_port.value() == orig_port
+        assert "170.239.227.109:11450" in win.page_sender.lbl_status.text()
+
+        # 3. Clicar no botao central (ZONE_SWAP) enquanto transmite NAO deve parar a transmissao
+        epoch_before = win._sender_session_epoch
+        win._swap_mode()
+        assert win.is_sending
+        assert win.mode == "sender"
+        assert win.stage_stack.currentIndex() == win.PAGE_SENDER
+        assert "Parar Transmissão" in win.page_sender.lbl_status.text()
+        assert len(stop_calls) == 0
+
+        # 4. Controle flutuante de audio no Transmissor
+        win._on_overlay_audio_clicked()
+        assert not win.settings_sheet.chk_audio_tx.isChecked()
+        assert win.overlay_controls.audio_muted
+
+        # 5. Encerrar manualmente e reiniciar transmissao deve funcionar na hora (porta padrao + STUN)
+        win._toggle_sender()
+        assert not win.is_sending
+        assert win._active_peer_endpoint is None
+        assert win._sender_session_epoch > epoch_before
+        assert not win.overlay_controls.isVisible()
+        assert len(stop_calls) == 1
+
+        # Alternar modo depois de parar funciona normalmente e volta ao Transmissor
+        win._swap_mode()
+        assert win.mode == "viewer"
+        win._swap_mode()
+        assert win.mode == "sender"
+
+        win._toggle_sender()
+        assert win.is_sending
+        assert len(start_calls) == 2
+        assert start_calls[1]["target_ip"] == ""
+        assert start_calls[1]["bind_port"] == win.default_port
+    finally:
+        win.is_sending = False
         win.close()
 
 

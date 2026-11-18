@@ -17,25 +17,17 @@ import socket
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
-from scripts.dav_client import DavCoreEngine
-from scripts.qt_compat import (
-    QApplication,
-    QKeySequence,
-    QMainWindow,
-    QPainter,
-    QShortcut,
-    QStackedWidget,
-    Qt,
-    QTimer,
-    QWidget,
-    Signal,
-    Slot,
-)
-from src.discovery.lan_beacon import LanBeaconService, get_local_ip
-from src.discovery.p2p_channel import P2PChannelClient, normalize_pin
-from src.telemetry.tupa_checker import TupaHealthChecker, TupaMetricsSnapshot
+from src.dav.kernel.registry import ModuleRegistry
+from src.dav.modules.audio.service import AudioService
+from src.dav.modules.stream_engine.service import StreamEngineService
+from src.dav.modules.telemetry.service import TelemetryService
+from src.dav.modules.telemetry.tupa_checker import TupaMetricsSnapshot
+from src.dav.modules.transport_p2p.blind_relay import normalize_pin
+from src.dav.modules.transport_p2p.service import TransportService
+from src.dav.modules.transport_p2p.signaling_client import P2PChannelClient
+from src.ui.audio_sink import DesktopAudioPlayer
 from src.ui.bridge import DecodeWorker, EngineBridge, find_available_port
 from src.ui.glass import paint as glass_paint
 from src.ui.glass import tokens as T
@@ -47,6 +39,22 @@ from src.ui.glass.views import (
     ViewerIdlePage,
     parse_access_input,
 )
+from src.ui.glass.widgets import VideoOverlayControls
+from src.ui.qt_compat import (
+    QApplication,
+    QEvent,
+    QKeySequence,
+    QMainWindow,
+    QMessageBox,
+    QPainter,
+    QShortcut,
+    QStackedWidget,
+    Qt,
+    QTimer,
+    QWidget,
+    Signal,
+    Slot,
+)
 from src.ui.widgets.canvas import VideoCanvasWidget
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,7 +64,7 @@ def _detect_engine_badge(is_native: bool) -> str:
     if is_native:
         return "Nativo C-ABI (dav_core)"
     os_tag = "Windows" if sys.platform == "win32" else f"Linux ({platform.machine()})"
-    return f"Unificado SIMD + H.264 ULL · {os_tag}"
+    return f"SQP + FEC GF(2^8) + PAKE · {os_tag}"
 
 
 def _is_valid_ipv4(ip_str: str) -> bool:
@@ -86,15 +94,24 @@ class DavMainWindow(QMainWindow):
         monitor_idx: int = 1,
         custom_pin: Optional[str] = None,
         p2p_uri_mode: bool = False,
+        kernel: Optional[ModuleRegistry] = None,
         parent=None,
     ):
         super().__init__(parent)
+        if kernel is None:
+            kernel = ModuleRegistry()
+            kernel.discover()
+        self.kernel = kernel
+        self.transport_service: TransportService = self.kernel.get_service("transport_p2p") or TransportService()
+        self.audio_service: AudioService = self.kernel.get_service("audio") or AudioService()
+        self.telemetry_service: TelemetryService = self.kernel.get_service("telemetry") or TelemetryService()
+
         self.version_str = self._load_version()
         self.setWindowTitle(f"DA-V v{self.version_str} — Distribuidor Amplo de Vídeo")
         self.setMinimumSize(1120, 740)
         self.resize(1280, 740)
 
-        self.local_ip = get_local_ip()
+        self.local_ip = self.transport_service.get_local_ip()
         self.hostname = socket.gethostname()
         self.default_port = custom_port if custom_port else find_available_port(9000)
         self.target_default_port = custom_target_port if custom_target_port else (
@@ -122,13 +139,17 @@ class DavMainWindow(QMainWindow):
         self._last_rx_log_frames = 0
         self._last_tx_log_time = 0.0
         self._last_tx_log_frames = 0
+        self._tx_mbps_sum = 0.0
+        self._tx_mbps_samples = 0
         self._active_p2p_client: Optional[P2PChannelClient] = None
+        self._sender_session_epoch: int = 0
+        self._active_peer_endpoint: Optional[tuple[str, int]] = None
 
         self._conn_hint_timer = QTimer(self)
         self._conn_hint_timer.setSingleShot(True)
         self._conn_hint_timer.timeout.connect(self._on_conn_wait_timeout)
 
-        self.engine = DavCoreEngine()
+        self.engine: StreamEngineService = self.kernel.get_service("stream_engine") or StreamEngineService()
         self.bridge = EngineBridge()
         self.bridge.frame_ready.connect(self._on_frame_rendered)
         self.bridge.telemetry_ready.connect(self._on_telemetry_updated)
@@ -138,15 +159,19 @@ class DavMainWindow(QMainWindow):
         self._decode_worker = DecodeWorker(self.bridge)
         self._decode_worker.decoded.connect(self._on_decoded_frame)
         self._decode_worker.start()
+        self.audio_player = DesktopAudioPlayer(
+            parent=self,
+            jitter_buffer=self.audio_service.create_jitter_buffer(),
+        )
 
         self.peers_updated_signal.connect(self._on_peers_discovered)
-        self.beacon_service = LanBeaconService(
+        self.beacon_service = self.transport_service.create_lan_beacon(
             self.hostname, stream_port=self.default_port, pin=self.my_pin
         )
         self.beacon_service.on_peers_updated = lambda peers: self.peers_updated_signal.emit(peers)
         self.beacon_service.start()
 
-        self.tupa_checker = TupaHealthChecker(sample_interval_sec=1.0)
+        self.tupa_checker = self.telemetry_service.create_tupa_checker(sample_interval_sec=1.0)
         self.tupa_metrics_signal.connect(self._on_tupa_metrics_updated)
         self.target_updated_signal.connect(self._on_target_updated)
         self.tupa_checker.start(lambda snap: self.tupa_metrics_signal.emit(snap))
@@ -187,19 +212,8 @@ class DavMainWindow(QMainWindow):
             QTimer.singleShot(800, self._toggle_sender)
 
     def _load_version(self) -> str:
-        version_str = "4.0.0"
-        try:
-            base_root = getattr(sys, "_MEIPASS", _PROJECT_ROOT)
-            for cand_root in (base_root, _PROJECT_ROOT):
-                ver_file = os.path.join(cand_root, "VERSION")
-                if os.path.exists(ver_file):
-                    with open(ver_file, "r", encoding="utf-8") as vf:
-                        v = vf.read().strip()
-                        if v:
-                            return v
-        except Exception:
-            pass
-        return version_str
+        from src.dav import get_version
+        return get_version()
 
     def _init_ui(self):
         self.central_host = QWidget(self)
@@ -244,7 +258,9 @@ class DavMainWindow(QMainWindow):
         self.settings_sheet.send_toggled.connect(self._toggle_sender)
         self.settings_sheet.hud_toggled.connect(self._on_hud_toggled)
         self.settings_sheet.hud_mode_changed.connect(self._on_hud_mode_changed)
-        self.settings_sheet.fullscreen_requested.connect(self.video_canvas.toggle_fullscreen)
+        self.settings_sheet.audio_rx_toggled.connect(self._on_audio_rx_toggled)
+        self.settings_sheet.audio_tx_toggled.connect(self._on_audio_tx_toggled)
+        self.settings_sheet.fullscreen_requested.connect(self._toggle_fullscreen)
         self.settings_sheet.scale_mode_requested.connect(self.video_canvas.toggle_scale_mode)
         self.settings_sheet.screenshot_requested.connect(self._take_screenshot)
         self.settings_sheet.copy_pin_requested.connect(self._copy_sender_access_key)
@@ -272,6 +288,12 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.check_firewall_requested.connect(self._check_firewall_status)
         self.view_troubleshoot.export_logs_requested.connect(self._export_diagnostic_bundle)
         self.view_troubleshoot.check_update_requested.connect(self._manual_check_updates)
+
+        # Controles flutuantes no canto inferior direito (Audio & Tela Cheia)
+        self.overlay_controls = VideoOverlayControls(self.central_host)
+        self.overlay_controls.audio_toggled.connect(self._on_overlay_audio_clicked)
+        self.overlay_controls.fullscreen_toggled.connect(self._toggle_fullscreen)
+        self.overlay_controls.hide()
 
         # Pilula flutuante de navegacao no topo central
         self.nav_pill = FloatingNavPill(self.central_host)
@@ -320,12 +342,60 @@ class DavMainWindow(QMainWindow):
         self.stats_sheet.set_ui_scale(scale)
         self.nav_pill.set_ui_scale(scale)
         self.nav_pill.reposition()
+        self.overlay_controls.set_ui_scale(scale)
+        self.overlay_controls.reposition()
 
+        self.overlay_controls.raise_()
         if self.active_sheet == "settings":
             self.settings_sheet.raise_()
         elif self.active_sheet == "stats":
             self.stats_sheet.raise_()
         self.nav_pill.raise_()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "overlay_controls"):
+            self.overlay_controls.set_fullscreen(self.isFullScreen())
+
+    def _toggle_fullscreen(self):
+        self.video_canvas.toggle_fullscreen()
+        if hasattr(self, "overlay_controls"):
+            self.overlay_controls.set_fullscreen(self.isFullScreen())
+
+    def _sync_overlay_controls_state(self):
+        if not hasattr(self, "overlay_controls"):
+            return
+        cur_page = self.stage_stack.currentIndex()
+        show_overlay = (
+            cur_page == self.PAGE_VIDEO
+            or (cur_page == self.PAGE_SENDER and self.is_sending)
+        )
+        muted = (
+            not self.settings_sheet.chk_audio_tx.isChecked()
+            if self.mode == "sender"
+            else not self.settings_sheet.chk_audio_rx.isChecked()
+        )
+        self.overlay_controls.set_audio_muted(muted)
+        self.overlay_controls.set_fullscreen(self.isFullScreen())
+        self.overlay_controls.setVisible(show_overlay)
+        if show_overlay:
+            self.overlay_controls.reposition()
+            self.overlay_controls.raise_()
+            if self.active_sheet == "settings":
+                self.settings_sheet.raise_()
+            elif self.active_sheet == "stats":
+                self.stats_sheet.raise_()
+            self.nav_pill.raise_()
+
+    def _on_overlay_audio_clicked(self):
+        if self.mode == "sender":
+            self.settings_sheet.chk_audio_tx.setChecked(
+                not self.settings_sheet.chk_audio_tx.isChecked()
+            )
+        else:
+            self.settings_sheet.chk_audio_rx.setChecked(
+                not self.settings_sheet.chk_audio_rx.isChecked()
+            )
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -350,7 +420,11 @@ class DavMainWindow(QMainWindow):
         self.mode = mode
         if mode == "sender":
             self.stage_stack.setCurrentIndex(self.PAGE_SENDER)
-            self.nav_pill.set_swap_tooltip("Alternar para Modo Espectador")
+            self.nav_pill.set_swap_tooltip(
+                "Encerre a transmissão antes de alternar de modo"
+                if self.is_sending
+                else "Alternar para Modo Espectador"
+            )
             self.nav_pill.set_over_video(False)
             self.nav_pill.set_live(self.is_sending)
             self.settings_sheet.set_tab(1)
@@ -367,6 +441,7 @@ class DavMainWindow(QMainWindow):
             self.nav_pill.set_swap_tooltip("Alternar para Modo Transmissor")
             self.nav_pill.set_live(self.is_receiving)
             self.settings_sheet.set_tab(0)
+        self._sync_overlay_controls_state()
         self.nav_pill.raise_()
 
     def _swap_mode(self):
@@ -378,7 +453,15 @@ class DavMainWindow(QMainWindow):
             self._append_log("INFO", "Alternado para Modo Transmissor.")
         else:
             if self.is_sending:
-                self._toggle_sender()
+                # Protege transmissao ativa: evita interrupcao acidental no botao central da barra
+                self.page_sender.flash_warning(
+                    "Transmissão em andamento. Clique em 'Parar Transmissão' antes de alternar de modo."
+                )
+                self._append_log(
+                    "WARN",
+                    "Alternância de modo bloqueada enquanto a transmissão está ativa.",
+                )
+                return
             self._set_mode("viewer")
             self.page_viewer_idle.focus_input()
             self._append_log("INFO", "Alternado para Modo Espectador.")
@@ -458,6 +541,7 @@ class DavMainWindow(QMainWindow):
             self._conn_hint_timer.stop()
             self._waiting_first_frame = False
             self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
+            self._sync_overlay_controls_state()
 
     def _on_conn_wait_timeout(self):
         if self.is_receiving and self._waiting_first_frame:
@@ -469,6 +553,7 @@ class DavMainWindow(QMainWindow):
             self._waiting_first_frame = False
             self.stage_stack.setCurrentIndex(self.PAGE_VIDEO)
             self.nav_pill.set_over_video(True)
+            self._sync_overlay_controls_state()
             self.nav_pill.raise_()
             if self.active_sheet is None:
                 self.video_canvas.setFocus()
@@ -484,6 +569,17 @@ class DavMainWindow(QMainWindow):
         self.settings_sheet.chk_hud.setChecked(True)
         self.settings_sheet.chk_hud.blockSignals(False)
         self.video_canvas.update()
+
+    def _on_audio_rx_toggled(self, enabled: bool):
+        self.audio_player.set_muted(not enabled)
+        self._sync_overlay_controls_state()
+        self._append_log("INFO", f"Audio remoto {'ativado' if enabled else 'silenciado'}.")
+
+    def _on_audio_tx_toggled(self, enabled: bool):
+        if self.is_sending:
+            self.engine.set_sender_audio_muted(not enabled)
+        self._sync_overlay_controls_state()
+        self._append_log("INFO", f"Captura de audio do sistema {'ativada' if enabled else 'mutada'}.")
 
     def _take_screenshot(self):
         path = self.video_canvas.save_screenshot()
@@ -546,7 +642,6 @@ class DavMainWindow(QMainWindow):
             if res.is_success:
                 self._append_log("SUCCESS", f"Pacote de diagnóstico gerado com sucesso: {res.value}")
                 try:
-                    from scripts.qt_compat import QMessageBox
                     QMessageBox.information(
                         self,
                         "Diagnóstico Exportado",
@@ -588,7 +683,6 @@ class DavMainWindow(QMainWindow):
             if is_manual:
                 self._append_log("WARN", f"Não foi possível verificar atualizações: {result.error}")
                 try:
-                    from scripts.qt_compat import QMessageBox
                     QMessageBox.warning(
                         self,
                         "Verificação de Atualizações",
@@ -606,7 +700,6 @@ class DavMainWindow(QMainWindow):
             self._append_log("INFO", f"DA-V está atualizado (v{info.current_version}).")
             if is_manual:
                 try:
-                    from scripts.qt_compat import QMessageBox
                     QMessageBox.information(
                         self,
                         "DA-V Atualizado",
@@ -630,16 +723,20 @@ class DavMainWindow(QMainWindow):
     # ------------------------------------------------------------------------
     def _fail_receiver(self, message: str):
         self._conn_hint_timer.stop()
+        if hasattr(self, "audio_player") and self.audio_player:
+            self.audio_player.stop()
         self._waiting_first_frame = False
         if self.mode == "viewer":
             self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
             self.page_viewer_idle.set_status(message, error=True)
         self.nav_pill.set_over_video(False)
         self.nav_pill.set_live(False)
+        self._sync_overlay_controls_state()
 
     def _toggle_receiver(self):
         if self.is_receiving:
             self._conn_hint_timer.stop()
+            self.audio_player.stop()
             self.engine.stop()
             self.is_receiving = False
             self._waiting_first_frame = False
@@ -649,6 +746,7 @@ class DavMainWindow(QMainWindow):
             self.nav_pill.set_live(False)
             if self.mode == "viewer":
                 self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_IDLE)
+            self._sync_overlay_controls_state()
             self._append_log("INFO", "Receptor desconectado pelo usuário.")
             return
 
@@ -684,6 +782,7 @@ class DavMainWindow(QMainWindow):
         self.mode = "viewer"
         self.stage_stack.setCurrentIndex(self.PAGE_VIEWER_CONN)
         self.nav_pill.set_over_video(False)
+        self._sync_overlay_controls_state()
         self.nav_pill.raise_()
         QApplication.processEvents()
 
@@ -758,6 +857,15 @@ class DavMainWindow(QMainWindow):
                 f"[{route_label}] Fluxo estabelecido com {remote_ip}:{remote_port}.",
             )
 
+        def _on_audio_pkt(audio_fid: int, tx_ts_us: int, audio_payload: bytes):
+            self.audio_player.push_network_packet(audio_fid, tx_ts_us, audio_payload)
+
+        if self.settings_sheet.chk_audio_rx.isChecked():
+            self.audio_player.set_muted(False)
+        else:
+            self.audio_player.set_muted(True)
+        self.audio_player.start()
+
         success = self.engine.start_receiver(
             eff_bind_port,
             pin,
@@ -768,9 +876,12 @@ class DavMainWindow(QMainWindow):
             my_public_ip=my_pub_ip or None,
             relay_info=relay_info,
             on_p2p_status=_on_rx_p2p_status,
+            on_audio_ready=_on_audio_pkt,
         )
         if success:
             self.is_receiving = True
+            self._last_rx_log_time = 0.0
+            self._last_rx_log_frames = 0
             self._waiting_first_frame = True
             self.video_canvas.is_connected = True
             self.settings_sheet.set_connection_state(True)
@@ -779,6 +890,7 @@ class DavMainWindow(QMainWindow):
             mode_str = f"PIN Universal {pin}" if not target_ip else f"LAN Direto {target_ip}:{port}"
             self._append_log("INFO", f"Receptor ativo na porta UDP {eff_bind_port} ({mode_str}).")
         else:
+            self.audio_player.stop()
             msg = f"Não foi possível iniciar o Receptor na porta UDP {eff_bind_port}."
             self._append_log("ERROR", msg)
             self._fail_receiver(msg)
@@ -788,6 +900,8 @@ class DavMainWindow(QMainWindow):
     # ------------------------------------------------------------------------
     def _toggle_sender(self):
         if self.is_sending:
+            self._sender_session_epoch += 1
+            self._active_peer_endpoint = None
             if self._active_p2p_client:
                 self._active_p2p_client.stop()
                 self._active_p2p_client = None
@@ -796,9 +910,15 @@ class DavMainWindow(QMainWindow):
             self.settings_sheet.set_sending_state(False)
             self.page_sender.set_sending_state(False)
             self.nav_pill.set_live(False)
+            if self.mode == "sender":
+                self.nav_pill.set_swap_tooltip("Alternar para Modo Espectador")
             self.beacon_service.update_status(False)
+            self._sync_overlay_controls_state()
             self._append_log("INFO", "Compartilhamento de tela encerrado.")
             return
+
+        if self.is_receiving:
+            self._toggle_receiver()
 
         target_ip = self.settings_sheet.txt_send_ip.text().strip()
         target_port = self.settings_sheet.spn_send_port.value()
@@ -855,6 +975,7 @@ class DavMainWindow(QMainWindow):
             bind_port=sender_bind_port,
             on_p2p_event=_on_tx_p2p_locked,
             on_log=lambda lvl, msg: self.bridge.log_message.emit(lvl, msg),
+            audio_enabled=self.settings_sheet.chk_audio_tx.isChecked(),
         )
         if not success:
             err = f"Falha ao iniciar o Transmissor ({target_ip}:{target_port})."
@@ -862,7 +983,14 @@ class DavMainWindow(QMainWindow):
             self.page_sender.set_status(err, error=True)
             return
 
+        self._sender_session_epoch += 1
+        session_epoch = self._sender_session_epoch
+        self._active_peer_endpoint = None
         self.is_sending = True
+        self._last_tx_log_time = 0.0
+        self._last_tx_log_frames = 0
+        self._tx_mbps_sum = 0.0
+        self._tx_mbps_samples = 0
         if target_ip:
             details = f"{w}x{h} @ {fps}fps [{codec_type.upper()}] -> {target_ip}:{target_port}"
             card_status = f"Transmitindo para {target_ip}:{target_port}"
@@ -873,6 +1001,9 @@ class DavMainWindow(QMainWindow):
         self.settings_sheet.set_sending_state(True, details)
         self.page_sender.set_sending_state(True, card_status)
         self.nav_pill.set_live(True)
+        if self.mode == "sender":
+            self.nav_pill.set_swap_tooltip("Encerre a transmissão antes de alternar de modo")
+        self._sync_overlay_controls_state()
         self.beacon_service.update_status(True, pin=pin)
         dest_str = f"{target_ip}:{target_port}" if target_ip else f"Modo P2P Universal (PIN: {pin})"
         self._append_log("INFO", f"Transmissor iniciado ({dest_str}).")
@@ -880,10 +1011,13 @@ class DavMainWindow(QMainWindow):
         def _bg_register_sender():
             try:
                 ep_info = self.engine.wait_sender_endpoint(timeout=3.0)
-                if not self.is_sending:
+                if not self.is_sending or session_epoch != self._sender_session_epoch:
                     return
 
                 p2p = P2PChannelClient()
+                if not self.is_sending or session_epoch != self._sender_session_epoch:
+                    p2p.stop()
+                    return
                 self._active_p2p_client = p2p
                 clean_pin = normalize_pin(pin)
                 eff_local_port = int((ep_info or {}).get("local_port") or sender_bind_port)
@@ -893,6 +1027,8 @@ class DavMainWindow(QMainWindow):
                 reg_holder = {}
 
                 def _on_receiver_paired(peer: dict):
+                    if not self.is_sending or session_epoch != self._sender_session_epoch:
+                        return
                     my_pub_ip = reg_holder.get("your_public_ip") or (ep_info or {}).get("public_ip")
                     node_name = peer.get("node_name", "Receptor Remoto")
                     self.bridge.log_message.emit(
@@ -912,6 +1048,9 @@ class DavMainWindow(QMainWindow):
                     on_paired_callback=_on_receiver_paired,
                     endpoint_info=ep_info,
                 )
+                if not self.is_sending or session_epoch != self._sender_session_epoch:
+                    p2p.stop()
+                    return
                 if reg:
                     reg_holder.update(reg)
                     pub_ep_str = f"{reg.get('your_public_ip')}:{(ep_info or {}).get('public_port', eff_local_port)}"
@@ -956,8 +1095,11 @@ class DavMainWindow(QMainWindow):
 
     @Slot(str, int, str)
     def _on_target_updated(self, ip: str, port: int, mode_tag: str):
-        self.settings_sheet.txt_send_ip.setText(ip)
-        self.settings_sheet.spn_send_port.setValue(port)
+        if not self.is_sending:
+            return
+        # Preserva txt_send_ip e spn_send_port intactos para que reinicios futuros em Modo PIN
+        # continuem executando descoberta STUN e registro limpo na porta padrao.
+        self._active_peer_endpoint = (ip, int(port))
         res_txt = self.settings_sheet.cmb_res.currentText().split()[0]
         fps_txt = self.settings_sheet.cmb_fps.currentText().split()[0]
         details = f"{res_txt} @ {fps_txt} [{mode_tag} -> {ip}:{port}]"
@@ -1009,15 +1151,33 @@ class DavMainWindow(QMainWindow):
         self.view_tupa.cur_fps = fps
 
         now = time.perf_counter()
-        if now - self._last_tx_log_time >= 2.0:
-            elapsed = now - self._last_tx_log_time
-            d_frames = frames - self._last_tx_log_frames
-            smooth_fps = d_frames / elapsed if elapsed > 0 else fps
+        if self._last_tx_log_time == 0.0:
             self._last_tx_log_time = now
             self._last_tx_log_frames = frames
+            self._tx_mbps_sum = 0.0
+            self._tx_mbps_samples = 0
+            return
+
+        if frames > 0:
+            self._tx_mbps_sum += mbps
+            self._tx_mbps_samples += 1
+
+        if now - self._last_tx_log_time >= 2.0:
+            elapsed = now - self._last_tx_log_time
+            d_frames = max(0, frames - self._last_tx_log_frames)
+            smooth_fps = d_frames / elapsed if elapsed > 0 else fps
+            avg_mbps = (
+                (self._tx_mbps_sum / self._tx_mbps_samples)
+                if self._tx_mbps_samples > 0
+                else mbps
+            )
+            self._last_tx_log_time = now
+            self._last_tx_log_frames = frames
+            self._tx_mbps_sum = 0.0
+            self._tx_mbps_samples = 0
             self._append_log(
                 "TELEMETRY-TX",
-                f"Envio: {smooth_fps:.1f} FPS | {mbps:.2f} Mbps | {frame_kb} KB/quadro | "
+                f"Envio: {smooth_fps:.1f} FPS | {avg_mbps:.2f} Mbps | {frame_kb} KB/quadro | "
                 f"Quadros: {frames} | Pacotes: {packets}",
             )
 
@@ -1138,6 +1298,8 @@ class DavMainWindow(QMainWindow):
             self._decode_worker.stop()
         if hasattr(self, "beacon_service") and self.beacon_service:
             self.beacon_service.stop()
+        if hasattr(self, "audio_player") and self.audio_player:
+            self.audio_player.stop()
         if hasattr(self, "engine") and self.engine:
             self.engine.stop()
         event.accept()

@@ -4,7 +4,7 @@ DA-V Top Header Bar
 Status display showing Local IP, listening port, shared PIN, and hardware engine acceleration tag.
 """
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QApplication, Signal, Qt, QFont
 )
@@ -163,7 +163,7 @@ class TopHeaderBar(QFrame):
         if clipboard:
             clipboard.setText(self.current_pin)
             self.btn_copy_pin.setText("Copiado!")
-            from scripts.qt_compat import QTimer
+            from src.ui.qt_compat import QTimer
             QTimer.singleShot(1500, lambda: self.btn_copy_pin.setText("Copiar PIN"))
 
     def _copy_link_to_clipboard(self):
@@ -172,5 +172,5 @@ class TopHeaderBar(QFrame):
             link = f"dav://connect/{self.current_pin}"
             clipboard.setText(link)
             self.btn_copy_link.setText("Link Copiado!")
-            from scripts.qt_compat import QTimer
+            from src.ui.qt_compat import QTimer
             QTimer.singleShot(1500, lambda: self.btn_copy_link.setText("Copiar Convite"))

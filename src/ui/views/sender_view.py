@@ -4,14 +4,14 @@ DA-V Sender / Screen Sharing View
 Configuration panel for video capture, hardware codecs (NVENC), network bitrate and live streaming controls.
 """
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QLineEdit, QSpinBox, QComboBox, QPushButton, QGroupBox,
     QFrame, Signal, Qt
 )
 from src.ui.theme import Theme
 from src.ui.widgets.cards import StatCard
-from scripts.dav_sender_worker import enumerate_system_monitors
+from src.dav.modules.capture.service import enumerate_system_monitors
 
 
 class SenderView(QWidget):

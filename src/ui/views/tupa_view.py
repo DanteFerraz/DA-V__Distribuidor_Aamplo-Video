@@ -10,12 +10,12 @@ import threading
 import json
 import statistics
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QProgressBar, QGroupBox, QFrame, QTimer, Qt, Slot
 )
 from src.ui.theme import Theme
-from src.telemetry.tupa_checker import TupaMetricsSnapshot
+from src.dav.modules.telemetry.tupa_checker import TupaMetricsSnapshot
 
 _GLASS_CARD_BG = "rgba(255, 255, 255, 0.10)"
 _GLASS_TRACK_BG = "rgba(255, 255, 255, 0.16)"

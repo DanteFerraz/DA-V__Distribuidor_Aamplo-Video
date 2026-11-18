@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from scripts.dav_sender_worker import enumerate_system_monitors
-from scripts.qt_compat import (
+from src.dav.modules.capture.service import enumerate_system_monitors
+from src.ui.qt_compat import (
     QCheckBox,
     QComboBox,
     QGridLayout,
@@ -142,6 +142,8 @@ class SettingsSheet(BaseOverlaySheet):
     send_toggled = Signal()
     hud_toggled = Signal(bool)
     hud_mode_changed = Signal(str)
+    audio_rx_toggled = Signal(bool)
+    audio_tx_toggled = Signal(bool)
     fullscreen_requested = Signal()
     scale_mode_requested = Signal()
     screenshot_requested = Signal()
@@ -234,6 +236,11 @@ class SettingsSheet(BaseOverlaySheet):
         )
         row_hud.addWidget(_compact_field(self.cmb_hud_mode))
         disp_lay.addLayout(row_hud)
+
+        self.chk_audio_rx = QCheckBox("Reproduzir áudio do sistema remoto (Opus Low-Delay)")
+        self.chk_audio_rx.setChecked(True)
+        self.chk_audio_rx.toggled.connect(self.audio_rx_toggled.emit)
+        disp_lay.addWidget(self.chk_audio_rx)
 
         act_grid = QGridLayout()
         act_grid.setSpacing(8)
@@ -351,6 +358,11 @@ class SettingsSheet(BaseOverlaySheet):
         grid.addWidget(QLabel("PIN de Autenticação:"), 3, 2)
         self.txt_send_pin = QLineEdit(self._initial_pin)
         grid.addWidget(_compact_field(self.txt_send_pin), 3, 3)
+
+        self.chk_audio_tx = QCheckBox("Transmitir áudio do computador (WASAPI / PipeWire · Opus 48 kHz)")
+        self.chk_audio_tx.setChecked(True)
+        self.chk_audio_tx.toggled.connect(self.audio_tx_toggled.emit)
+        grid.addWidget(self.chk_audio_tx, 4, 0, 1, 4)
 
         lay.addWidget(opts_group)
 

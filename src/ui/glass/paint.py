@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
-from scripts.qt_compat import (
-    QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+from src.ui.qt_compat import (
+    QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
     QPointF, QRadialGradient, QRectF, Qt, QBrush,
 )
 from src.ui.glass import tokens as T
@@ -235,4 +235,54 @@ def paint_pill_surface(painter: QPainter, rect: QRectF, scale: float, *, glow: f
     painter.setPen(QPen(_color(T.WHITE, 0.92), width))
     inset = width / 2.0
     painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), radius, radius)
+    painter.restore()
+
+
+# ---------------------------------------------------------------------------
+# Tipografia com sombreamento suave (contraste sobre vidro)
+# ---------------------------------------------------------------------------
+def paint_shadowed_text(
+    painter: QPainter,
+    rect: QRectF,
+    flags: int,
+    text: str,
+    font: QFont,
+    color: QColor,
+    *,
+    scale: float = 1.0,
+    offset: Tuple[float, float] = T.TEXT_SHADOW_OFFSET,
+    shadow_rgba: Tuple[int, int, int, int] = T.TEXT_SHADOW_RGBA,
+) -> None:
+    """Desenha texto com halo de sombra suave projetada para alta legibilidade."""
+    if not text:
+        return
+    painter.save()
+    painter.setFont(font)
+
+    fg_alpha = max(0.0, min(1.0, color.alphaF()))
+    s_scale = max(0.65, scale)
+    dx = offset[0] * s_scale
+    dy = max(1.0, offset[1] * s_scale)
+    r, g, b, base_a = shadow_rgba
+    base_alpha = (base_a / 255.0) * fg_alpha
+
+    # Camada difusa para replicar o relevo suave das telas de referencia
+    blur_alpha = base_alpha * 0.28
+    if blur_alpha > 0.01:
+        blur_color = QColor(r, g, b)
+        blur_color.setAlphaF(blur_alpha)
+        painter.setPen(blur_color)
+        for bx, by in ((-1.0 * s_scale, dy * 0.85), (1.0 * s_scale, dy * 0.85), (dx, dy * 1.45)):
+            painter.drawText(rect.translated(bx, by), flags, text)
+
+    # Sombra direcional principal
+    core_alpha = base_alpha * 0.72
+    if core_alpha > 0.01:
+        core_color = QColor(r, g, b)
+        core_color.setAlphaF(core_alpha)
+        painter.setPen(core_color)
+        painter.drawText(rect.translated(dx, dy), flags, text)
+
+    painter.setPen(color)
+    painter.drawText(rect, flags, text)
     painter.restore()

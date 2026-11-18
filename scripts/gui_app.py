@@ -72,7 +72,7 @@ def main():
     kernel_registry.discover()
     kernel_registry.startup_all()
 
-    from scripts.qt_compat import QApplication
+    from src.ui.qt_compat import QApplication
     from src.ui.main_window import DavMainWindow
 
     parser = argparse.ArgumentParser(description="DA-V Video Hub")
@@ -126,6 +126,7 @@ def main():
         monitor_idx=args.monitor,
         custom_pin=pin_arg,
         p2p_uri_mode=p2p_uri_mode,
+        kernel=kernel_registry,
     )
 
     if args.self_check:

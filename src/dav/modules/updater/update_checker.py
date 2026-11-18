@@ -54,7 +54,7 @@ class UpdateChecker:
             recovery_timeout=60.0,
         )
 
-    def check(self, current_version: str = "4.0.0") -> ServiceResult[UpdateInfo]:
+    def check(self, current_version: str = "4.9.0") -> ServiceResult[UpdateInfo]:
         """Consulta assincronamente ou diretamente se há versão mais recente."""
         if not self.breaker.can_execute():
             return ServiceResult.fail("CircuitBreaker ABERTO: verificação de atualizações suspensa", code="CIRCUIT_OPEN")

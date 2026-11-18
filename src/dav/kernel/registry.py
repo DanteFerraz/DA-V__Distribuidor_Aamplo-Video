@@ -39,6 +39,7 @@ class ModuleRegistry:
     def __init__(self, kernel_context: Optional[Any] = None):
         self._kernel = kernel_context
         self._modules: Dict[str, ModuleManifest] = {}
+        self._services: Dict[str, Any] = {}
         self._started_modules: List[str] = []
 
     def register(self, manifest: ModuleManifest) -> bool:
@@ -46,11 +47,36 @@ class ModuleRegistry:
         if manifest.name in self._modules:
             logger.warning(f"Módulo '{manifest.name}' já registrado. Substituindo...")
         self._modules[manifest.name] = manifest
+        self._services.pop(manifest.name, None)
         logger.info(f"Módulo '{manifest.name}' v{manifest.version} registrado no Kernel.")
         return True
 
     def get(self, name: str) -> Optional[ModuleManifest]:
         return self._modules.get(name)
+
+    def get_service(self, name: str) -> Optional[Any]:
+        """Resolve e retorna a instancia singleton do servico da fatia `name`."""
+        if name in self._services:
+            return self._services[name]
+        manifest = self._modules.get(name)
+        if manifest is None or not manifest.enabled:
+            return None
+        instance = None
+        if callable(manifest.service_factory):
+            instance = manifest.service_factory()
+        elif "service" in manifest.exports:
+            svc_target = manifest.exports["service"]
+            instance = svc_target() if isinstance(svc_target, type) else svc_target
+        if instance is not None:
+            self._services[name] = instance
+        return instance
+
+    def get_export(self, module_name: str, symbol: str) -> Optional[Any]:
+        """Retorna um simbolo publico exportado pelo manifesto de `module_name`."""
+        manifest = self._modules.get(module_name)
+        if manifest is None or not manifest.enabled:
+            return None
+        return manifest.exports.get(symbol)
 
     def is_registered(self, name: str) -> bool:
         return name in self._modules
@@ -92,6 +118,7 @@ class ModuleRegistry:
                 "src.dav.modules.capture.manifest",
                 "src.dav.modules.codec.manifest",
                 "src.dav.modules.transport_p2p.manifest",
+                "src.dav.modules.audio.manifest",
                 "src.dav.modules.stream_engine.manifest",
                 "src.dav.modules.commercial.manifest",
                 "src.dav.modules.telemetry.manifest",

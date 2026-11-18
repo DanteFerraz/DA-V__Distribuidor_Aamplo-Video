@@ -41,22 +41,32 @@ VoidResult Session::connect(std::string_view host, uint16_t port) {
     }
 
     transport_->set_on_data_received([this](ConstByteSpan data) {
-        if (data.size() < sizeof(PacketHeader)) return;
-        
+        if (data.size() < PacketHeader::HeaderSize) return;
+
         DavPacket packet{};
-        std::memcpy(&packet.header, data.data(), sizeof(PacketHeader));
-        
+        if (!PacketHeader::from_wire_bytes(data.data(), data.size(), packet.header)) {
+            return;
+        }
+
         size_t payload_len = packet.header.payload_length;
-        if (data.size() >= sizeof(PacketHeader) + payload_len) {
+        if (data.size() >= PacketHeader::HeaderSize + payload_len) {
             packet.payload.assign(
-                data.data() + sizeof(PacketHeader),
-                data.data() + sizeof(PacketHeader) + payload_len
+                data.data() + PacketHeader::HeaderSize,
+                data.data() + PacketHeader::HeaderSize + payload_len
             );
         }
 
-        // Decrypt if encrypted
+        // Decrypt if encrypted (verify 16B Poly1305 AEAD tag)
         if (packet.header.is_encrypted()) {
-            crypto_.decrypt_packet(packet);
+            if (data.size() >= PacketHeader::HeaderSize + payload_len + CryptoChannel::TagSize) {
+                packet.auth_tag.assign(
+                    data.data() + PacketHeader::HeaderSize + payload_len,
+                    data.data() + PacketHeader::HeaderSize + payload_len + CryptoChannel::TagSize
+                );
+            }
+            if (!crypto_.decrypt_packet(packet).has_value()) {
+                return;
+            }
         }
 
         uint64_t now_us = time::now_microseconds();

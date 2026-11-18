@@ -296,7 +296,7 @@ class DavModernInstaller(QDialog):
         side_layout.addStretch()
 
         # Rodapé da sidebar
-        lbl_ver = QLabel("DA-V v4.0.0 · Dante Ferraz\nMonoTech Architecture")
+        lbl_ver = QLabel("DA-V v4.9.0 · Dante Ferraz\nMonoTech Architecture")
         lbl_ver.setStyleSheet(f"font-size: 10px; color: {C_TEXT_MUTED}; line-height: 1.4;")
         side_layout.addWidget(lbl_ver)
 

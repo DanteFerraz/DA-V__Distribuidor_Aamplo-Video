@@ -4,7 +4,7 @@ DA-V Viewer / Receiver View
 Interactive video playback canvas with integrated quick-connection controls and HUD toggle.
 """
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QSpinBox, QPushButton, QCheckBox, QGroupBox, Signal, Qt
 )

@@ -142,7 +142,8 @@ class TestUpdaterService(unittest.TestCase):
         self.assertTrue(reg.is_registered("updater"))
         m = reg.get("updater")
         self.assertIsNotNone(m)
-        self.assertEqual(m.version, "4.0.0")
+        from src.dav import __version__ as _dav_ver
+        self.assertEqual(m.version, _dav_ver)
         service = m.service_factory()
         self.assertIsInstance(service, UpdaterService)
 

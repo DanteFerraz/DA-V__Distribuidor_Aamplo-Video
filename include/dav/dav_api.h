@@ -121,6 +121,61 @@ DAV_API void dav_set_log_callback(DavLogCallback cb, void* user_data);
  */
 DAV_API const char* dav_get_version(void);
 
+// ============================================================================
+// Unified Stateless C-ABI Data Plane Primitives (v4.5)
+// ============================================================================
+
+/**
+ * Encrypts and authenticates a packet payload using RFC 8439 ChaCha20-Poly1305.
+ * out_ct_and_tag must have capacity >= pt_len + 16.
+ */
+DAV_API int dav_aead_seal_raw(
+    const uint8_t* key32,
+    const uint8_t* nonce12,
+    const uint8_t* aad,
+    size_t aad_len,
+    const uint8_t* plaintext,
+    size_t pt_len,
+    uint8_t* out_ct_and_tag
+);
+
+/**
+ * Verifies Poly1305 MAC and decrypts ciphertext+tag (length = ct_len + 16).
+ */
+DAV_API int dav_aead_open_raw(
+    const uint8_t* key32,
+    const uint8_t* nonce12,
+    const uint8_t* aad,
+    size_t aad_len,
+    const uint8_t* ct_and_tag,
+    size_t ct_plus_tag_len,
+    uint8_t* out_plaintext
+);
+
+/**
+ * Encodes K equal-length shards into M systematic Cauchy GF(2^8) parity shards.
+ */
+DAV_API int dav_fec_encode_gf256(
+    uint16_t k_data,
+    uint8_t m_parity,
+    size_t shard_len,
+    const uint8_t* data_concat,
+    uint8_t* out_parity_concat
+);
+
+/**
+ * Recovers missing data shards in-place inside data_shards_inout using available parity shards.
+ */
+DAV_API int dav_fec_recover_gf256(
+    uint16_t k_data,
+    uint8_t m_parity,
+    size_t shard_len,
+    const uint8_t* data_present,
+    const uint8_t* parity_present,
+    uint8_t* data_shards_inout,
+    const uint8_t* parity_shards_in
+);
+
 #ifdef __cplusplus
 }
 #endif

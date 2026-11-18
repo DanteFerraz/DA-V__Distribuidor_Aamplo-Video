@@ -4,7 +4,7 @@ DA-V LAN Discovery View
 Table and card presentation for local network peers discovered via UDP Beacons and Subnet Sweeps.
 """
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QBrush, QColor, Signal, Qt
 )

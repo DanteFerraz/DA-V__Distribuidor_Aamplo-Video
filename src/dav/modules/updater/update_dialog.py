@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from typing import Optional
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QTextEdit, QFrame, Qt, Signal, Slot, QApplication
 )
@@ -197,7 +197,7 @@ class UpdateConsentDialog(QDialog):
             # Encerra o aplicativo atual para liberar arquivos em uso
             app = QApplication.instance()
             if app:
-                from scripts.qt_compat import QTimer
+                from src.ui.qt_compat import QTimer
                 QTimer.singleShot(600, app.quit)
         else:
             self.lbl_status.setText(f"Falha ao iniciar instalador: {res_launch.error}")

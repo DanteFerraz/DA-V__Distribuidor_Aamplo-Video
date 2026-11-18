@@ -8,17 +8,12 @@ import time
 from collections import deque
 from typing import Optional
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QPainter, QImage, QColor, QFont, QRect,
     QBrush, QPen, QLinearGradient, Qt, Signal
 )
 from src.ui.theme import Theme
-
-_probe_send = None
-try:
-    from scripts.dav_stage_probe import probe_send as _probe_send
-except Exception:
-    pass
+from src.dav.modules.telemetry.stage_probe import probe_send as _probe_send
 
 
 class VideoCanvasWidget(QWidget):
@@ -231,7 +226,7 @@ class VideoCanvasWidget(QWidget):
         painter.drawText(pill_rect.adjusted(75, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, f"· {self.latency_ms:3.1f} ms")
 
         painter.setPen(QColor(Theme.SYS["text_accent"]))
-        painter.drawText(pill_rect.adjusted(145, 0, -10, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "E2E AEAD")
+        painter.drawText(pill_rect.adjusted(145, 0, -10, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "PAKE AEAD")
 
     def _draw_hud(self, painter: QPainter):
         hud_w, hud_h = 320, 160
@@ -258,10 +253,10 @@ class VideoCanvasWidget(QWidget):
         painter.setFont(f_pill)
         painter.setBrush(QBrush(QColor(16, 185, 129, 220)))
         painter.setPen(Qt.PenStyle.NoPen)
-        pill_rect = QRect(hud_w - 85, 23, 76, 20)
+        pill_rect = QRect(hud_w - 88, 23, 80, 20)
         painter.drawRoundedRect(pill_rect, 4, 4)
         painter.setPen(QColor("#ffffff"))
-        painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, "E2E AEAD")
+        painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, "PAKE AEAD")
 
         # Telemetry Metrics
         f_body = QFont("Segoe UI", 9)

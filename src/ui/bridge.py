@@ -14,15 +14,9 @@ from typing import Optional, Tuple
 
 import ctypes
 import numpy as np
-from scripts.qt_compat import QObject, Signal, QImage
-from src.codec.hybrid_codec import HybridDecoder
-
-# Optional Stage Probe integration (fire-and-forget, non-blocking)
-_probe_send = None
-try:
-    from scripts.dav_stage_probe import probe_send as _probe_send
-except Exception:
-    pass
+from src.ui.qt_compat import QObject, Signal, QImage
+from src.dav.modules.codec.decoder import VideoDecoder as HybridDecoder
+from src.dav.modules.telemetry.stage_probe import probe_send as _probe_send
 
 
 class EngineBridge(QObject):
@@ -43,7 +37,7 @@ class DecodeWorker(QObject):
 
     def __init__(self, bridge: 'EngineBridge'):
         super().__init__()
-        self._q: '_queue.Queue[Optional[Tuple[bytes, int, int]]]' = _queue.Queue(maxsize=32)
+        self._q: '_queue.Queue[Optional[Tuple[bytes, int, int]]]' = _queue.Queue(maxsize=8)
         self._running = False
         self._bridge = bridge
         self._thread: Optional[threading.Thread] = None
@@ -62,14 +56,15 @@ class DecodeWorker(QObject):
             pass
 
     def submit(self, data: bytes, w: int, h: int):
-        """Non-blocking submit maintaining ultra-low latency; drops stale frames if buffer full."""
+        """Non-blocking submit maintaining ultra-low latency; drains backlog if burst saturates queue."""
         try:
             self._q.put_nowait((data, w, h))
         except _queue.Full:
-            try:
-                self._q.get_nowait()
-            except _queue.Empty:
-                pass
+            while self._q.qsize() > 2:
+                try:
+                    self._q.get_nowait()
+                except _queue.Empty:
+                    break
             try:
                 self._q.put_nowait((data, w, h))
             except _queue.Full:

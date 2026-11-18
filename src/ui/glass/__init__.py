@@ -23,12 +23,12 @@ from src.ui.glass.views import (
 )
 from src.ui.glass.widgets import (
     CardPage, GlassButton, GlassCard, GlassLabel, GlassLineEdit, GlassScrollArea, GlassSegmented,
-    GlassSpacer,
+    GlassSpacer, VideoOverlayControls,
 )
 
 __all__ = [
     "tokens", "FloatingNavPill", "BaseOverlaySheet", "SettingsSheet", "StatsSheet",
     "SenderHomePage", "ViewerConnectingPage", "ViewerIdlePage", "parse_access_input",
     "CardPage", "GlassButton", "GlassCard", "GlassLabel", "GlassLineEdit",
-    "GlassScrollArea", "GlassSegmented", "GlassSpacer",
+    "GlassScrollArea", "GlassSegmented", "GlassSpacer", "VideoOverlayControls",
 ]

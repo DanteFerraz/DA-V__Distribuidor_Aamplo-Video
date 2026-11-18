@@ -65,6 +65,12 @@ SUCCESS = (210, 255, 232)
 SHEET_TEXT = "#f2fbfb"
 SHEET_TEXT_DIM = "#cfe8e8"
 
+# Sombreamento (Drop-Shadow para visibilidade e contraste sobre vidro e video)
+ICON_SHADOW_RGBA = (8, 28, 38, 128)
+ICON_SHADOW_OFFSET = (0.0, 2.0)
+TEXT_SHADOW_RGBA = (6, 24, 34, 145)
+TEXT_SHADOW_OFFSET = (0.0, 2.0)
+
 
 def ui_scale(width: float, height: float) -> float:
     """Fator de escala da janela em relacao ao canvas de referencia 1920x1080."""

@@ -1,52 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-Motor de Recepção (ReceiverWorker) — DA-V v4.0
+Motor de Recepcao Modular (ReceiverWorker) — DA-V v4.6
 Autor: Dante Ferraz (MonoTech)
+
+Usa o DataPlaneReceiver unificado: Handshake PAKE (CPace-X25519), AEAD ChaCha20-Poly1305,
+FEC GF(2^8), retorno de feedback SQP e suporte a multiplexacao de audio PT_AUDIO.
 """
 
 from __future__ import annotations
 
-import collections
 import logging
 import socket
-import struct
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from src.dav.modules.codec.base import BaseDecoder
-from src.dav.modules.transport_p2p.packetizer import (
-    DAV_HEADER_SIZE,
-    DAV_POLY1305_TAG,
-    MAGIC_SYN,
-    MAGIC_ACK,
-    MAGIC_PLI,
-    MAGIC_RLY,
-    build_key_vector,
-    unpack_header,
-)
 from src.dav.modules.transport_p2p.blind_relay import unwrap_relay_packet, wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
+from src.dav.modules.transport_p2p.data_plane import DataPlaneReceiver
+from src.dav.modules.transport_p2p.packetizer import MAGIC_ACK, MAGIC_PLI, MAGIC_RLY, MAGIC_SYN
 
 logger = logging.getLogger("DAV.StreamEngine.Receiver")
 
 
 class ReceiverWorker:
-    """
-    Controlador de streaming ativo no lado receptor.
-    Efetua Hole-Punching STUN/LAN, remontagem de datagramas, decodificação
-    em tempo real, solicitação de IDR sob perda (PLI) e cálculo de telemetria.
-    """
+    """Controlador de streaming ativo no lado receptor sobre DataPlaneReceiver."""
 
     def __init__(
         self,
         sock: socket.socket,
-        decoder: BaseDecoder,
+        decoder: Optional[BaseDecoder],
         pin: str,
         candidates: Optional[List[Tuple[str, int, str]]] = None,
         relay_addr: Optional[Tuple[str, int]] = None,
         on_frame: Optional[Callable[[np.ndarray], None]] = None,
+        on_encoded_frame: Optional[Callable[[bytes, int, int, int, bool], None]] = None,
+        on_audio: Optional[Callable[[int, int, bytes], None]] = None,
         on_route_locked: Optional[Callable[[str, int, str], None]] = None,
         on_stats: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
@@ -57,21 +48,21 @@ class ReceiverWorker:
         self.candidates = list(candidates or [])
         self.relay_addr = relay_addr
         self.on_frame = on_frame
+        self.on_encoded_frame = on_encoded_frame
+        self.on_audio = on_audio
         self.on_route_locked = on_route_locked
         self.on_stats = on_stats
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._key_vector = build_key_vector(pin)
         self._punch_locked = False
-        self._sender_addr: Optional[Tuple[str, int]] = None
+        self._sender_addr: Optional[Tuple[str, int]] = (
+            (self.candidates[0][0], self.candidates[0][1]) if self.candidates else None
+        )
         self._use_relay = False
-        self._has_seen_keyframe = False
-
-        # Remontagem de quadros: frame_id -> {frags: {idx: bytes}, tot: int, is_kf: bool, ts: float}
-        self._frame_assembler: Dict[int, Dict[str, Any]] = collections.OrderedDict()
-        self._max_buffered_frames = 30
         self._last_pli_time = 0.0
+
+        self.dp = DataPlaneReceiver(pin=pin)
 
     def start(self) -> None:
         self._running = True
@@ -82,17 +73,36 @@ class ReceiverWorker:
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.6)
-        self.decoder.close()
+        if self.decoder is not None:
+            try:
+                self.decoder.close()
+            except Exception:
+                pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
     def pair_peer(self, candidates: List[Tuple[str, int, str]], relay_info: Optional[Dict[str, Any]] = None) -> None:
-        """Configura candidatos remotos para Hole-Punching."""
         self.candidates = list(candidates)
         if relay_info and relay_info.get("host") and relay_info.get("port"):
             self.relay_addr = (str(relay_info["host"]), int(relay_info["port"]))
         self._send_punch_burst()
 
+    def _send_to_sender(self, payload: bytes) -> None:
+        if self._use_relay and self.relay_addr:
+            try:
+                self.sock.sendto(wrap_relay_packet(self.clean_pin, b"R", payload), self.relay_addr)
+            except Exception:
+                pass
+        elif self._sender_addr:
+            try:
+                self.sock.sendto(payload, self._sender_addr)
+            except Exception:
+                pass
+
     def _send_punch_burst(self) -> None:
-        syn = f"{MAGIC_SYN.decode('ascii')}:{self.clean_pin}".encode("ascii")
+        syn = self.dp.build_pake_syn()
         for ip, port, _ in self.candidates:
             try:
                 self.sock.sendto(syn, (ip, port))
@@ -100,48 +110,75 @@ class ReceiverWorker:
                 pass
 
         if self.relay_addr and not self._punch_locked:
-            hello = wrap_relay_packet(self.clean_pin, b"R", b"DAV_RLY_HELLO")
+            hello = wrap_relay_packet(self.clean_pin, b"R", syn)
             try:
                 self.sock.sendto(hello, self.relay_addr)
             except Exception:
                 pass
 
-    def _request_pli(self) -> None:
-        """Emite sinal PLI ao transmissor solicitando IDR imediato."""
-        now = time.perf_counter()
-        if now - self._last_pli_time < 0.2:
-            return  # Rate-limit a cada 200ms
-        self._last_pli_time = now
+    def _send_lan_upgrade_probe(self) -> None:
+        """Envia sonda PAKE apenas aos candidatos LAN/Overlay para promover rota WAN -> LAN em quente."""
+        syn = self.dp.build_pake_syn()
+        for ip, port, _ in self.candidates:
+            if is_lan_address(ip) or ip.startswith("100."):
+                try:
+                    self.sock.sendto(syn, (ip, port))
+                except Exception:
+                    pass
 
+    def _request_pli(self) -> None:
+        now = time.perf_counter()
+        congested_rx = (self.dp.latest_latency_ms > 80.0) or (self.dp.sqp_tracker.owd_gradient_ms > 10.0)
+        cooldown = 0.90 if congested_rx else 0.45
+        if now - self._last_pli_time < cooldown:
+            return
+        self._last_pli_time = now
         pli_msg = f"{MAGIC_PLI.decode('ascii')}:{self.clean_pin}".encode("ascii")
-        if self._use_relay and self.relay_addr:
-            wrapped = wrap_relay_packet(self.clean_pin, b"R", pli_msg)
-            try:
-                self.sock.sendto(wrapped, self.relay_addr)
-            except Exception:
-                pass
-        elif self._sender_addr:
-            try:
-                self.sock.sendto(pli_msg, self._sender_addr)
-            except Exception:
-                pass
+        self._send_to_sender(pli_msg)
 
     def _run_loop(self) -> None:
-        total_frames = 0
+        interval_frames = 0
+        cumulative_frames = 0
         total_packets = 0
-        total_bytes = 0
-        recent_latency = 0.0
+        interval_bytes = 0
         last_stat_time = time.perf_counter()
         last_punch_burst = time.perf_counter()
+        last_lan_upgrade_probe = 0.0
+        start_mono = time.monotonic()
+        last_relay_bind = 0.0
 
         while self._running:
-            # Envio periódico de SYN enquanto rota não estiver travada
-            if not self._punch_locked and (time.perf_counter() - last_punch_burst >= 0.25):
+            mono_now = time.monotonic()
+            if (not self._punch_locked or not self.dp.pake.confirmed) and (
+                time.perf_counter() - last_punch_burst >= 0.06
+            ):
                 self._send_punch_burst()
                 last_punch_burst = time.perf_counter()
+            elif (
+                self.dp.pake.confirmed
+                and (mono_now - start_mono <= 6.0)
+                and (mono_now - last_lan_upgrade_probe >= 0.20)
+                and (self._use_relay or (self._sender_addr and not is_lan_address(self._sender_addr[0])))
+            ):
+                self._send_lan_upgrade_probe()
+                last_lan_upgrade_probe = mono_now
+
+            if (
+                not self.dp.pake.confirmed
+                and self.relay_addr
+                and (mono_now - start_mono >= 0.85)
+                and (mono_now - last_relay_bind >= 0.30)
+            ):
+                try:
+                    self.sock.sendto(wrap_relay_packet(self.clean_pin, b"R", b"BIND"), self.relay_addr)
+                except Exception:
+                    pass
+                last_relay_bind = mono_now
 
             try:
                 raw_pkt, addr = self.sock.recvfrom(65536)
+            except socket.timeout:
+                continue
             except (BlockingIOError, OSError):
                 time.sleep(0.001)
                 continue
@@ -150,138 +187,122 @@ class ReceiverWorker:
                 continue
 
             total_packets += 1
-            total_bytes += len(raw_pkt)
+            interval_bytes += len(raw_pkt)
 
-            # 1. Trata Blind Relay
             if raw_pkt.startswith(MAGIC_RLY):
                 unwrapped = unwrap_relay_packet(raw_pkt)
                 if unwrapped:
-                    r_pin, role, payload = unwrapped
+                    r_pin, _, payload = unwrapped
                     if r_pin == self.clean_pin:
                         if payload in (b"DAV_RLY_ACK", b"DAV_RLY_PEER_READY"):
-                            if not self._punch_locked:
+                            if not self._punch_locked and self.relay_addr:
                                 self._use_relay = True
                                 self._punch_locked = True
-                                if self.on_route_locked and self.relay_addr:
+                                self._send_to_sender(self.dp.build_pake_syn())
+                                if self.on_route_locked:
                                     self.on_route_locked(self.relay_addr[0], self.relay_addr[1], "Blind Relay UDP")
                             continue
-                        # Payload é um pacote DA-V reencaminhado
                         raw_pkt = payload
 
-            # 2. Trata Sinalização de Hole-Punching
-            if raw_pkt.startswith(MAGIC_SYN):
-                ack = f"{MAGIC_ACK.decode('ascii')}:{self.clean_pin}".encode("ascii")
-                try:
-                    self.sock.sendto(ack, addr)
-                except Exception:
-                    pass
-                if not self._punch_locked or (self._use_relay) or (not is_lan_address(self._sender_addr[0] if self._sender_addr else "") and is_lan_address(addr[0])):
-                    self._sender_addr = addr
+            if raw_pkt in (b"DAV_RLY_ACK", b"DAV_RLY_PEER_READY"):
+                if not self._punch_locked and self.relay_addr:
+                    self._use_relay = True
                     self._punch_locked = True
-                    self._use_relay = False
-                    mode_tag = "LAN Direto" if is_lan_address(addr[0]) else "WAN P2P Direto"
-                    logger.info(f"[Receiver] Rota travada com transmissor: {addr[0]}:{addr[1]} ({mode_tag})")
+                    self._send_to_sender(self.dp.build_pake_syn())
+                    if self.on_route_locked:
+                        self.on_route_locked(self.relay_addr[0], self.relay_addr[1], "Blind Relay UDP")
+                continue
+
+            if raw_pkt.startswith(MAGIC_SYN) or raw_pkt.startswith(MAGIC_ACK):
+                if not raw_pkt.startswith(b"DAV_P2P_SYN2") and not raw_pkt.startswith(b"DAV_P2P_ACK2"):
+                    try:
+                        self.sock.sendto(self.dp.build_pake_syn(), addr)
+                    except Exception:
+                        pass
+                    continue
+
+            ev = self.dp.process_packet(raw_pkt)
+            kind = ev["kind"]
+
+            if kind == "pake":
+                if not self._punch_locked or self._use_relay or (
+                    self._sender_addr and not is_lan_address(self._sender_addr[0]) and is_lan_address(addr[0])
+                ):
+                    if self.relay_addr and addr == self.relay_addr:
+                        self._use_relay = True
+                    else:
+                        self._sender_addr = addr
+                        self._use_relay = False
+                    self._punch_locked = True
+                    mode_tag = "Blind Relay UDP" if self._use_relay else (
+                        "LAN Direto" if is_lan_address(addr[0]) else "WAN P2P Direto"
+                    )
                     if self.on_route_locked:
                         self.on_route_locked(addr[0], addr[1], mode_tag)
+
+                if ev["reply_pake"] is not None:
+                    try:
+                        if self._use_relay and self.relay_addr:
+                            self.sock.sendto(wrap_relay_packet(self.clean_pin, b"R", ev["reply_pake"]), self.relay_addr)
+                        else:
+                            self.sock.sendto(ev["reply_pake"], addr)
+                    except Exception:
+                        pass
                 continue
 
-            elif raw_pkt.startswith(MAGIC_ACK):
-                if not self._punch_locked or (self._use_relay):
-                    self._sender_addr = addr
-                    self._punch_locked = True
-                    self._use_relay = False
-                    mode_tag = "LAN Direto" if is_lan_address(addr[0]) else "WAN P2P Direto"
-                    logger.info(f"[Receiver] ACK recebido, rota travada: {addr[0]}:{addr[1]} ({mode_tag})")
-                    if self.on_route_locked:
-                        self.on_route_locked(addr[0], addr[1], mode_tag)
-                continue
-
-            # 3. Trata Datagrama de Vídeo DA-V
-            hdr = unpack_header(raw_pkt)
-            if not hdr:
-                continue
-
-            # Se ainda não travou rota, aproveita o primeiro pacote de vídeo para travar
-            if not self._punch_locked and not self._use_relay:
-                self._sender_addr = addr
-                self._punch_locked = True
-                mode_tag = "LAN Direto" if is_lan_address(addr[0]) else "WAN P2P Direto"
-                if self.on_route_locked:
-                    self.on_route_locked(addr[0], addr[1], mode_tag)
-
-            # Cálculo de latência fim-a-fim
-            if hdr.timestamp_us > 0:
-                now_us = int(time.time_ns() // 1000)
-                lat = (now_us - hdr.timestamp_us) / 1000.0
-                if 0.0 < lat < 2000.0:
-                    recent_latency = round(lat, 2)
-
-            # Se for quadro P e ainda não tivermos visto keyframe, pede IDR imediatamente
-            if not hdr.is_keyframe and not self._has_seen_keyframe:
-                self._request_pli()
-                continue
-
-            # Extração do chunk cifrado
-            chunk_data = raw_pkt[DAV_HEADER_SIZE : DAV_HEADER_SIZE + hdr.payload_len]
-
-            # Inserção no buffer de montagem do quadro
-            frame_id = hdr.frame_id
-            if frame_id not in self._frame_assembler:
-                self._frame_assembler[frame_id] = {
-                    "frags": {},
-                    "tot": hdr.frag_tot,
-                    "is_kf": hdr.is_keyframe,
-                    "is_enc": hdr.is_encrypted,
-                    "ts": time.perf_counter(),
-                }
-
-            entry = self._frame_assembler[frame_id]
-            entry["frags"][hdr.frag_idx] = chunk_data
-
-            # Limpeza de quadros velhos não completados
-            while len(self._frame_assembler) > self._max_buffered_frames:
-                old_fid, _ = self._frame_assembler.popitem(last=False)
-                # Perda detectada -> solicita PLI
-                self._request_pli()
-
-            # Se todos os fragmentos chegaram, remonta o payload
-            if len(entry["frags"]) == entry["tot"]:
-                del self._frame_assembler[frame_id]
-                sorted_chunks = [entry["frags"][i] for i in range(entry["tot"])]
-                enc_payload = b"".join(sorted_chunks)
-
-                # Decriptografia SIMD em bloco único
-                if entry["is_enc"] and len(enc_payload) > 0:
-                    payload_arr = np.frombuffer(enc_payload, dtype=np.uint8)
-                    key_sub = self._key_vector[: len(enc_payload)]
-                    dec_payload = np.bitwise_xor(payload_arr, key_sub).tobytes()
+            if ev["kind"] in ("video_frame", "audio_frame", "fragment") and not self._punch_locked:
+                if self.relay_addr and addr == self.relay_addr:
+                    self._use_relay = True
                 else:
-                    dec_payload = enc_payload
+                    self._sender_addr = addr
+                    self._use_relay = False
+                self._punch_locked = True
 
-                # Decodificação
-                decoded_frames = self.decoder.decode_all(dec_payload)
-                if decoded_frames:
-                    self._has_seen_keyframe = True
-                    total_frames += len(decoded_frames)
-                    if self.on_frame:
-                        for f in decoded_frames:
-                            self.on_frame(f)
+            if ev["sqp_ack_pkt"] is not None:
+                self._send_to_sender(ev["sqp_ack_pkt"])
 
-            # Estatísticas periódicas (a cada 500ms)
+            if ev["need_pli"]:
+                self._request_pli()
+
+            if kind == "audio_frame" and ev["audio_payload"] and self.on_audio:
+                self.on_audio(ev["audio_frame_id"], ev["tx_ts_us"], ev["audio_payload"])
+
+            elif kind == "video_frame" and ev["frame_bytes"]:
+                if self.on_encoded_frame is not None:
+                    interval_frames += 1
+                    cumulative_frames += 1
+                    self.on_encoded_frame(
+                        ev["frame_bytes"],
+                        1920,
+                        1080,
+                        ev["tx_ts_us"],
+                        ev["is_keyframe"],
+                    )
+                if self.decoder is not None:
+                    decoded_frames = self.decoder.decode_all(ev["frame_bytes"])
+                    if decoded_frames:
+                        if self.on_encoded_frame is None:
+                            interval_frames += len(decoded_frames)
+                            cumulative_frames += len(decoded_frames)
+                        if self.on_frame:
+                            for f in decoded_frames:
+                                self.on_frame(f)
+
             now = time.perf_counter()
             if now - last_stat_time >= 0.5:
                 dt = now - last_stat_time
-                fps = total_frames / dt if dt > 0 else 0.0
-                mbps = (total_bytes * 8.0) / (dt * 1_000_000.0) if dt > 0 else 0.0
+                fps = interval_frames / dt if dt > 0 else 0.0
+                mbps = (interval_bytes * 8.0) / (dt * 1_000_000.0) if dt > 0 else 0.0
                 if self.on_stats:
                     self.on_stats({
                         "fps": round(fps, 1),
                         "bitrate_mbps": round(mbps, 2),
-                        "latency_ms": recent_latency,
-                        "frames_count": total_frames,
+                        "latency_ms": round(self.dp.latest_latency_ms or 1.5, 2),
+                        "frames_count": cumulative_frames,
                         "packets_count": total_packets,
+                        "fec_recovered": self.dp.fec_recovered_frames,
+                        "pake_confirmed": self.dp.pake.confirmed,
                     })
                 last_stat_time = now
-                total_frames = 0
-                total_bytes = 0
-
+                interval_frames = 0
+                interval_bytes = 0

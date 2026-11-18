@@ -30,6 +30,10 @@ class BaseEncoder(ABC):
         """Solicita a emissão imediata de um IDR + SPS/PPS no próximo quadro."""
         pass
 
+    def update_rate_budget(self, bitrate_kbps: int, pir_mode: bool = False) -> None:
+        """Ajusta dinamicamente a meta de bitrate e controle de intra-refresh."""
+        pass
+
     @abstractmethod
     def close(self) -> None:
         """Encerra e libera o contexto do encoder."""

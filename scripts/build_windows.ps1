@@ -1,5 +1,5 @@
 # scripts/build_windows.ps1
-# Script de Compilação Local de Build e Instalador — DA-V v4.0.0
+# Script de Compilação Local de Build e Instalador — DA-V v4.9.0
 # Autor: Dante Ferraz (MonoTech)
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +32,9 @@ py -3.13 -m PyInstaller --noconfirm --clean --onedir --windowed `
   --hidden-import src.dav.modules.updater.auto_installer `
   --hidden-import src.dav.modules.updater.service `
   --hidden-import src.dav.modules.updater.manifest `
+  --hidden-import src.dav.modules.audio.manifest `
+  --hidden-import comtypes `
+  --hidden-import cryptography `
   --exclude-module PyQt5 `
   --exclude-module PyQt6 `
   --exclude-module tkinter `

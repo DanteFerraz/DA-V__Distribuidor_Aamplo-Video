@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     Property, QColor, QEasingCurve, QPainter, QPointF, QPropertyAnimation, QRectF,
     QTimer, QToolTip, QWidget, Qt, Signal,
 )

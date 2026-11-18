@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Serviço de Telemetria e Observabilidade TUPÃ/SDE — DA-V v4.0
+Servico de Telemetria e Observabilidade TUPA/SDE — DA-V v4.6
 Autor: Dante Ferraz (MonoTech)
 """
 
@@ -10,17 +10,19 @@ import logging
 from typing import Any, Dict, Optional
 
 from src.dav.kernel.event_bus import EventBus
-from src.dav.kernel.result import TelemetryDTO
-from src.dav.modules.telemetry.tupa_probes import TupaNetworkProbe
+from src.dav.kernel.result import ServiceResult, TelemetryDTO
 from src.dav.modules.telemetry.sde_exporter import SDETelemetryExporter
+from src.dav.modules.telemetry.stage_probe import StageProbeServer, probe_init, probe_send
+from src.dav.modules.telemetry.tupa_checker import TupaHealthChecker, TupaMetricsSnapshot
+from src.dav.modules.telemetry.tupa_probes import TupaNetworkProbe
 
 logger = logging.getLogger("DAV.Telemetry.Service")
 
 
 class TelemetryService:
     """
-    Coordena métricas em tempo real, cálculos estatísticos e integração
-    com os ecossistemas TUPÃ e SDE.
+    Coordena metricas em tempo real, calculos estatisticos, sondas de estagio
+    e integracao com os ecossistemas TUPA e SDE.
     """
 
     def __init__(
@@ -40,7 +42,6 @@ class TelemetryService:
             "frames_count": 0,
         }
 
-        # Inscreve-se nas estatísticas do StreamEngine
         self.bus.subscribe("stream.stats", self._on_stream_stats)
 
     def _on_stream_stats(self, stats: Dict[str, Any]) -> None:
@@ -53,7 +54,7 @@ class TelemetryService:
         )
 
     def get_telemetry_snapshot(self) -> TelemetryDTO:
-        """Gera DTO padronizado de telemetria para o HUD e painel TUPÃ."""
+        """Gera DTO padronizado de telemetria para o HUD e painel TUPA."""
         snap = self.probe.get_snapshot()
         return TelemetryDTO(
             fps=self._current_stats.get("fps", snap.fps),
@@ -65,11 +66,11 @@ class TelemetryService:
         )
 
     def push_to_sde_hub(self) -> None:
-        """Exporta métricas de forma não-bloqueante ao SDE."""
+        """Exporta metricas de forma nao-bloqueante ao SDE."""
         dto = self.get_telemetry_snapshot()
         payload = {
             "app": "DA-V",
-            "version": "4.0.0",
+            "version": "4.6.0",
             "fps": dto.fps,
             "bitrate_mbps": dto.bitrate_mbps,
             "latency_ms": dto.latency_ms,
@@ -77,3 +78,24 @@ class TelemetryService:
         }
         self.exporter.export_metric(payload)
 
+    @staticmethod
+    def create_tupa_checker(sample_interval_sec: float = 1.0) -> TupaHealthChecker:
+        return TupaHealthChecker(sample_interval_sec=sample_interval_sec)
+
+    @staticmethod
+    def probe_init() -> None:
+        probe_init()
+
+    @staticmethod
+    def probe_send(
+        stage: str,
+        t_start: float,
+        t_end: float,
+        frame_id: int = 0,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        probe_send(stage=stage, t_start=t_start, t_end=t_end, frame_id=frame_id, extra=extra)
+
+    @staticmethod
+    def create_stage_probe_server(port: int = 19900, window_sec: float = 5.0) -> StageProbeServer:
+        return StageProbeServer(port=port, window_sec=window_sec)

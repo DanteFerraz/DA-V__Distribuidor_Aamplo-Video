@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 import pytest
 
+from src.dav import __version__ as _DAV_VERSION
 from src.dav.modules.telemetry.diagnostic_packager import DiagnosticPackager
 from src.dav.modules.telemetry.service import TelemetryService
 
@@ -55,5 +56,5 @@ def test_diagnostic_packager_generate_bundle_and_verify_zip_structure():
 
             # Valida ambiente do sistema
             env_json = json.loads(zf.read("system_environment.json").decode("utf-8"))
-            assert env_json["dav_version"] == "4.0.0"
+            assert env_json["dav_version"] == _DAV_VERSION
 

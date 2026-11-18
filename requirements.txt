@@ -13,8 +13,9 @@ mss>=9.0.0
 cryptography>=42.0.0
 websockets>=12.0
 
-# System Telemetry & Performance
+# System Telemetry & Audio Loopback
 psutil>=5.9.0
+comtypes>=1.4.0; sys_platform == "win32"
 
 # Testing
 pytest>=8.0.0

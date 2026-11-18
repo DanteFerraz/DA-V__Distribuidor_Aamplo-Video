@@ -6,7 +6,7 @@ Diagnostics console, local loopback tests, firewall status checker and script tr
 
 import os
 import time
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QVBoxLayout, QGridLayout, QPushButton, QTextEdit,
     Signal, Qt
 )

@@ -35,7 +35,7 @@ class LinuxCapturer(BaseCapturer):
             logger.error("LinuxCapturer não é suportado no Windows.")
             return False
 
-        from src.capture.linux_wayland_portal import WaylandPortalCapturer, is_wayland_session
+        from src.dav.modules.capture.wayland_portal import WaylandPortalCapturer, is_wayland_session
 
         if is_wayland_session():
             self._tried_portal = True
@@ -86,7 +86,7 @@ class LinuxCapturer(BaseCapturer):
                         if self._consecutive_black >= 8:
                             self._tried_portal = True
                             logger.warning("[LinuxCapturer] Tela preta detectada no XWayland. Migrando a quente para PipeWire...")
-                            from src.capture.linux_wayland_portal import WaylandPortalCapturer
+                            from src.dav.modules.capture.wayland_portal import WaylandPortalCapturer
                             candidate = WaylandPortalCapturer(width=self.width, height=self.height, fps=self.fps)
                             if candidate.start(wait_first_frame_timeout=45.0):
                                 self._portal_cap = candidate

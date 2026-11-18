@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Release-v4.0.0-0ea5e9?style=for-the-badge)
+![Version](https://img.shields.io/badge/Release-v4.9.0-0ea5e9?style=for-the-badge)
 ![Core](https://img.shields.io/badge/Architecture-MonoTech%20Core%20Kernel%20v2.0-1e293b?style=for-the-badge)
 ![Cadence](https://img.shields.io/badge/Streaming-Up%20to%204K%20%40%20120%20FPS-10b981?style=for-the-badge)
 ![License](https://img.shields.io/badge/Community%20Edition-100%25%20Free%20%26%20Open-8b5cf6?style=for-the-badge)

@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from scripts.qt_compat import (
-    QColor, QFont, QHBoxLayout, QLabel, QLineEdit, QPainter, QPalette, QPushButton, QRectF,
-    QScrollArea, QSize, QSizePolicy, QVBoxLayout, QWidget, Qt, Signal,
+from src.ui.qt_compat import (
+    QColor, QFont, QHBoxLayout, QLabel, QLineEdit, QPainter, QPalette, QPointF, QPushButton,
+    QRectF, QScrollArea, QSize, QSizePolicy, QToolTip, QVBoxLayout, QWidget, Qt, Signal,
 )
-from src.ui.glass import paint
+from src.ui.glass import icons, paint
 from src.ui.glass import tokens as T
 
 
@@ -113,18 +113,38 @@ class CardPage(QWidget):
         self._place_card()
 
 
+def _parse_css_color(css_color: str) -> QColor:
+    """Converte cores hex, rgb() ou rgba() para QColor."""
+    s = (css_color or "").strip()
+    if s.startswith("rgba(") and s.endswith(")"):
+        parts = [p.strip() for p in s[5:-1].split(",")]
+        if len(parts) == 4:
+            a_val = float(parts[3])
+            alpha = int(a_val * 255) if a_val <= 1.0 else int(a_val)
+            return QColor(int(parts[0]), int(parts[1]), int(parts[2]), max(0, min(255, alpha)))
+    if s.startswith("rgb(") and s.endswith(")"):
+        parts = [p.strip() for p in s[4:-1].split(",")]
+        if len(parts) == 3:
+            return QColor(int(parts[0]), int(parts[1]), int(parts[2]))
+    c = QColor(s)
+    return c if c.isValid() else QColor(255, 255, 255)
+
+
 # ---------------------------------------------------------------------------
 # Texto
 # ---------------------------------------------------------------------------
 class GlassLabel(QLabel):
-    """Rotulo branco de vidro; o tamanho de fonte acompanha a escala da janela."""
+    """Rotulo branco de vidro com sombreamento suave; escala acompanha a janela."""
 
     def __init__(self, text: str = "", design_px: int = T.FONT_LABEL, weight: int = 600,
-                 color: str = "#ffffff", wrap: bool = False, parent: Optional[QWidget] = None):
+                 color: str = "#ffffff", wrap: bool = False, shadow: bool = True,
+                 parent: Optional[QWidget] = None):
         super().__init__(text, parent)
         self._design_px = design_px
         self._weight = weight
         self._color = color
+        self._qcolor = _parse_css_color(color)
+        self._shadow = shadow
         self._last_px = -1
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(wrap)
@@ -134,15 +154,43 @@ class GlassLabel(QLabel):
 
     def set_color(self, color: str) -> None:
         self._color = color
+        self._qcolor = _parse_css_color(color)
         self._last_px = -1
         self.apply_scale(getattr(self, "_scale", 1.0))
+        self.update()
 
     def apply_scale(self, scale: float) -> None:
         self._scale = scale
         px_size = T.px(self._design_px, scale, 9)
+        bot_margin = max(3, T.px(4, scale, 3)) if self._shadow else 0
+        self.setContentsMargins(2, 1, 2, bot_margin)
         if px_size != self._last_px:
             self._last_px = px_size
+            f = QFont()
+            f.setFamilies(T.FONT_FAMILIES)
+            f.setPixelSize(px_size)
+            f.setWeight(
+                QFont.Weight.DemiBold if self._weight >= 600
+                else (QFont.Weight.Medium if self._weight >= 500 else QFont.Weight.Normal)
+            )
+            self.setFont(f)
             self.setStyleSheet(font_css(px_size, self._weight, self._color))
+
+    def paintEvent(self, event):
+        if self._shadow and self.text():
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            flags = int(self.alignment())
+            if self.wordWrap():
+                flags |= int(Qt.TextFlag.TextWordWrap)
+            m = self.contentsMargins()
+            rect = QRectF(self.rect()).adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+            paint.paint_shadowed_text(
+                p, rect, flags, self.text(), self.font(), self._qcolor, scale=self._scale
+            )
+            p.end()
+            return
+        super().paintEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -190,10 +238,10 @@ class GlassButton(QPushButton):
         rect = QRectF(self.rect()).adjusted(self._pad, self._pad, -self._pad, -self._pad)
         paint.paint_neon_pill(p, rect, self._scale, hover=self._hover or (0.6 if self.hasFocus() else 0.0),
                               pressed=self.isDown(), enabled=self.isEnabled())
-        p.setFont(self.font())
         color = QColor(255, 255, 255, 255 if self.isEnabled() else 120)
-        p.setPen(color)
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
+        paint.paint_shadowed_text(
+            p, rect, int(Qt.AlignmentFlag.AlignCenter), self.text(), self.font(), color, scale=self._scale
+        )
         p.end()
 
 
@@ -339,8 +387,15 @@ class GlassSegmented(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(255, 255, 255, 28))
                 p.drawRoundedRect(r.adjusted(3, 3, -3, -3), r.height() / 2 - 3, r.height() / 2 - 3)
-            p.setPen(QColor(255, 255, 255, 255 if i == self._current else 205))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self._items[i])
+            paint.paint_shadowed_text(
+                p,
+                r,
+                int(Qt.AlignmentFlag.AlignCenter),
+                self._items[i],
+                self.font(),
+                QColor(255, 255, 255, 255 if i == self._current else 205),
+                scale=self._scale,
+            )
         p.end()
 
 
@@ -388,3 +443,154 @@ class GlassScrollArea(QScrollArea):
         vw = self.viewport().width()
         if vw > 40:
             self.body.setMaximumWidth(vw)
+
+
+# ---------------------------------------------------------------------------
+# Controles flutuantes do canto inferior direito (Audio & Tela Cheia)
+# ---------------------------------------------------------------------------
+class VideoOverlayControls(QWidget):
+    """Botoes vetoriais flutuantes de Audio e Tela Cheia (referencias 1, 2 e 3)."""
+
+    ZONE_AUDIO = 0
+    ZONE_FULLSCREEN = 1
+
+    audio_toggled = Signal()
+    fullscreen_toggled = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self._scale = 1.0
+        self._audio_muted = False
+        self._is_fullscreen = False
+        self._hover_zone = -1
+        self._relayout()
+
+    @property
+    def audio_muted(self) -> bool:
+        return self._audio_muted
+
+    @property
+    def is_fullscreen(self) -> bool:
+        return self._is_fullscreen
+
+    def set_ui_scale(self, scale: float) -> None:
+        if abs(scale - self._scale) >= 0.005:
+            self._scale = scale
+        self._relayout()
+        self.update()
+
+    def set_audio_muted(self, muted: bool) -> None:
+        m = bool(muted)
+        if m != self._audio_muted:
+            self._audio_muted = m
+            self.update()
+
+    def set_fullscreen(self, is_fullscreen: bool) -> None:
+        fs = bool(is_fullscreen)
+        if fs != self._is_fullscreen:
+            self._is_fullscreen = fs
+            self.update()
+
+    def _btn_size(self) -> float:
+        return float(T.px(48, self._scale, 30))
+
+    def _gap(self) -> float:
+        return float(T.px(10, self._scale, 4))
+
+    def _zone_rect(self, zone: int) -> QRectF:
+        btn = self._btn_size()
+        gap = self._gap()
+        y = 0.0 if zone == self.ZONE_AUDIO else (btn + gap)
+        return QRectF(0.0, y, btn, btn)
+
+    def _relayout(self) -> None:
+        btn = int(round(self._btn_size()))
+        gap = int(round(self._gap()))
+        self.resize(btn, btn * 2 + gap)
+        self.reposition()
+
+    def reposition(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        margin_r = T.px(22, self._scale, 10)
+        margin_b = T.px(16, self._scale, 8)
+        self.move(
+            max(0, parent.width() - self.width() - margin_r),
+            max(0, parent.height() - self.height() - margin_b),
+        )
+
+    def _zone_at(self, pos: QPointF) -> int:
+        for zone in (self.ZONE_AUDIO, self.ZONE_FULLSCREEN):
+            if self._zone_rect(zone).contains(pos):
+                return zone
+        return -1
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        zone = self._zone_at(event.position())
+        if zone == self.ZONE_AUDIO:
+            self.audio_toggled.emit()
+        elif zone == self.ZONE_FULLSCREEN:
+            self.fullscreen_toggled.emit()
+
+    def mouseMoveEvent(self, event):
+        zone = self._zone_at(event.position())
+        if zone != self._hover_zone:
+            self._hover_zone = zone
+            self.update()
+
+    def leaveEvent(self, event):
+        self._hover_zone = -1
+        self.update()
+        super().leaveEvent(event)
+
+    def event(self, ev):
+        if ev.type() == ev.Type.ToolTip:
+            zone = self._zone_at(ev.pos().toPointF()) if hasattr(ev.pos(), "toPointF") else -1
+            if zone == self.ZONE_AUDIO:
+                text = "Ativar áudio da transmissão" if self._audio_muted else "Desativar áudio da transmissão"
+            elif zone == self.ZONE_FULLSCREEN:
+                text = "Sair da tela cheia (Esc)" if self._is_fullscreen else "Tela cheia (F11)"
+            else:
+                text = ""
+            if text:
+                QToolTip.showText(ev.globalPos(), text, self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(ev)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for zone in (self.ZONE_AUDIO, self.ZONE_FULLSCREEN):
+            r = self._zone_rect(zone)
+            hovered = zone == self._hover_zone
+            if hovered:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(8, 28, 38, 72))
+                p.drawEllipse(r.center(), r.width() * 0.48, r.height() * 0.48)
+                p.setBrush(QColor(255, 255, 255, 42))
+                p.drawEllipse(r.center(), r.width() * 0.46, r.height() * 0.46)
+
+            icon_sz = r.width() * (0.78 if hovered else 0.72)
+            icon_box = QRectF(
+                r.center().x() - icon_sz / 2.0,
+                r.center().y() - icon_sz / 2.0,
+                icon_sz,
+                icon_sz,
+            )
+            alpha = 1.0 if hovered else 0.94
+            if zone == self.ZONE_AUDIO:
+                icons.draw_speaker(p, icon_box, alpha=alpha, muted=self._audio_muted)
+            else:
+                icons.draw_fullscreen_corners(p, icon_box, alpha=alpha, is_fullscreen=self._is_fullscreen)
+        p.end()

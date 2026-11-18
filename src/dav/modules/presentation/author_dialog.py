@@ -6,7 +6,7 @@ Autor: Dante Ferraz (MonoTech)
 
 from __future__ import annotations
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, Qt, QFont
 )
@@ -58,7 +58,8 @@ class AuthorShowcaseDialog(QDialog):
         header_layout.addWidget(lbl_badge)
         header_layout.addStretch()
 
-        lbl_ver = QLabel("DA-V v4.0.0")
+        from src.dav import __version__ as _dav_ver
+        lbl_ver = QLabel(f"DA-V v{_dav_ver}")
         lbl_ver.setStyleSheet(f"color: {Theme.SYS['text_muted']}; font-weight: 600; font-size: 12px;")
         header_layout.addWidget(lbl_ver)
         layout.addLayout(header_layout)

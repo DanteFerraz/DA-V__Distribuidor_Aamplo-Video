@@ -1,10 +1,35 @@
 # -*- coding: utf-8 -*-
-"""Módulo de Telemetria & Observabilidade TUPÃ/SDE — DA-V v4.0"""
+"""
+Fatia Vertical de Telemetria, TUPA, StageProbe e Exportacao SDE — DA-V v4.6
+Autor: Dante Ferraz (MonoTech)
+"""
 
-from src.dav.modules.telemetry.tupa_probes import TupaNetworkProbe
+from src.dav.modules.telemetry.diagnostic_packager import DiagnosticPackager
 from src.dav.modules.telemetry.sde_exporter import SDETelemetryExporter
 from src.dav.modules.telemetry.service import TelemetryService
-from src.dav.modules.telemetry.diagnostic_packager import DiagnosticPackager
+from src.dav.modules.telemetry.stage_probe import (
+    PROBE_PORT,
+    STAGE_NAMES,
+    StageProbeServer,
+    print_saved_report,
+    probe_init,
+    probe_send,
+)
+from src.dav.modules.telemetry.tupa_checker import HAS_TUPA, TupaHealthChecker, TupaMetricsSnapshot
+from src.dav.modules.telemetry.tupa_probes import TupaNetworkProbe
 
-__all__ = ["TupaNetworkProbe", "SDETelemetryExporter", "TelemetryService", "DiagnosticPackager"]
-
+__all__ = [
+    "TelemetryService",
+    "TupaNetworkProbe",
+    "SDETelemetryExporter",
+    "DiagnosticPackager",
+    "TupaHealthChecker",
+    "TupaMetricsSnapshot",
+    "HAS_TUPA",
+    "PROBE_PORT",
+    "STAGE_NAMES",
+    "StageProbeServer",
+    "print_saved_report",
+    "probe_init",
+    "probe_send",
+]

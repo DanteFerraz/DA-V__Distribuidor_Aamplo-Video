@@ -12,6 +12,7 @@
 #include "src/crypto/crypto_channel.hpp"
 #include "src/transport/udp_socket.hpp"
 #include "src/transport/kcp_transport.hpp"
+#include "src/qos/fec.hpp"
 #include "src/qos/qos_engine.hpp"
 
 #if defined(DAV_PLATFORM_WINDOWS)
@@ -90,7 +91,68 @@ std::array<dav::Byte, 32> derive_pin_key(const char* pin) {
 extern "C" {
 
 DAV_API const char* dav_get_version(void) {
-    return "DA-V v3.1.1 (Native C-ABI Engine)";
+    return "DA-V v4.5.0 (Unified C-ABI Data Plane)";
+}
+
+DAV_API int dav_aead_seal_raw(
+    const uint8_t* key32,
+    const uint8_t* nonce12,
+    const uint8_t* aad,
+    size_t aad_len,
+    const uint8_t* plaintext,
+    size_t pt_len,
+    uint8_t* out_ct_and_tag
+) {
+    if (!key32 || !nonce12 || !out_ct_and_tag) return DAV_ERROR_INVALID_PARAM;
+    bool ok = dav::CryptoChannel::seal_aead_raw(
+        key32, nonce12, aad, aad_len, plaintext, pt_len,
+        out_ct_and_tag, out_ct_and_tag + pt_len
+    );
+    return ok ? DAV_SUCCESS : DAV_ERROR_CRYPTO_FAILED;
+}
+
+DAV_API int dav_aead_open_raw(
+    const uint8_t* key32,
+    const uint8_t* nonce12,
+    const uint8_t* aad,
+    size_t aad_len,
+    const uint8_t* ct_and_tag,
+    size_t ct_plus_tag_len,
+    uint8_t* out_plaintext
+) {
+    if (!key32 || !nonce12 || !ct_and_tag || ct_plus_tag_len < 16) return DAV_ERROR_INVALID_PARAM;
+    size_t ct_len = ct_plus_tag_len - 16;
+    if (ct_len > 0 && !out_plaintext) return DAV_ERROR_INVALID_PARAM;
+    bool ok = dav::CryptoChannel::open_aead_raw(
+        key32, nonce12, aad, aad_len, ct_and_tag, ct_len, ct_and_tag + ct_len, out_plaintext
+    );
+    return ok ? DAV_SUCCESS : DAV_ERROR_CRYPTO_FAILED;
+}
+
+DAV_API int dav_fec_encode_gf256(
+    uint16_t k_data,
+    uint8_t m_parity,
+    size_t shard_len,
+    const uint8_t* data_concat,
+    uint8_t* out_parity_concat
+) {
+    bool ok = dav::FecHandler::encode_gf256_raw(k_data, m_parity, shard_len, data_concat, out_parity_concat);
+    return ok ? DAV_SUCCESS : DAV_ERROR_INVALID_PARAM;
+}
+
+DAV_API int dav_fec_recover_gf256(
+    uint16_t k_data,
+    uint8_t m_parity,
+    size_t shard_len,
+    const uint8_t* data_present,
+    const uint8_t* parity_present,
+    uint8_t* data_shards_inout,
+    const uint8_t* parity_shards_in
+) {
+    bool ok = dav::FecHandler::recover_gf256_raw(
+        k_data, m_parity, shard_len, data_present, parity_present, data_shards_inout, parity_shards_in
+    );
+    return ok ? DAV_SUCCESS : DAV_ERROR_INVALID_PARAM;
 }
 
 DAV_API void dav_set_log_callback(DavLogCallback cb, void* user_data) {
@@ -320,43 +382,47 @@ DAV_API int dav_start_receiver(
                 total_recv_bytes += *recv_res;
 
                 dav::DavPacket pkt{};
-                std::memcpy(&pkt.header, recv_buf.data(), sizeof(dav::PacketHeader));
-                last_pkt_ts_us = pkt.header.timestamp_us;
-                size_t payload_len = pkt.header.payload_length;
-                if (*recv_res >= sizeof(dav::PacketHeader) + payload_len) {
-                    pkt.payload.assign(
-                        recv_buf.data() + sizeof(dav::PacketHeader),
-                        recv_buf.data() + sizeof(dav::PacketHeader) + payload_len
-                    );
-                }
-
-                // Authenticated Decryption
-                if (pkt.header.is_encrypted() && g_ctx.receiver_crypto) {
-                    if (*recv_res >= sizeof(dav::PacketHeader) + payload_len + 16) {
-                        pkt.auth_tag.assign(
-                            recv_buf.data() + sizeof(dav::PacketHeader) + payload_len,
-                            recv_buf.data() + sizeof(dav::PacketHeader) + payload_len + 16
+                if (dav::PacketHeader::from_wire_bytes(recv_buf.data(), *recv_res, pkt.header)) {
+                    last_pkt_ts_us = pkt.header.timestamp_us;
+                    size_t payload_len = pkt.header.payload_length;
+                    if (*recv_res >= dav::PacketHeader::HeaderSize + payload_len) {
+                        pkt.payload.assign(
+                            recv_buf.data() + dav::PacketHeader::HeaderSize,
+                            recv_buf.data() + dav::PacketHeader::HeaderSize + payload_len
                         );
                     }
-                    g_ctx.receiver_crypto->decrypt_packet(pkt);
-                }
 
-                // Out-of-Order Frame Reassembly
-                auto assembled = g_ctx.assembler.push_packet(pkt, now_us);
-                if (assembled.has_value()) {
-                    g_ctx.frames_rendered++;
+                    // Authenticated Decryption
+                    bool auth_ok = true;
+                    if (pkt.header.is_encrypted() && g_ctx.receiver_crypto) {
+                        if (*recv_res >= dav::PacketHeader::HeaderSize + payload_len + 16) {
+                            pkt.auth_tag.assign(
+                                recv_buf.data() + dav::PacketHeader::HeaderSize + payload_len,
+                                recv_buf.data() + dav::PacketHeader::HeaderSize + payload_len + 16
+                            );
+                        }
+                        auth_ok = g_ctx.receiver_crypto->decrypt_packet(pkt).has_value();
+                    }
 
-                    if (g_ctx.frame_callback) {
-                        DavRenderFrame render_frame{};
-                        render_frame.width = 1280;
-                        render_frame.height = 720;
-                        render_frame.stride = 1280 * 4;
-                        render_frame.timestamp_us = assembled->timestamp_us;
-                        render_frame.rgba_data = assembled->data.data();
-                        render_frame.data_size = assembled->data.size();
-                        render_frame.is_keyframe = assembled->is_keyframe ? 1 : 0;
+                    // Out-of-Order Frame Reassembly
+                    if (auth_ok) {
+                        auto assembled = g_ctx.assembler.push_packet(pkt, now_us);
+                        if (assembled.has_value()) {
+                            g_ctx.frames_rendered++;
 
-                        g_ctx.frame_callback(&render_frame, g_ctx.callback_user_data);
+                            if (g_ctx.frame_callback) {
+                                DavRenderFrame render_frame{};
+                                render_frame.width = 1280;
+                                render_frame.height = 720;
+                                render_frame.stride = 1280 * 4;
+                                render_frame.timestamp_us = assembled->timestamp_us;
+                                render_frame.rgba_data = assembled->data.data();
+                                render_frame.data_size = assembled->data.size();
+                                render_frame.is_keyframe = assembled->is_keyframe ? 1 : 0;
+
+                                g_ctx.frame_callback(&render_frame, g_ctx.callback_user_data);
+                            }
+                        }
                     }
                 }
             } else {

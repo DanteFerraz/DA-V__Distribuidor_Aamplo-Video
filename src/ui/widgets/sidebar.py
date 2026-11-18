@@ -4,7 +4,7 @@ DA-V Sidebar Navigation Rail
 Modern collapsible lateral navigation bar inspired by AnyDesk, Parsec and Discord.
 """
 
-from scripts.qt_compat import (
+from src.ui.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, Signal, Qt, QFont
 )

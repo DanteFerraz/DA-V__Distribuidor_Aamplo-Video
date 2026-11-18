@@ -11,30 +11,51 @@ namespace dav {
 
 class CryptoChannel {
 public:
-    static constexpr size_t KeySize = 32;       // 256-bit key
-    static constexpr size_t NonceSize = 12;     // 96-bit nonce
-    static constexpr size_t TagSize = 16;       // 128-bit Poly1305 MAC tag
+    static constexpr size_t KeySize = 32;
+    static constexpr size_t NonceSize = 12;
+    static constexpr size_t TagSize = 16;
 
     CryptoChannel();
     explicit CryptoChannel(ConstByteSpan shared_secret);
+    explicit CryptoChannel(ConstByteSpan shared_secret, ConstByteSpan salt96);
     ~CryptoChannel() = default;
 
     VoidResult set_shared_key(ConstByteSpan key);
-    
-    // Encrypt payload in-place or into packet
+    void set_nonce_salt(ConstByteSpan salt96);
+
+    // Primitivas RFC 8439 ChaCha20-Poly1305 AEAD portaveis (zero dependencias externas)
+    static bool seal_aead_raw(
+        const Byte* key32,
+        const Byte* nonce12,
+        const Byte* aad,
+        size_t aad_len,
+        const Byte* plaintext,
+        size_t pt_len,
+        Byte* out_ciphertext,
+        Byte* out_tag16
+    ) noexcept;
+
+    static bool open_aead_raw(
+        const Byte* key32,
+        const Byte* nonce12,
+        const Byte* aad,
+        size_t aad_len,
+        const Byte* ciphertext,
+        size_t ct_len,
+        const Byte* tag16,
+        Byte* out_plaintext
+    ) noexcept;
+
     VoidResult encrypt_packet(DavPacket& packet);
     VoidResult decrypt_packet(DavPacket& packet);
-
-    // Key exchange (X25519)
-    static std::pair<std::array<Byte, 32>, std::array<Byte, 32>> generate_keypair();
-    static Result<std::array<Byte, 32>> compute_shared_secret(ConstByteSpan my_privkey, ConstByteSpan peer_pubkey);
 
     [[nodiscard]] bool is_ready() const noexcept { return has_key_; }
 
 private:
-    std::array<Byte, NonceSize> derive_nonce(uint32_t seq_num, uint32_t ssrc) const noexcept;
+    std::array<Byte, NonceSize> derive_nonce(uint32_t ssrc, uint32_t frame_id, uint32_t seq_num) const noexcept;
 
     std::array<Byte, KeySize> key_{};
+    std::array<Byte, NonceSize> salt_{};
     bool has_key_{false};
 };
 

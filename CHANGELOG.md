@@ -4,6 +4,19 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [4.9.0] — 2026-11-18
+
+### Experiência do Usuário (UX), Sombreamento e Navegação Resiliente
+- **Controles Vetoriais Flutuantes na Transmissão (`VideoOverlayControls`):** Adicionados botões de **Ativar/Desativar Áudio** (`draw_speaker`) e **Tela Cheia** (`draw_fullscreen_corners`) no canto inferior direito com sombreamento projetado e sincronização bidirecional com `SettingsSheet.chk_audio_rx`, `chk_audio_tx`, `DesktopAudioPlayer`, `StreamEngineService.set_sender_audio_muted` e eventos de janela (`F11` / `Esc`).
+- **Sombreamento (`Drop-Shadow`) Vetorial e Tipográfico:** Adicionados tokens de sombra (`tokens.py`) e camada dupla de sombra suave em todos os ícones vetoriais (`icons.py`) e textos (`paint_shadowed_text` em `paint.py`, aplicado em `GlassLabel`, `GlassButton` e `GlassSegmented`), preservando integralmente o layout dos cards principais.
+- **Correção Definitiva de Navegação (`ZONE_SWAP`) e Reinício de Transmissão:** O botão central da barra superior (`_swap_mode`) protege transmissões ativas contra interrupção acidental (`flash_warning`); `_on_target_updated` preserva `txt_send_ip` e `spn_send_port` após pareamento P2P para garantir descoberta STUN e registro limpo no reinício; adicionado `_sender_session_epoch` em `_bg_register_sender` e `join(timeout=0.8)` após `terminate()` em `StreamEngineService.stop()`.
+
+### Motor Salsify / SQP, Áudio Opus Low-Delay e Estabilização WAN (v4.7–v4.8)
+- **Subprocesso TX Lockless & Pacing Cut-Through / Burst-Guard:** Desacoplamento de fila de áudio Opus 48 kHz + pré-empção no micro-pacer e FEC adaptado para links WAN com perda.
+- **Controle SQP em 3 Zonas & BDP Imune a Bufferbloat:** Janela deslizante de RTT base (`15 s`), zona de retenção (Hold) sem serrilhado e histerese VBV segura para `libx264` e `h264_nvenc`.
+
+---
+
 ## [4.0.0] — 2026-11-11
 
 ### Arquitetura & Modularização Completa (MonoTech Core Kernel v2.0)

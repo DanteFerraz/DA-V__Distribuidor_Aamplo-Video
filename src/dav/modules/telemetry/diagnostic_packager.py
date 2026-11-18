@@ -21,6 +21,7 @@ import time
 import zipfile
 from typing import Any, Dict, Optional
 
+from src.dav import __version__ as _DAV_VERSION
 from src.dav.kernel.result import ServiceResult
 from src.dav.modules.telemetry.service import TelemetryService
 
@@ -61,7 +62,7 @@ class DiagnosticPackager:
 
             # 1. Coleta de Informações do Ambiente de Hardware e SO
             env_info = {
-                "dav_version": "4.0.0",
+                "dav_version": _DAV_VERSION,
                 "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "os_platform": platform.platform(),
                 "os_system": sys.platform,
@@ -113,7 +114,7 @@ class DiagnosticPackager:
 
                 # Manifesto de Diagnóstico
                 manifest_doc = (
-                    f"DA-V Diagnostic Bundle v4.0\n"
+                    f"DA-V Diagnostic Bundle v{_DAV_VERSION}\n"
                     f"Gerado em: {now_str}\n"
                     f"Autor: Dante Ferraz (MonoTech)\n"
                     f"Finalidade: Depuracao de Conexao e Metricas P2P\n"

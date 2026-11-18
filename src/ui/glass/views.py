@@ -15,8 +15,8 @@ import ipaddress
 import re
 from typing import Optional, Tuple
 
-from scripts.qt_compat import Qt, QTimer, Signal
-from src.discovery.p2p_channel import normalize_pin
+from src.ui.qt_compat import Qt, QTimer, Signal
+from src.dav.modules.transport_p2p.blind_relay import normalize_pin
 from src.ui.glass import tokens as T
 from src.ui.glass.widgets import (
     CardPage,
@@ -284,12 +284,18 @@ class SenderHomePage(CardPage):
             self.lbl_status.set_color(f"rgb({col[0]},{col[1]},{col[2]})")
             self.lbl_status.setText(self._base_status)
 
-    def flash_copied(self, message: str) -> None:
+    def flash_message(self, message: str, *, error: bool = False, duration_ms: int = 2200) -> None:
         self._flash_timer.stop()
-        col = T.SUCCESS
+        col = T.DANGER if error else T.SUCCESS
         self.lbl_status.set_color(f"rgb({col[0]},{col[1]},{col[2]})")
         self.lbl_status.setText(message)
-        self._flash_timer.start(2200)
+        self._flash_timer.start(duration_ms)
+
+    def flash_copied(self, message: str) -> None:
+        self.flash_message(message, error=False, duration_ms=2200)
+
+    def flash_warning(self, message: str, duration_ms: int = 3200) -> None:
+        self.flash_message(message, error=True, duration_ms=duration_ms)
 
     def set_status(self, message: str, error: bool = False) -> None:
         self._flash_timer.stop()

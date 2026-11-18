@@ -130,9 +130,22 @@ class VideoDecoder(BaseDecoder):
             res = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             return [res] if res is not None else []
 
+        if len(payload) == width * height * 4:
+            arr = np.frombuffer(payload, dtype=np.uint8).reshape((height, width, 4))[:, :, :3]
+            if not arr.flags["C_CONTIGUOUS"]:
+                arr = np.ascontiguousarray(arr)
+            return [arr]
+
         return []
+
+    def decode(self, payload: bytes, width: int = 1920, height: int = 1080) -> Optional[np.ndarray]:
+        frames = self.decode_all(payload, width, height)
+        return frames[-1] if frames else None
 
     def close(self) -> None:
         self._h264_dec = None
         self._hevc_dec = None
+
+
+HybridDecoder = VideoDecoder
 
