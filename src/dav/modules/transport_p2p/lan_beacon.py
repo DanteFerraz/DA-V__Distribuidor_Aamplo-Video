@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Dante Ferraz Oliveira Paiva (MonoTech)
+# Additional Terms (Section 7): see NOTICE and LICENSE in the repository root.
+# -*- coding: utf-8 -*-
+"""
+Beacon LAN & Descoberta Ativa de Dispositivos na Sub-Rede — DA-V v4.6
+Autor: Dante Ferraz (MonoTech)
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import socket
+import threading
+import time
+from typing import Callable, Dict, List, Optional, Tuple
+
+BEACON_PORT = 9005
+BEACON_MAGIC = "DAV_BEACON_V1"
+PING_MAGIC = "DAV_PING"
+PONG_MAGIC = "DAV_PONG"
+
+
+def get_all_active_ipv4_interfaces() -> List[Tuple[str, str, str]]:
+    """Retorna lista de (interface_name, ip_address, broadcast_address)."""
+    interfaces = []
+    try:
+        import psutil
+        for iface_name, addrs in psutil.net_if_addrs().items():
+            for a in addrs:
+                if a.family == socket.AF_INET and not a.address.startswith("127."):
+                    ip = a.address
+                    netmask = a.netmask or "255.255.255.0"
+                    try:
+                        net = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                        broadcast = str(net.broadcast_address)
+                        interfaces.append((iface_name, ip, broadcast))
+                    except Exception:
+                        interfaces.append((iface_name, ip, "255.255.255.255"))
+    except Exception:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            parts = ip.split(".")
+            bcast = f"{parts[0]}.{parts[1]}.{parts[2]}.255"
+            interfaces.append(("default", ip, bcast))
+        except Exception:
+            interfaces.append(("loopback", "127.0.0.1", "127.255.255.255"))
+    return interfaces
+
+
+def get_local_ip() -> str:
+    ifaces = get_all_active_ipv4_interfaces()
+    for name, ip, bcast in ifaces:
+        if not ip.startswith("192.168.56.") and not ip.startswith("169.254."):
+            return ip
+    return ifaces[0][1] if ifaces else "127.0.0.1"
+
+
+class LanBeaconService:
+    """Servico de descoberta local via Broadcast UDP, Varredura Ativa /24 e Ping-Pong."""
+
+    def __init__(self, node_name: str, stream_port: int = 9000, pin: str = "123456"):
+        self.node_name = node_name
+        self.stream_port = stream_port
+        self.pin = pin
+        self.local_ip = get_local_ip()
+        self.is_sharing = False
+        self.running = False
+        self._stop_evt = threading.Event()
+
+        self.discovered_peers: Dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self.on_peers_updated: Optional[Callable[[list], None]] = None
+
+        self._listen_sock: Optional[socket.socket] = None
+        self._threads: List[threading.Thread] = []
+
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self._stop_evt.clear()
+
+        try:
+            self._listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self._listen_sock.bind(("0.0.0.0", BEACON_PORT))
+            self._listen_sock.settimeout(0.5)
+        except Exception as e:
+            print(f"[Beacon] Erro ao vincular porta de escuta {BEACON_PORT}: {e}")
+
+        t_sender = threading.Thread(target=self._broadcast_loop, daemon=True, name="Beacon-Broadcaster")
+        t_receiver = threading.Thread(target=self._listen_loop, daemon=True, name="Beacon-Listener")
+        t_prune = threading.Thread(target=self._prune_loop, daemon=True, name="Beacon-Pruner")
+
+        self._threads = [t_sender, t_receiver, t_prune]
+        for t in self._threads:
+            t.start()
+
+        self.trigger_subnet_sweep()
+
+    def stop(self):
+        self.running = False
+        self._stop_evt.set()
+        if self._listen_sock:
+            try:
+                self._listen_sock.close()
+            except Exception:
+                pass
+            self._listen_sock = None
+        for t in self._threads:
+            if t.is_alive():
+                t.join(timeout=0.25)
+        self._threads.clear()
+
+    def update_status(self, is_sharing: bool, pin: Optional[str] = None):
+        self.is_sharing = is_sharing
+        if pin is not None:
+            self.pin = pin
+
+    def trigger_subnet_sweep(self):
+        t = threading.Thread(target=self._run_subnet_sweep, daemon=True, name="Subnet-Sweep")
+        t.start()
+
+    def _run_subnet_sweep(self):
+        ifaces = get_all_active_ipv4_interfaces()
+        payload = json.dumps({
+            "magic": PING_MAGIC,
+            "node_name": self.node_name,
+            "ip": self.local_ip,
+            "port": self.stream_port,
+            "pin": self.pin,
+            "is_sharing": self.is_sharing,
+        }).encode("utf-8")
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+        try:
+            for iface_name, ip, bcast in ifaces:
+                if ip.startswith("169.254.") or ip.startswith("127."):
+                    continue
+                try:
+                    sock.sendto(payload, (bcast, BEACON_PORT))
+                    sock.sendto(payload, ("255.255.255.255", BEACON_PORT))
+                except Exception:
+                    pass
+
+                parts = ip.split(".")
+                prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
+                my_last_octet = int(parts[3])
+
+                for octet in range(1, 255):
+                    if octet == my_last_octet:
+                        continue
+                    target_ip = prefix + str(octet)
+                    try:
+                        sock.sendto(payload, (target_ip, BEACON_PORT))
+                    except Exception:
+                        pass
+        finally:
+            sock.close()
+
+    def _broadcast_loop(self):
+        while self.running:
+            try:
+                ifaces = get_all_active_ipv4_interfaces()
+                payload = json.dumps({
+                    "magic": BEACON_MAGIC,
+                    "node_name": self.node_name,
+                    "ip": self.local_ip,
+                    "port": self.stream_port,
+                    "pin": self.pin,
+                    "is_sharing": self.is_sharing,
+                    "timestamp": time.time(),
+                }).encode("utf-8")
+
+                for iface_name, iface_ip, bcast in ifaces:
+                    if iface_ip.startswith("169.254.") or iface_ip.startswith("127."):
+                        continue
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        sock.bind((iface_ip, 0))
+                        sock.sendto(payload, (bcast, BEACON_PORT))
+                        sock.sendto(payload, ("255.255.255.255", BEACON_PORT))
+                        sock.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if self._stop_evt.wait(timeout=2.0):
+                break
+
+    def _listen_loop(self):
+        while self.running and not self._stop_evt.is_set():
+            if not self._listen_sock:
+                if self._stop_evt.wait(timeout=0.5):
+                    break
+                continue
+            try:
+                data, addr = self._listen_sock.recvfrom(4096)
+                if not data:
+                    continue
+                obj = json.loads(data.decode("utf-8"))
+                magic = obj.get("magic")
+
+                if magic not in (BEACON_MAGIC, PING_MAGIC, PONG_MAGIC):
+                    continue
+
+                peer_ip = obj.get("ip") or addr[0]
+                peer_port = obj.get("port", 9000)
+
+                all_local_ips = [a[1] for a in get_all_active_ipv4_interfaces()]
+                if peer_ip in all_local_ips and peer_port == self.stream_port:
+                    continue
+
+                peer_pin = obj.get("pin", "")
+                peer_key = f"{peer_ip}:{peer_port}"
+                now = time.time()
+                is_sharing = obj.get("is_sharing", False)
+                node_name = obj.get("node_name", "Desconhecido")
+                changed = False
+
+                with self._lock:
+                    prev = self.discovered_peers.get(peer_key)
+                    if prev is None:
+                        changed = True
+                    elif (
+                        prev.get("is_sharing") != is_sharing
+                        or prev.get("node_name") != node_name
+                        or prev.get("pin") != peer_pin
+                    ):
+                        changed = True
+
+                    self.discovered_peers[peer_key] = {
+                        "node_name": node_name,
+                        "ip": peer_ip,
+                        "port": peer_port,
+                        "pin": peer_pin,
+                        "is_sharing": is_sharing,
+                        "last_seen": now,
+                    }
+
+                if changed:
+                    self._notify_update()
+
+                if magic == PING_MAGIC:
+                    pong_payload = json.dumps({
+                        "magic": PONG_MAGIC,
+                        "node_name": self.node_name,
+                        "ip": self.local_ip,
+                        "port": self.stream_port,
+                        "pin": self.pin,
+                        "is_sharing": self.is_sharing,
+                        "timestamp": now,
+                    }).encode("utf-8")
+                    try:
+                        self._listen_sock.sendto(pong_payload, (addr[0], BEACON_PORT))
+                    except Exception:
+                        pass
+
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
+
+    def _prune_loop(self):
+        while self.running and not self._stop_evt.is_set():
+            if self._stop_evt.wait(timeout=3.0):
+                break
+            now = time.time()
+            changed = False
+            with self._lock:
+                expired = [k for k, v in self.discovered_peers.items() if now - v["last_seen"] > 8.0]
+                for k in expired:
+                    del self.discovered_peers[k]
+                    changed = True
+            if changed:
+                self._notify_update()
+
+    def get_peers(self) -> list:
+        with self._lock:
+            return list(self.discovered_peers.values())
+
+    def find_peer_by_pin(self, pin: str) -> Optional[dict]:
+        """Localiza um peer na rede local pelo codigo PIN (ignora hifens/espacos)."""
+        clean = pin.replace("-", "").replace(" ", "").strip()
+        with self._lock:
+            for p in self.discovered_peers.values():
+                peer_pin = str(p.get("pin", "")).replace("-", "").replace(" ", "").strip()
+                if peer_pin and peer_pin == clean:
+                    return p
+        return None
+
+    def _notify_update(self):
+        if self.on_peers_updated:
+            peers = self.get_peers()
+            try:
+                self.on_peers_updated(peers)
+            except Exception as e:
+                print(f"[Beacon] Callback error: {e}")

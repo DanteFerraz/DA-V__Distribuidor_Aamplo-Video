@@ -1,0 +1,55 @@
+# DA-V — Distribuidor Aamplo Video Configuration
+# Ultra-Low Latency & High QoS Video Streaming Service
+
+[general]
+node_id = "dav-node-primary"
+is_sender = true
+
+[transport]
+bind_port = 9000
+remote_host = "127.0.0.1"
+remote_port = 9000
+mtu = 1400
+kcp_nodelay = 1
+kcp_interval = 10
+kcp_resend = 2
+kcp_nc = 1
+snd_wnd = 128
+rcv_wnd = 512
+
+[capture]
+display_index = 0
+width = 1920
+height = 1080
+fps = 60
+zero_copy_gpu = true
+
+[codec]
+codec = "H264"
+prefer_hardware = true
+target_bitrate_kbps = 8000
+min_bitrate_kbps = 1000
+max_bitrate_kbps = 25000
+gop_size = 60
+
+[qos]
+enable_fec = true
+fec_data_shards = 10
+fec_parity_shards = 2
+enable_abr = true
+enable_nack = true
+jitter_buffer_min_ms = 5
+jitter_buffer_max_ms = 100
+
+[crypto]
+enabled = true
+psk_secret = "dav-secret-master-key-32bytes!!"
+
+[signaling]
+server_url = "ws://127.0.0.1:8765"
+session_id = "dav-session-default"
+auto_reconnect = true
+
+[metrics]
+enabled = true
+prometheus_port = 9200

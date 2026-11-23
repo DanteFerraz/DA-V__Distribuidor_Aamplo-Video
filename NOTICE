@@ -1,0 +1,49 @@
+DA-V — Distribuidor Amplo de Vídeo
+Copyright (c) 2026 Dante Ferraz Oliveira Paiva (MonoTech)
+Repositório Oficial: https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video
+Perfil Institucional: https://github.com/DanteFerraz
+Contato: danteferraz06@gmail.com
+
+================================================================================
+AVISOS LEGAIS E TERMOS ADICIONAIS OBRIGATÓRIOS (SEÇÃO 7 DA GNU AGPLv3)
+================================================================================
+
+Este software ("DA-V — Distribuidor Amplo de Vídeo") é software livre,
+distribuído gratuitamente sob os termos da GNU Affero General Public License,
+versão 3 ou posterior (SPDX-License-Identifier: AGPL-3.0-or-later), suplementada
+pelos seguintes Termos Adicionais nos termos da Seção 7 (alíneas 7(b) a 7(e))
+e da Seção 5(d) da licença:
+
+1. Preservação de Atribuição Autoral e Avisos Legais [Seção 7(b) e Seção 5(d)]:
+   Qualquer cópia, redistribuição do código-fonte, pacote binário, instalador
+   ou obra derivada (inclusive quando executada ou disponibilizada através de
+   uma rede nos termos da Seção 13 da GNU AGPLv3) DEVE preservar este arquivo
+   NOTICE na íntegra, bem como manter visíveis os Avisos Legais Apropriados
+   ("Appropriate Legal Notices") na interface gráfica interativa do aplicativo
+   (janela "Sobre o DA-V, Autoria & Licenças"), identificando expressamente:
+     - Autor e Arquiteto Original: Dante Ferraz (MonoTech)
+     - Aviso de Copyright: Copyright (c) 2026 Dante Ferraz Oliveira Paiva
+     - Licença: GNU AGPLv3 com Termos Adicionais da Seção 7
+     - Repositório Original: https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video
+
+2. Identificação de Versões Modificadas e Origem [Seção 7(c)]:
+   É estritamente proibida a deturpação da origem deste software. Qualquer
+   versão modificada ou fork distribuído por terceiros deve indicar de forma
+   clara e visível nos arquivos alterados e na interface do usuário que se
+   trata de uma versão modificada derivada do projeto original "DA-V" criado
+   por Dante Ferraz (MonoTech), não podendo ser apresentada como lançamento
+   oficial do autor original.
+
+3. Limitação de Uso de Nome para Publicidade e Endosso [Seção 7(d)]:
+   Exceto para fins de cumprimento obrigatório da atribuição autoral descrita
+   no item 1 acima, os nomes "Dante Ferraz", "Dante Ferraz Oliveira Paiva" e
+   "MonoTech" não podem ser utilizados para endossar, patrocinar ou promover
+   produtos ou serviços derivados deste software sem autorização prévia e por
+   escrito do autor.
+
+4. Reserva de Marcas, Nomes Comerciais e Identidade Visual [Seção 7(e)]:
+   Esta licença não concede quaisquer direitos sob a legislação de marcas ou
+   concorrência desleal sobre os nomes e sinais distintivos "DA-V",
+   "Distribuidor Amplo de Vídeo", "MonoTech", "TUPÃ", "SDE" ou sobre o ícone
+   oficial Glassmorphism (DA-V.icon.png / dav_icon.ico). Consulte o arquivo
+   TRADEMARK.md para as diretrizes de uso nominal e redistribuição.

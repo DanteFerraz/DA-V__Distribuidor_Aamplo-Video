@@ -1,0 +1,312 @@
+name: DA-V Multi-OS CI & Release Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build & Validate Linux (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install native C++23, X11, FFmpeg & Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            libx11-dev \
+            libxext-dev \
+            libgl1 \
+            libegl1 \
+            libxcb-cursor0 \
+            libxkbcommon-x11-0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libxcb-xfixes0 \
+            libdbus-1-3
+
+      - name: Compile C++23 Native Core (libdav_core.so & dav_daemon)
+        run: |
+          chmod +x build_linux.sh launch_dav.sh
+          ./build_linux.sh --clean
+          test -f build/libdav_core.so
+          test -f build/dav_daemon
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python runtime & packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt Pillow aiohttp "opencv-python-headless>=4.10.0,<5.1.0" pyinstaller
+
+      - name: Execute Unit & P2P End-to-End Validation Suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+          DAV_HEADLESS_SYNTHETIC: "1"
+          PYTHONFAULTHANDLER: "1"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -m pytest tests/ -v --tb=short
+          python tests/test_p2p_e2e.py
+
+      - name: Compile Self-Contained Linux Application & Payload Installer
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ROOT_DIR="$(pwd)"
+          pyinstaller --noconfirm --clean --onedir --windowed \
+            --name DA-V \
+            --paths "$ROOT_DIR" \
+            --add-data "$ROOT_DIR/installer/dav_icon.png:." \
+            --add-data "$ROOT_DIR/installer/dav_icon.ico:." \
+            --add-data "$ROOT_DIR/VERSION:." \
+            --add-data "$ROOT_DIR/LICENSE:." \
+            --add-data "$ROOT_DIR/NOTICE:." \
+            --add-data "$ROOT_DIR/TRADEMARK.md:." \
+            --add-data "$ROOT_DIR/THIRD_PARTY_LICENSES.md:." \
+            --add-data "$ROOT_DIR/LICENSES:LICENSES" \
+            --collect-all av \
+            --collect-all src.dav \
+            --collect-all src.ui \
+            --hidden-import scripts.dav_sender_worker \
+            --hidden-import scripts.dav_client \
+            --hidden-import src.signaling.server.dav_rendezvous \
+            --hidden-import src.capture.linux_wayland_portal \
+            --hidden-import mss \
+            --hidden-import aiohttp \
+            --hidden-import src.dav.modules.updater.update_checker \
+            --hidden-import src.dav.modules.updater.auto_installer \
+            --hidden-import src.dav.modules.updater.service \
+            --hidden-import src.dav.modules.updater.manifest \
+            --hidden-import src.dav.modules.audio.manifest \
+            --hidden-import cryptography \
+            --exclude-module PyQt5 \
+            --exclude-module PyQt6 \
+            --exclude-module tkinter \
+            --exclude-module pytest \
+            --exclude-module PySide6.QtVirtualKeyboard \
+            --exclude-module PySide6.QtPdf \
+            --exclude-module PySide6.QtQuick \
+            --exclude-module PySide6.QtQml \
+            --exclude-module PySide6.QtWebEngineCore \
+            scripts/gui_app.py
+
+          cp "$ROOT_DIR/installer/dav_icon.png" dist/DA-V/
+          cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/NOTICE" "$ROOT_DIR/TRADEMARK.md" "$ROOT_DIR/THIRD_PARTY_LICENSES.md" dist/DA-V/
+          cp -r "$ROOT_DIR/LICENSES" dist/DA-V/
+          cp "$ROOT_DIR/build/libdav_core.so" dist/DA-V/
+          chmod +x dist/DA-V/DA-V
+          ./dist/DA-V/DA-V --self-check
+
+          mkdir -p build_payload
+          tar -czf build_payload/dav_app_payload_linux.tar.gz -C dist/DA-V .
+
+          pyinstaller --noconfirm --clean --onefile --windowed \
+            --name DA-V_Instalador_Linux_x86_64 \
+            --add-data "$ROOT_DIR/build_payload/dav_app_payload_linux.tar.gz:." \
+            --add-data "$ROOT_DIR/installer/dav_icon.png:installer" \
+            --add-data "$ROOT_DIR/installer/dav_icon.ico:installer" \
+            --exclude-module PyQt5 \
+            --exclude-module PyQt6 \
+            --exclude-module tkinter \
+            scripts/dav_installer_linux.py
+
+      - name: Assemble Linux Release Bundle
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          STAGE="stage_linux/DA-V-v${VERSION}-Linux-x86_64"
+          mkdir -p "$STAGE/build" release_assets
+
+          cp -r dist/DA-V/* "$STAGE/"
+          cp -r src scripts include cmake third_party deploy installer LICENSES "$STAGE/"
+          cp CMakeLists.txt README.md LEIA-ME_LINUX.md CHANGELOG.md VERSION requirements.txt LICENSE NOTICE TRADEMARK.md THIRD_PARTY_LICENSES.md "$STAGE/"
+          cp launch_dav.sh build_linux.sh "$STAGE/"
+          cp build/libdav_core.so build/dav_daemon "$STAGE/build/"
+          cp dist/DA-V_Instalador_Linux_x86_64 "$STAGE/"
+          chmod +x "$STAGE/DA-V" "$STAGE/launch_dav.sh" "$STAGE/build_linux.sh" "$STAGE/DA-V_Instalador_Linux_x86_64" "$STAGE/build/dav_daemon"
+
+          tar -czf "release_assets/DA-V_v${VERSION}_Linux_x86_64.tar.gz" -C stage_linux "DA-V-v${VERSION}-Linux-x86_64"
+          cp dist/DA-V_Instalador_Linux_x86_64 release_assets/
+          cp build/libdav_core.so release_assets/
+
+      - name: Upload Linux Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dav-linux-x86_64
+          path: release_assets/*
+
+  build-windows:
+    name: Build & Validate Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile C++23 Native Core (dav_core.dll & dav_daemon.exe)
+        shell: pwsh
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python runtime & packaging dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest pyinstaller
+
+      - name: Execute Unit & P2P End-to-End Validation Suite
+        shell: pwsh
+        run: |
+          python -m pytest tests/ -v
+          python tests/test_p2p_e2e.py
+
+      - name: Compile Self-Contained Windows Application & Payload Installer
+        shell: pwsh
+        run: |
+          $Root = (Get-Location).Path
+          pyinstaller --noconfirm --clean --onedir --windowed `
+            --name DA-V `
+            --icon "$Root\installer\dav_icon.ico" `
+            --paths "$Root" `
+            --add-data "$Root\installer\dav_icon.ico;." `
+            --add-data "$Root\installer\dav_icon.png;." `
+            --add-data "$Root\VERSION;." `
+            --add-data "$Root\LICENSE;." `
+            --add-data "$Root\NOTICE;." `
+            --add-data "$Root\TRADEMARK.md;." `
+            --add-data "$Root\THIRD_PARTY_LICENSES.md;." `
+            --add-data "$Root\LICENSES;LICENSES" `
+            --collect-all av `
+            --collect-all src.dav `
+            --collect-all src.ui `
+            --hidden-import scripts.dav_sender_worker `
+            --hidden-import scripts.dav_client `
+            --hidden-import src.signaling.server.dav_rendezvous `
+            --hidden-import src.capture.linux_wayland_portal `
+            --hidden-import mss `
+            --hidden-import aiohttp `
+            --hidden-import src.dav.modules.updater.update_checker `
+            --hidden-import src.dav.modules.updater.auto_installer `
+            --hidden-import src.dav.modules.updater.service `
+            --hidden-import src.dav.modules.updater.manifest `
+            --hidden-import src.dav.modules.audio.manifest `
+            --hidden-import comtypes `
+            --hidden-import cryptography `
+            --exclude-module PyQt5 `
+            --exclude-module PyQt6 `
+            --exclude-module tkinter `
+            --exclude-module pytest `
+            --exclude-module PySide6.QtVirtualKeyboard `
+            --exclude-module PySide6.QtPdf `
+            --exclude-module PySide6.QtQuick `
+            --exclude-module PySide6.QtQml `
+            --exclude-module PySide6.QtWebEngineCore `
+            "$Root\scripts\gui_app.py"
+
+          Copy-Item "$Root\installer\dav_icon.ico" "dist\DA-V\"
+          Copy-Item "$Root\installer\dav_icon.png" "dist\DA-V\"
+          Copy-Item "$Root\LICENSE" "dist\DA-V\" -Force
+          Copy-Item "$Root\NOTICE" "dist\DA-V\" -Force
+          Copy-Item "$Root\TRADEMARK.md" "dist\DA-V\" -Force
+          Copy-Item "$Root\THIRD_PARTY_LICENSES.md" "dist\DA-V\" -Force
+          Copy-Item "$Root\LICENSES" "dist\DA-V\LICENSES" -Recurse -Force
+          $DllPath = Get-ChildItem -Path build -Recurse -Filter "dav_core.dll" | Select-Object -First 1
+          if ($DllPath) {
+            Copy-Item $DllPath.FullName "dist\DA-V\dav_core.dll"
+          }
+
+          New-Item -ItemType Directory -Force -Path "build_payload" | Out-Null
+          python -c "import pathlib, zipfile; src=pathlib.Path('dist/DA-V'); z=zipfile.ZipFile('build_payload/dav_app_payload.zip','w',zipfile.ZIP_DEFLATED,compresslevel=6); [z.write(p, p.relative_to(src).as_posix()) for p in src.rglob('*') if p.is_file()]; z.close()"
+
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name DA-V_Instalador_Windows_x64 `
+            --icon "$Root\installer\dav_icon.ico" `
+            --add-data "$Root\build_payload\dav_app_payload.zip;." `
+            --add-data "$Root\installer\dav_icon.ico;installer" `
+            --add-data "$Root\installer\dav_icon.png;installer" `
+            --exclude-module PyQt5 `
+            --exclude-module PyQt6 `
+            --exclude-module tkinter `
+            "$Root\scripts\dav_installer_win.py"
+
+      - name: Assemble Windows Release Bundle
+        shell: pwsh
+        run: |
+          $Ver = (Get-Content VERSION -Raw).Trim()
+          $Stage = "stage_win/DA-V-v$Ver-Windows-x64"
+          New-Item -ItemType Directory -Force -Path "$Stage/build", "release_assets" | Out-Null
+
+          Copy-Item -Recurse "dist/DA-V/*" "$Stage/"
+          Copy-Item -Recurse src, scripts, include, cmake, third_party, deploy, installer "$Stage/"
+          Copy-Item CMakeLists.txt, README.md, LEIA-ME_LINUX.md, CHANGELOG.md, VERSION, requirements.txt, launch_dual_test.ps1 "$Stage/"
+          Copy-Item dist/DA-V_Instalador_Windows_x64.exe "$Stage/"
+
+          $DllPath = Get-ChildItem -Path build -Recurse -Filter "dav_core.dll" | Select-Object -First 1
+          $DaemonPath = Get-ChildItem -Path build -Recurse -Filter "dav_daemon.exe" | Select-Object -First 1
+          if ($DllPath) {
+            Copy-Item $DllPath.FullName "$Stage/build/dav_core.dll"
+            Copy-Item $DllPath.FullName "release_assets/dav_core.dll"
+          }
+          if ($DaemonPath) {
+            Copy-Item $DaemonPath.FullName "$Stage/build/dav_daemon.exe"
+          }
+
+          Copy-Item dist/DA-V_Instalador_Windows_x64.exe "release_assets/"
+          Compress-Archive -Path "$Stage" -DestinationPath "release_assets/DA-V_v${Ver}_Windows_x64.zip" -Force
+
+      - name: Upload Windows Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dav-windows-x64
+          path: release_assets/*
+
+  publish-release:
+    name: Publish Official GitHub Release
+    needs: [ build-linux, build-windows ]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux & Windows Release Assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release_bundle
+          merge-multiple: true
+
+      - name: Create GitHub Release with Multi-OS Builds
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "DA-V ${{ github.ref_name }} — Instaladores Autossuficientes & Arquitetura P2P Single-Socket (Windows + Linux)"
+          body_path: CHANGELOG.md
+          files: release_bundle/*
+          draft: false
+          prerelease: false
