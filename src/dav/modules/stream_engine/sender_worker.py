@@ -22,6 +22,14 @@ import numpy as np
 
 from src.dav.modules.capture.base import BaseCapturer
 from src.dav.modules.codec.encoder import VideoEncoder
+from src.dav.modules.remote_desktop.protocol import (
+    EvType,
+    InputEventPacket,
+    pack_input_echo,
+)
+from src.dav.modules.remote_desktop.security_gate import SecurityGate, WorkspacePermissions
+from src.dav.modules.remote_desktop.service import RemoteDesktopService
+from src.dav.modules.remote_desktop.workspace_agent import WorkspaceAgent
 from src.dav.modules.transport_p2p.blind_relay import wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
 from src.dav.modules.transport_p2p.data_plane import DataPlaneSender
@@ -48,6 +56,11 @@ class SenderWorker:
         audio_capturer: Optional[Any] = None,
         audio_encoder: Optional[Any] = None,
         audio_enabled: bool = False,
+        input_injector: Optional[Any] = None,
+        security_gate: Optional[SecurityGate] = None,
+        workspace_agent: Optional[WorkspaceAgent] = None,
+        initial_permissions: Optional[Dict[str, bool]] = None,
+        on_remote_event: Optional[Callable[[str, Any], None]] = None,
     ):
         self.sock = sock
         self.capturer = capturer
@@ -63,6 +76,7 @@ class SenderWorker:
         self.relay_addr = relay_addr
         self.on_route_locked = on_route_locked
         self.on_stats = on_stats
+        self.on_remote_event = on_remote_event
 
         self.audio_capturer = audio_capturer
         self.audio_encoder = audio_encoder
@@ -72,17 +86,29 @@ class SenderWorker:
             self.sock.setblocking(False)
         except Exception:
             pass
+        try:
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0xB8)
+        except Exception:
+            pass
+        if hasattr(socket, "SO_PRIORITY"):
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_PRIORITY, 6)
+            except Exception:
+                pass
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._ctrl_thread: Optional[threading.Thread] = None
         self._audio_thread: Optional[threading.Thread] = None
         self._ctrl_lock = threading.Lock()
+        self._input_wake_evt = threading.Event()
         self._punch_locked = False
         self._use_relay = False
         self._is_streaming_active = bool(target_ip)
         self._frame_buffer = np.zeros((capturer.height, capturer.width, 4), dtype=np.uint8)
         self._last_pake_probe = 0.0
+        self._last_frame_sent_mono = 0.0
+        self._echo_counter = 0
         self._pair_started_mono = time.monotonic() if candidates else 0.0
 
         self.dp = DataPlaneSender(
@@ -91,6 +117,26 @@ class SenderWorker:
             initial_bitrate_kbps=encoder.bitrate_kbps,
             fps=capturer.fps,
         )
+
+        init_perms = WorkspacePermissions.from_dict(initial_permissions or {})
+        self.security_gate = security_gate or SecurityGate(initial_perms=init_perms)
+        if input_injector is not None:
+            self.input_injector = input_injector
+        else:
+            rd_svc = RemoteDesktopService()
+            inj_res = rd_svc.create_injector()
+            self.input_injector = inj_res.data
+        if self.input_injector is not None and getattr(self.input_injector, "is_elevated", False):
+            self.security_gate.update_permissions(admin_elevated=True)
+
+        self.workspace_agent = workspace_agent or WorkspaceAgent(
+            gate=self.security_gate,
+            on_clipboard_rx=lambda txt: self._emit_remote("clipboard", txt),
+            on_file_status=lambda st: self._emit_remote("file_status", st),
+            send_wire_fn=lambda wf: self.dp.send_workspace_datagram(wf),
+        )
+        if self.workspace_agent._send_wire is None:
+            self.workspace_agent.set_send_wire_fn(lambda wf: self.dp.send_workspace_datagram(wf))
 
     def start(self) -> None:
         self._running = True
@@ -115,6 +161,15 @@ class SenderWorker:
             self._thread.join(timeout=0.6)
         if self._audio_thread and self._audio_thread.is_alive():
             self._audio_thread.join(timeout=0.4)
+        try:
+            self.workspace_agent.close()
+        except Exception:
+            pass
+        if self.input_injector is not None:
+            try:
+                self.input_injector.close()
+            except Exception:
+                pass
         self.capturer.close()
         self.encoder.close()
         if self.audio_encoder is not None:
@@ -130,6 +185,55 @@ class SenderWorker:
 
     def set_audio_muted(self, muted: bool) -> None:
         self._audio_muted = bool(muted)
+
+    def _emit_remote(self, kind: str, payload: Any) -> None:
+        if self.on_remote_event is not None:
+            try:
+                self.on_remote_event(kind, payload)
+            except Exception:
+                pass
+
+    def set_remote_permissions(self, **perms: bool) -> Dict[str, bool]:
+        updated = self.security_gate.update_permissions(**perms)
+        if not updated.allow_input and self.input_injector is not None:
+            self.input_injector.release_all()
+        if self.dp.pake.confirmed:
+            self.workspace_agent.broadcast_permissions()
+        snap = updated.to_dict()
+        self._emit_remote("permissions", snap)
+        return snap
+
+    def panic_revoke_remote(self) -> Dict[str, bool]:
+        updated = self.security_gate.panic_revoke_all()
+        if self.input_injector is not None:
+            self.input_injector.release_all()
+        if self.dp.pake.confirmed:
+            self.workspace_agent.broadcast_permissions()
+        snap = updated.to_dict()
+        self._emit_remote("permissions", snap)
+        return snap
+
+    def set_input_injector(self, new_injector: Any) -> None:
+        old = self.input_injector
+        self.input_injector = new_injector
+        if old is not None and old is not new_injector:
+            try:
+                old.release_all()
+            except Exception:
+                pass
+        is_elev = bool(new_injector is not None and getattr(new_injector, "is_elevated", False))
+        self.set_remote_permissions(admin_elevated=is_elev)
+
+    def send_clipboard_text(self, text: str) -> bool:
+        if not self.security_gate.permissions.allow_clipboard or not self.dp.pake.confirmed:
+            return False
+        return bool(self.workspace_agent.build_clipboard_frames(text))
+
+    def send_file(self, file_path: str) -> Optional[str]:
+        if not self.security_gate.permissions.allow_files or not self.dp.pake.confirmed:
+            return None
+        tid, _ = self.workspace_agent.build_file_transfer_frames(file_path)
+        return tid
 
     def update_target(self, new_ip: str, new_port: int) -> None:
         clean_ip = str(new_ip).strip()
@@ -231,6 +335,7 @@ class SenderWorker:
                             pir_mode=False,
                             stop_check=lambda: not self._running,
                         )
+                        self._last_frame_sent_mono = time.perf_counter()
                         total_packets += pkts
                         total_bytes += f_bytes
 
@@ -254,23 +359,37 @@ class SenderWorker:
                 total_bytes = 0
 
             slack = t_target - time.perf_counter()
-            if slack > 0.003:
-                time.sleep(slack - 0.0015)
-            while time.perf_counter() < t_target:
+            if slack > 0.002:
+                woke = self._input_wake_evt.wait(timeout=slack - 0.001)
+                if woke:
+                    self._input_wake_evt.clear()
+                    if (time.perf_counter() - self._last_frame_sent_mono) >= 0.0075:
+                        t_target = time.perf_counter()
+            while time.perf_counter() < t_target and not self._input_wake_evt.is_set():
                 pass
-            t_target = max(t_target + frame_interval, time.perf_counter())
+            if self._input_wake_evt.is_set():
+                self._input_wake_evt.clear()
+                t_target = time.perf_counter() + frame_interval
+            else:
+                t_target = max(t_target + frame_interval, time.perf_counter())
 
     def _control_rx_loop(self) -> None:
+        last_housekeeping = time.monotonic()
         while self._running:
             try:
-                if self.dp.pake.confirmed and self._is_streaming_active:
-                    time.sleep(0.05)
-                    continue
-                rlist, _, _ = select.select([self.sock], [], [], 0.005)
+                rlist, _, _ = select.select([self.sock], [], [], 0.002)
                 if rlist or not self.dp.pake.confirmed:
                     self._poll_incoming_control()
+                now_m = time.monotonic()
+                if (now_m - last_housekeeping) >= 0.025:
+                    last_housekeeping = now_m
+                    if self.input_injector is not None:
+                        self.input_injector.tick_watchdog(now_mono=now_m)
+                    if self.dp.pake.confirmed:
+                        for rf in self.workspace_agent.channel.poll_retransmits(now_mono=now_m):
+                            self.dp.send_workspace_datagram(rf)
             except Exception:
-                time.sleep(0.005)
+                time.sleep(0.002)
 
     def _poll_incoming_control(self) -> None:
         if not self._ctrl_lock.acquire(blocking=False):
@@ -313,6 +432,25 @@ class SenderWorker:
                         self.encoder.request_keyframe(force=True)
                     except TypeError:
                         self.encoder.request_keyframe()
+                    self.workspace_agent.broadcast_permissions()
+                continue
+            elif evt == "remote_input" and reply_ack is not None:
+                in_pkt = InputEventPacket.unpack(reply_ack)
+                if in_pkt is not None and self.security_gate.allow_input_packet(in_pkt):
+                    if self.input_injector is not None:
+                        self.input_injector.inject(in_pkt)
+                    self._echo_counter += 1
+                    if (
+                        in_pkt.is_critical_transition
+                        or in_pkt.ev_type == EvType.HEARTBEAT
+                        or (self._echo_counter & 0x07) == 0
+                    ) and in_pkt.client_ts_us > 0:
+                        self.dp.send_workspace_datagram(pack_input_echo(in_pkt.client_ts_us))
+                    if in_pkt.is_critical_transition or in_pkt.ev_type == EvType.WHEEL:
+                        self._input_wake_evt.set()
+                continue
+            elif evt == "workspace_msg" and reply_ack is not None:
+                self.workspace_agent.handle_incoming_wire(reply_ack, is_host=True)
                 continue
             elif evt == "sqp_ack":
                 continue

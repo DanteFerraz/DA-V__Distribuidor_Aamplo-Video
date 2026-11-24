@@ -29,6 +29,7 @@ ROOT_FILES = (
     "CHANGELOG.md",
     "CMakeLists.txt",
     "requirements.txt",
+    "install_linux.sh",
     "launch_dav.sh",
     "build_linux.sh",
     "dav.toml",

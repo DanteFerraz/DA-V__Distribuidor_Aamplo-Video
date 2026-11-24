@@ -1,6 +1,19 @@
-# DA-V v4.9.0 — Guia Operacional e Técnico para Linux
+# DA-V v5.0.0 — Guia Operacional e Técnico para Linux
 
 Documentação dedicada à instalação, compilação e operação do **DA-V (Distribuidor Amplo de Vídeo)** em distribuições Linux modernas (**Ubuntu 22.04 / 24.04 / 26.04 LTS**, **Debian 12+**, **Fedora 40+** e **Arch Linux**).
+
+---
+
+## Instalação Rápida com 1 Comando (`install_linux.sh`)
+
+Coloque o script `install_linux.sh` na mesma pasta do arquivo `.tar.gz` baixado (ou passe o caminho do `.tar.gz` como argumento) e execute:
+
+```bash
+chmod +x install_linux.sh
+./install_linux.sh
+```
+
+O script desempacota automaticamente o arquivo `.tar.gz` (ou baixa a última release oficial do GitHub caso nenhum arquivo local seja encontrado), verifica as bibliotecas gráficas da distribuição (`libxcb-cursor0` / PipeWire) e **abre imediatamente o Instalador Gráfico Glassmorphism** para que você configure os atalhos da Área de Trabalho, a associação de convites `dav://` e as portas do firewall UFW antes de iniciar o aplicativo.
 
 ---
 

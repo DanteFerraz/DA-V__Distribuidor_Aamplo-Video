@@ -60,3 +60,48 @@ class TupaNetworkProbe:
             route_mode="Direct",
         )
 
+
+class TupaInputLatencyProbe:
+    """
+    Sonda TUPA dedicada a medir latencia interativa Input-to-Photon (DA-V v5.0).
+    Alvo primario: <= 15.0 ms (LAN) | Teto inicial aceitavel: <= 30.0 ms (WAN / CPU).
+    """
+
+    TARGET_MS = 15.0
+    MAX_ACCEPTABLE_MS = 30.0
+
+    def __init__(self, sample_window: int = 60):
+        self._rtt_samples: Deque[float] = collections.deque(maxlen=sample_window)
+        self._itp_samples: Deque[float] = collections.deque(maxlen=sample_window)
+
+    def record_sample(self, input_rtt_ms: float, input_to_photon_ms: float) -> None:
+        if 0.0 < input_rtt_ms < 2000.0:
+            self._rtt_samples.append(float(input_rtt_ms))
+        if 0.0 < input_to_photon_ms < 2000.0:
+            self._itp_samples.append(float(input_to_photon_ms))
+
+    def get_summary(self) -> Dict[str, object]:
+        if not self._itp_samples:
+            return {
+                "avg_rtt_ms": 0.0,
+                "avg_input_to_photon_ms": 0.0,
+                "p95_input_to_photon_ms": 0.0,
+                "grade": "IDLE",
+            }
+        ordered = sorted(self._itp_samples)
+        p95_idx = min(len(ordered) - 1, int(len(ordered) * 0.95))
+        avg_itp = sum(self._itp_samples) / len(self._itp_samples)
+        avg_rtt = sum(self._rtt_samples) / len(self._rtt_samples) if self._rtt_samples else 0.0
+        if avg_itp <= self.TARGET_MS:
+            grade = "OTIMO"
+        elif avg_itp <= self.MAX_ACCEPTABLE_MS:
+            grade = "ACEITAVEL"
+        else:
+            grade = "ALERTA"
+        return {
+            "avg_rtt_ms": round(avg_rtt, 2),
+            "avg_input_to_photon_ms": round(avg_itp, 2),
+            "p95_input_to_photon_ms": round(ordered[p95_idx], 2),
+            "grade": grade,
+        }
+

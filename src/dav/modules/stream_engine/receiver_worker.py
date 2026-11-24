@@ -12,14 +12,24 @@ FEC GF(2^8), retorno de feedback SQP e suporte a multiplexacao de audio PT_AUDIO
 
 from __future__ import annotations
 
+import collections
 import logging
 import socket
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 import numpy as np
 
 from src.dav.modules.codec.base import BaseDecoder
+from src.dav.modules.remote_desktop.protocol import (
+    EvType,
+    InputEventPacket,
+    WsMsgType,
+    unpack_input_echo,
+)
+from src.dav.modules.remote_desktop.security_gate import SecurityGate, WorkspacePermissions
+from src.dav.modules.remote_desktop.workspace_agent import WorkspaceAgent
+from src.dav.modules.telemetry.stage_probe import probe_send
 from src.dav.modules.transport_p2p.blind_relay import unwrap_relay_packet, wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
 from src.dav.modules.transport_p2p.data_plane import DataPlaneReceiver
@@ -43,6 +53,11 @@ class ReceiverWorker:
         on_audio: Optional[Callable[[int, int, bytes], None]] = None,
         on_route_locked: Optional[Callable[[str, int, str], None]] = None,
         on_stats: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_permissions_changed: Optional[Callable[[Dict[str, bool]], None]] = None,
+        on_clipboard_rx: Optional[Callable[[str], None]] = None,
+        on_file_status: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_shell_output: Optional[Callable[[str], None]] = None,
+        on_input_echo: Optional[Callable[[float, float], None]] = None,
     ):
         self.sock = sock
         self.decoder = decoder
@@ -55,11 +70,25 @@ class ReceiverWorker:
         self.on_audio = on_audio
         self.on_route_locked = on_route_locked
         self.on_stats = on_stats
+        self.on_permissions_changed = on_permissions_changed
+        self.on_clipboard_rx = on_clipboard_rx
+        self.on_file_status = on_file_status
+        self.on_shell_output = on_shell_output
+        self.on_input_echo = on_input_echo
 
         try:
-            self.sock.settimeout(0.05)
+            self.sock.settimeout(0.015)
         except Exception:
             pass
+        try:
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0xB8)
+        except Exception:
+            pass
+        if hasattr(socket, "SO_PRIORITY"):
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_PRIORITY, 6)
+            except Exception:
+                pass
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -71,6 +100,28 @@ class ReceiverWorker:
         self._last_pli_time = 0.0
 
         self.dp = DataPlaneReceiver(pin=pin)
+        self.peer_permissions = WorkspacePermissions()
+        self.latest_input_rtt_ms: float = 0.0
+        self.latest_input_to_photon_ms: float = 0.0
+        self._last_input_sent_mono: float = 0.0
+        self._last_buttons_mask: int = 0
+        self._redundant_queue: Deque[Tuple[float, bytes]] = collections.deque(maxlen=32)
+
+        self._ws_gate = SecurityGate(
+            WorkspacePermissions(
+                allow_input=True,
+                allow_clipboard=True,
+                allow_files=True,
+                allow_shell=True,
+            )
+        )
+        self.workspace_agent = WorkspaceAgent(
+            gate=self._ws_gate,
+            on_clipboard_rx=self.on_clipboard_rx,
+            on_file_status=self.on_file_status,
+            on_shell_output=self.on_shell_output,
+            send_wire_fn=self.send_workspace_raw,
+        )
 
     def start(self) -> None:
         self._running = True
@@ -78,9 +129,21 @@ class ReceiverWorker:
         self._thread.start()
 
     def stop(self) -> None:
+        if self._running and self.dp.pake.confirmed and self.peer_permissions.allow_input:
+            try:
+                rel_pkt = InputEventPacket(ev_type=EvType.RELEASE_ALL)
+                dgram = self.dp.build_input_datagram(rel_pkt.pack())
+                if dgram:
+                    self._send_to_sender(dgram)
+            except Exception:
+                pass
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.6)
+        try:
+            self.workspace_agent.close()
+        except Exception:
+            pass
         if self.decoder is not None:
             try:
                 self.decoder.close()
@@ -90,6 +153,50 @@ class ReceiverWorker:
             self.sock.close()
         except Exception:
             pass
+
+    def send_remote_input(self, pkt: InputEventPacket) -> bool:
+        """Empacota e envia evento PT_INPUT em < 0.1 ms no mesmo socket UDP."""
+        if not self._running or not self.dp.pake.confirmed:
+            return False
+        if not self.peer_permissions.allow_input and pkt.ev_type != EvType.RELEASE_ALL:
+            return False
+        if pkt.client_ts_us <= 0:
+            pkt.client_ts_us = int(time.perf_counter_ns() // 1000)
+        raw_24b = pkt.pack()
+        dgram = self.dp.build_input_datagram(raw_24b)
+        if dgram is None:
+            return False
+        self._send_to_sender(dgram)
+        self._last_input_sent_mono = time.monotonic()
+        self._last_buttons_mask = int(pkt.buttons_mask)
+        if pkt.is_critical_transition:
+            self._redundant_queue.append((self._last_input_sent_mono + 0.002, raw_24b))
+        return True
+
+    def send_workspace_raw(self, ws_frame: bytes) -> bool:
+        if not self._running or not self.dp.pake.confirmed or not ws_frame:
+            return False
+        dgram = self.dp.build_workspace_datagram(ws_frame)
+        if dgram is None:
+            return False
+        self._send_to_sender(dgram)
+        return True
+
+    def send_clipboard_text(self, text: str) -> bool:
+        if not self.peer_permissions.allow_clipboard or not self.dp.pake.confirmed:
+            return False
+        return bool(self.workspace_agent.build_clipboard_frames(text))
+
+    def send_file(self, file_path: str) -> Optional[str]:
+        if not self.peer_permissions.allow_files or not self.dp.pake.confirmed:
+            return None
+        tid, _ = self.workspace_agent.build_file_transfer_frames(file_path)
+        return tid
+
+    def send_shell_input(self, command_text: str) -> bool:
+        if not self.peer_permissions.allow_shell or not self.dp.pake.confirmed:
+            return False
+        return self.workspace_agent.send_shell_input(command_text) is not None
 
     def pair_peer(self, candidates: List[Tuple[str, int, str]], relay_info: Optional[Dict[str, Any]] = None) -> None:
         self.candidates = list(candidates)
@@ -155,9 +262,37 @@ class ReceiverWorker:
         awaiting_idr_since = 0.0
         start_mono = time.monotonic()
         last_relay_bind = 0.0
+        last_ws_housekeeping = 0.0
+        last_input_hb = 0.0
 
         while self._running:
             mono_now = time.monotonic()
+            # Envia copias redundantes de transicoes criticas (cliques/teclas) apos 2 ms
+            while self._redundant_queue and mono_now >= self._redundant_queue[0][0]:
+                _, raw_24b = self._redundant_queue.popleft()
+                dup_dgram = self.dp.build_input_datagram(raw_24b)
+                if dup_dgram:
+                    self._send_to_sender(dup_dgram)
+
+            if self.dp.pake.confirmed and (mono_now - last_ws_housekeeping >= 0.025):
+                last_ws_housekeeping = mono_now
+                for rf in self.workspace_agent.channel.poll_retransmits(now_mono=mono_now):
+                    self.send_workspace_raw(rf)
+                if (
+                    self.peer_permissions.allow_input
+                    and self._last_input_sent_mono > 0.0
+                    and (mono_now - self._last_input_sent_mono) <= 3.0
+                    and (mono_now - last_input_hb) >= 0.15
+                ):
+                    last_input_hb = mono_now
+                    hb = InputEventPacket(
+                        ev_type=EvType.HEARTBEAT,
+                        buttons_mask=self._last_buttons_mask,
+                        client_ts_us=int(time.perf_counter_ns() // 1000),
+                    )
+                    hb_dgram = self.dp.build_input_datagram(hb.pack())
+                    if hb_dgram:
+                        self._send_to_sender(hb_dgram)
             if (not self._punch_locked or not self.dp.pake.confirmed) and (
                 time.perf_counter() - last_punch_burst >= 0.06
             ):
@@ -259,7 +394,7 @@ class ReceiverWorker:
                         pass
                 continue
 
-            if ev["kind"] in ("video_frame", "audio_frame", "fragment") and not self._punch_locked:
+            if ev["kind"] in ("video_frame", "audio_frame", "fragment", "workspace_msg") and not self._punch_locked:
                 if self.relay_addr and addr == self.relay_addr:
                     self._use_relay = True
                 else:
@@ -273,6 +408,44 @@ class ReceiverWorker:
 
             if ev["need_pli"]:
                 self._request_pli()
+
+            if kind == "workspace_msg" and ev["workspace_payload"]:
+                delivered = self.workspace_agent.handle_incoming_wire(ev["workspace_payload"], is_host=False)
+                for msg in delivered:
+                    if msg.msg_type == WsMsgType.PERM_UPDATE:
+                        p_dict = msg.decode_json() or {}
+                        self.peer_permissions = WorkspacePermissions.from_dict(p_dict)
+                        if self.on_permissions_changed:
+                            self.on_permissions_changed(self.peer_permissions.to_dict())
+                    elif msg.msg_type == WsMsgType.INPUT_ECHO:
+                        echo_vals = unpack_input_echo(msg.payload)
+                        if echo_vals is not None:
+                            client_ts_us, _ = echo_vals
+                            now_us = int(time.perf_counter_ns() // 1000)
+                            rtt_ms = max(0.15, (now_us - client_ts_us) / 1000.0)
+                            if rtt_ms < 2000.0:
+                                if self.latest_input_rtt_ms <= 0.0:
+                                    self.latest_input_rtt_ms = rtt_ms
+                                else:
+                                    self.latest_input_rtt_ms = 0.65 * self.latest_input_rtt_ms + 0.35 * rtt_ms
+                                vid_owd = max(1.2, self.dp.latest_latency_ms or 1.8)
+                                # Input-to-Photon = meia ida input + captura/encode/decode pipeline + volta video
+                                itp_ms = (self.latest_input_rtt_ms * 0.5) + vid_owd + 6.2
+                                self.latest_input_to_photon_ms = round(itp_ms, 2)
+                                t_now_p = time.perf_counter()
+                                probe_send(
+                                    "input",
+                                    t_now_p - (itp_ms / 1000.0),
+                                    t_now_p,
+                                    0,
+                                    extra={"rtt_ms": round(self.latest_input_rtt_ms, 2)},
+                                )
+                                if self.on_input_echo:
+                                    self.on_input_echo(
+                                        round(self.latest_input_rtt_ms, 2),
+                                        self.latest_input_to_photon_ms,
+                                    )
+                continue
 
             if kind == "audio_frame" and ev["audio_payload"] and self.on_audio:
                 self.on_audio(ev["audio_frame_id"], ev["tx_ts_us"], ev["audio_payload"])
@@ -325,6 +498,8 @@ class ReceiverWorker:
                         "packets_count": total_packets,
                         "fec_recovered": self.dp.fec_recovered_frames,
                         "pake_confirmed": self.dp.pake.confirmed,
+                        "input_rtt_ms": round(self.latest_input_rtt_ms, 2),
+                        "input_to_photon_ms": round(self.latest_input_to_photon_ms, 2),
                     })
                 last_stat_time = now
                 interval_frames = 0

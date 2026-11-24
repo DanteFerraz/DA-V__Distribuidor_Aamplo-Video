@@ -307,3 +307,209 @@ def draw_fullscreen_corners(
         lambda qp, rc, col: _draw_fullscreen_geom(qp, rc, col, is_fullscreen=is_fullscreen),
         shadow=shadow,
     )
+
+
+def _draw_cursor_geom(p: QPainter, box: QRectF, color: QColor, *, active: bool) -> None:
+    size = min(box.width(), box.height())
+    left = box.center().x() - size * 0.5
+    top = box.center().y() - size * 0.5
+
+    arrow = QPainterPath()
+    arrow.moveTo(left + size * 0.22, top + size * 0.14)
+    arrow.lineTo(left + size * 0.22, top + size * 0.78)
+    arrow.lineTo(left + size * 0.41, top + size * 0.62)
+    arrow.lineTo(left + size * 0.54, top + size * 0.86)
+    arrow.lineTo(left + size * 0.64, top + size * 0.81)
+    arrow.lineTo(left + size * 0.51, top + size * 0.57)
+    arrow.lineTo(left + size * 0.76, top + size * 0.57)
+    arrow.closeSubpath()
+
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawPath(arrow)
+
+    if active:
+        ring_pen = QPen(color, max(1.4, size * 0.075))
+        ring_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(ring_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        rad = size * 0.16
+        c = QPointF(left + size * 0.72, top + size * 0.28)
+        p.drawArc(QRectF(c.x() - rad, c.y() - rad, rad * 2, rad * 2), -30 * 16, 240 * 16)
+    else:
+        slash_pen = QPen(color, max(1.6, size * 0.095))
+        slash_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(slash_pen)
+        p.drawLine(
+            QPointF(left + size * 0.16, top + size * 0.20),
+            QPointF(left + size * 0.84, top + size * 0.84),
+        )
+
+
+def draw_cursor_control(
+    p: QPainter,
+    box: QRectF,
+    alpha: float = 1.0,
+    active: bool = True,
+    shadow: bool = True,
+) -> None:
+    """Cursor vetorial para ativar/pausar controle remoto de mouse e teclado."""
+    _render_shadowed(
+        p,
+        box,
+        alpha,
+        lambda qp, rc, col: _draw_cursor_geom(qp, rc, col, active=active),
+        shadow=shadow,
+    )
+
+
+def _draw_check_geom(p: QPainter, box: QRectF, color: QColor) -> None:
+    size = min(box.width(), box.height())
+    left = box.center().x() - size * 0.5
+    top = box.center().y() - size * 0.5
+    pen = QPen(color, max(1.8, size * 0.14))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    path = QPainterPath()
+    path.moveTo(left + size * 0.20, top + size * 0.53)
+    path.lineTo(left + size * 0.42, top + size * 0.74)
+    path.lineTo(left + size * 0.81, top + size * 0.28)
+    p.drawPath(path)
+
+
+def draw_check(p: QPainter, box: QRectF, alpha: float = 1.0, shadow: bool = True) -> None:
+    """Marca de confirmacao (check) vetorial."""
+    _render_shadowed(p, box, alpha, _draw_check_geom, shadow=shadow)
+
+
+def _draw_chip_geom(p: QPainter, box: QRectF, color: QColor) -> None:
+    size = min(box.width(), box.height())
+    cx, cy = box.center().x(), box.center().y()
+    body_s = size * 0.56
+    body = QRectF(cx - body_s / 2, cy - body_s / 2, body_s, body_s)
+    stroke = max(1.4, size * 0.085)
+
+    pen = QPen(color, stroke)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(body, size * 0.08, size * 0.08)
+
+    core_s = size * 0.24
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawRoundedRect(QRectF(cx - core_s / 2, cy - core_s / 2, core_s, core_s), size * 0.04, size * 0.04)
+
+    p.setPen(pen)
+    pin_len = size * 0.13
+    for off in (-body_s * 0.24, body_s * 0.24):
+        p.drawLine(QPointF(cx + off, body.top() - pin_len), QPointF(cx + off, body.top()))
+        p.drawLine(QPointF(cx + off, body.bottom()), QPointF(cx + off, body.bottom() + pin_len))
+        p.drawLine(QPointF(body.left() - pin_len, cy + off), QPointF(body.left(), cy + off))
+        p.drawLine(QPointF(body.right(), cy + off), QPointF(body.right() + pin_len, cy + off))
+
+
+def draw_chip(p: QPainter, box: QRectF, alpha: float = 1.0, shadow: bool = True) -> None:
+    """Processador / GPU com pinos simetricos."""
+    _render_shadowed(p, box, alpha, _draw_chip_geom, shadow=shadow)
+
+
+def _draw_display_geom(p: QPainter, box: QRectF, color: QColor) -> None:
+    size = min(box.width(), box.height())
+    cx, cy = box.center().x(), box.center().y()
+    mw, mh = size * 0.78, size * 0.52
+    screen = QRectF(cx - mw / 2, cy - size * 0.34, mw, mh)
+    stroke = max(1.5, size * 0.09)
+    pen = QPen(color, stroke)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(screen, size * 0.07, size * 0.07)
+    p.drawLine(QPointF(cx, screen.bottom()), QPointF(cx, screen.bottom() + size * 0.16))
+    p.drawLine(
+        QPointF(cx - size * 0.22, screen.bottom() + size * 0.16),
+        QPointF(cx + size * 0.22, screen.bottom() + size * 0.16),
+    )
+
+
+def draw_display(p: QPainter, box: QRectF, alpha: float = 1.0, shadow: bool = True) -> None:
+    """Monitor / Servidor grafico (Wayland / X11 / Desktop)."""
+    _render_shadowed(p, box, alpha, _draw_display_geom, shadow=shadow)
+
+
+def _draw_shield_geom(p: QPainter, box: QRectF, color: QColor, *, checked: bool) -> None:
+    size = min(box.width(), box.height())
+    cx, cy = box.center().x(), box.center().y()
+    top = cy - size * 0.40
+    bot = cy + size * 0.42
+    hw = size * 0.34
+
+    path = QPainterPath()
+    path.moveTo(cx, top)
+    path.lineTo(cx + hw, top + size * 0.14)
+    path.quadTo(cx + hw, cy + size * 0.18, cx, bot)
+    path.quadTo(cx - hw, cy + size * 0.18, cx - hw, top + size * 0.14)
+    path.closeSubpath()
+
+    stroke = max(1.5, size * 0.09)
+    pen = QPen(color, stroke)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(path)
+
+    if checked:
+        chk = QPainterPath()
+        chk.moveTo(cx - size * 0.13, cy + size * 0.01)
+        chk.lineTo(cx - size * 0.02, cy + size * 0.13)
+        chk.lineTo(cx + size * 0.16, cy - size * 0.09)
+        p.drawPath(chk)
+
+
+def draw_shield(
+    p: QPainter,
+    box: QRectF,
+    alpha: float = 1.0,
+    checked: bool = False,
+    shadow: bool = True,
+) -> None:
+    """Escudo de seguranca / privilegio administrativo (UAC / Polkit / Firewall)."""
+    _render_shadowed(
+        p,
+        box,
+        alpha,
+        lambda qp, rc, col: _draw_shield_geom(qp, rc, col, checked=checked),
+        shadow=shadow,
+    )
+
+
+def _draw_alert_geom(p: QPainter, box: QRectF, color: QColor) -> None:
+    size = min(box.width(), box.height())
+    cx, cy = box.center().x(), box.center().y()
+    tri = QPainterPath()
+    tri.moveTo(cx, cy - size * 0.38)
+    tri.lineTo(cx + size * 0.40, cy + size * 0.34)
+    tri.lineTo(cx - size * 0.40, cy + size * 0.34)
+    tri.closeSubpath()
+
+    stroke = max(1.5, size * 0.09)
+    pen = QPen(color, stroke)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(tri)
+    p.drawLine(QPointF(cx, cy - size * 0.10), QPointF(cx, cy + size * 0.10))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawEllipse(QPointF(cx, cy + size * 0.23), stroke * 0.65, stroke * 0.65)
+
+
+def draw_alert(p: QPainter, box: QRectF, alpha: float = 1.0, shadow: bool = True) -> None:
+    """Triangulo de alerta vetorial."""
+    _render_shadowed(p, box, alpha, _draw_alert_geom, shadow=shadow)

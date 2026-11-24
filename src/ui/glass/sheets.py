@@ -19,11 +19,13 @@ from src.dav.modules.capture.service import enumerate_system_monitors
 from src.ui.qt_compat import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -159,6 +161,9 @@ class SettingsSheet(BaseOverlaySheet):
     export_logs_requested = Signal()
     check_update_requested = Signal()
     about_requested = Signal()
+    remote_perms_changed = Signal(dict)
+    admin_elevation_requested = Signal()
+    panic_revoke_requested = Signal()
 
     def __init__(
         self,
@@ -369,6 +374,39 @@ class SettingsSheet(BaseOverlaySheet):
 
         lay.addWidget(opts_group)
 
+        perm_group = QGroupBox("Compartilhamento de Área de Trabalho (Permissões do Convidado)")
+        perm_lay = QVBoxLayout(perm_group)
+        perm_lay.setSpacing(8)
+
+        self.chk_allow_input = QCheckBox("Permitir Controle de Mouse e Teclado Remoto")
+        self.chk_allow_input.setChecked(False)
+        self.chk_allow_input.toggled.connect(self._emit_remote_perms)
+        perm_lay.addWidget(self.chk_allow_input)
+
+        self.chk_allow_clip_files = QCheckBox("Permitir Área de Transferência (Clipboard) e Envio de Arquivos P2P")
+        self.chk_allow_clip_files.setChecked(False)
+        self.chk_allow_clip_files.toggled.connect(self._emit_remote_perms)
+        perm_lay.addWidget(self.chk_allow_clip_files)
+
+        self.chk_allow_shell = QCheckBox("Permitir Terminal Remoto Persistente (PTY / PowerShell)")
+        self.chk_allow_shell.setChecked(False)
+        self.chk_allow_shell.toggled.connect(self._emit_remote_perms)
+        perm_lay.addWidget(self.chk_allow_shell)
+
+        perm_btns = QHBoxLayout()
+        perm_btns.setSpacing(10)
+        self.btn_sheet_admin = QPushButton("Autorizar Privilégio Admin (UAC / Polkit)")
+        self.btn_sheet_admin.clicked.connect(self.admin_elevation_requested.emit)
+        perm_btns.addWidget(self.btn_sheet_admin, stretch=1)
+
+        self.btn_panic_revoke = QPushButton("Revogar Controle Agora (Ctrl+Alt+Shift+Esc)")
+        self.btn_panic_revoke.setObjectName("stopBtn")
+        self.btn_panic_revoke.clicked.connect(self.panic_revoke_requested.emit)
+        perm_btns.addWidget(self.btn_panic_revoke, stretch=1)
+        perm_lay.addLayout(perm_btns)
+
+        lay.addWidget(perm_group)
+
         ctrl_group = QGroupBox("Estado e Estatísticas de Saída")
         ctrl_lay = QVBoxLayout(ctrl_group)
         ctrl_lay.setSpacing(10)
@@ -510,18 +548,170 @@ class SettingsSheet(BaseOverlaySheet):
         self.lbl_my_pin.setText(f"Meu PIN P2P: {pin}")
         self.txt_send_pin.setText(pin)
 
+    def _emit_remote_perms(self, _checked: bool = False) -> None:
+        clip_files = self.chk_allow_clip_files.isChecked()
+        self.remote_perms_changed.emit({
+            "allow_input": self.chk_allow_input.isChecked(),
+            "allow_clipboard": clip_files,
+            "allow_files": clip_files,
+            "allow_shell": self.chk_allow_shell.isChecked(),
+        })
 
-class StatsSheet(BaseOverlaySheet):
-    """Folha de telemetria e diagnostico: TUPA, Dispositivos LAN e Registros."""
+    def sync_remote_permissions(self, perms: dict) -> None:
+        for chk, val in (
+            (self.chk_allow_input, bool(perms.get("allow_input", False))),
+            (
+                self.chk_allow_clip_files,
+                bool(perms.get("allow_clipboard", False) or perms.get("allow_files", False)),
+            ),
+            (self.chk_allow_shell, bool(perms.get("allow_shell", False))),
+        ):
+            chk.blockSignals(True)
+            chk.setChecked(val)
+            chk.blockSignals(False)
+        is_admin = bool(perms.get("admin_elevated", False))
+        if is_admin:
+            self.btn_sheet_admin.setText("Privilégio Admin Ativo (UAC / Polkit)")
+            self.btn_sheet_admin.setEnabled(False)
+        else:
+            self.btn_sheet_admin.setText("Autorizar Privilégio Admin (UAC / Polkit)")
+            self.btn_sheet_admin.setEnabled(True)
+
+
+class RemoteWorkspaceView(QWidget):
+    """Painel de Area de Trabalho Remota (Envio P2P de Arquivos e Terminal Persistente)."""
+
+    shell_command_submitted = Signal(str)
+    send_file_requested = Signal(str)
 
     def __init__(self, parent=None):
-        super().__init__(["Telemetria", "Dispositivos", "Registros"], parent=parent)
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(12)
+
+        status_group = QGroupBox("Estado da Sessão Interativa e Transferência Direta P2P")
+        st_lay = QVBoxLayout(status_group)
+        st_lay.setSpacing(8)
+
+        top_row = QHBoxLayout()
+        self.lbl_perm_summary = QLabel("Permissões do Host: Somente Visualização (View-Only)")
+        self.lbl_perm_summary.setStyleSheet(f"font-weight: 700; color: {T.SHEET_TEXT_DIM};")
+        top_row.addWidget(self.lbl_perm_summary)
+        top_row.addStretch(1)
+
+        self.btn_send_file = QPushButton("Enviar Arquivo P2P...")
+        self.btn_send_file.setEnabled(False)
+        self.btn_send_file.clicked.connect(self._pick_file)
+        top_row.addWidget(self.btn_send_file)
+        st_lay.addLayout(top_row)
+
+        self.lbl_file_status = QLabel(
+            "Dica: Você também pode arrastar e soltar arquivos diretamente sobre o vídeo quando autorizado."
+        )
+        self.lbl_file_status.setWordWrap(True)
+        self.lbl_file_status.setStyleSheet(f"color: {T.SHEET_TEXT_DIM};")
+        st_lay.addWidget(self.lbl_file_status)
+        lay.addWidget(status_group)
+
+        term_group = QGroupBox("Terminal Remoto Persistente (LTSP PTY / PowerShell)")
+        term_lay = QVBoxLayout(term_group)
+        term_lay.setSpacing(8)
+
+        self.txt_shell_out = QPlainTextEdit()
+        self.txt_shell_out.setReadOnly(True)
+        self.txt_shell_out.setPlaceholderText(
+            "O terminal remoto fica disponível assim que o Transmissor habilitar 'Permitir Terminal Remoto Persistente'."
+        )
+        term_lay.addWidget(self.txt_shell_out, stretch=1)
+
+        cmd_row = QHBoxLayout()
+        cmd_row.setSpacing(8)
+        self.txt_shell_in = QLineEdit()
+        self.txt_shell_in.setPlaceholderText("Digite um comando remoto e pressione Enter...")
+        self.txt_shell_in.setEnabled(False)
+        self.txt_shell_in.returnPressed.connect(self._submit_cmd)
+        cmd_row.addWidget(self.txt_shell_in, stretch=1)
+
+        self.btn_shell_run = QPushButton("Executar")
+        self.btn_shell_run.setEnabled(False)
+        self.btn_shell_run.clicked.connect(self._submit_cmd)
+        cmd_row.addWidget(self.btn_shell_run)
+        term_lay.addLayout(cmd_row)
+
+        lay.addWidget(term_group, stretch=1)
+
+    def _pick_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Selecionar Arquivo para Enviar via P2P")
+        if path:
+            self.send_file_requested.emit(path)
+
+    def _submit_cmd(self) -> None:
+        cmd = self.txt_shell_in.text()
+        if not cmd.strip():
+            return
+        self.txt_shell_in.clear()
+        self.append_shell_output(f"$ {cmd}\n")
+        self.shell_command_submitted.emit(cmd + "\n")
+
+    def update_peer_permissions(self, perms: dict) -> None:
+        parts = []
+        if perms.get("allow_input"):
+            parts.append("Mouse/Teclado")
+        if perms.get("allow_files") or perms.get("allow_clipboard"):
+            parts.append("Clipboard/Arquivos")
+        if perms.get("allow_shell"):
+            parts.append("Terminal PTY")
+        if perms.get("admin_elevated"):
+            parts.append("Admin")
+        if parts:
+            self.lbl_perm_summary.setText(f"Permissões Ativas: {' · '.join(parts)}")
+            self.lbl_perm_summary.setStyleSheet("font-weight: 700; color: #86efac;")
+        else:
+            self.lbl_perm_summary.setText("Permissões do Host: Somente Visualização (View-Only)")
+            self.lbl_perm_summary.setStyleSheet(f"font-weight: 700; color: {T.SHEET_TEXT_DIM};")
+
+        allow_files = bool(perms.get("allow_files"))
+        allow_shell = bool(perms.get("allow_shell"))
+        self.btn_send_file.setEnabled(allow_files)
+        self.txt_shell_in.setEnabled(allow_shell)
+        self.btn_shell_run.setEnabled(allow_shell)
+
+    def update_file_status(self, info: dict) -> None:
+        stage = info.get("stage", "")
+        fname = info.get("filename", "arquivo")
+        if stage == "completed":
+            self.lbl_file_status.setText(f"Transferência concluída com verificação SHA-256: ~/Downloads/DA-V/{fname}")
+            self.lbl_file_status.setStyleSheet("color: #86efac; font-weight: 600;")
+        elif stage == "error":
+            self.lbl_file_status.setText(f"Erro na transferência de {fname}: {info.get('error', 'falha')}")
+            self.lbl_file_status.setStyleSheet("color: #fca5a5; font-weight: 600;")
+        else:
+            pct = info.get("progress", 0.0)
+            self.lbl_file_status.setText(f"Transferindo {fname}... ({pct:.0f}%)")
+            self.lbl_file_status.setStyleSheet(f"color: {T.SHEET_TEXT};")
+
+    def append_shell_output(self, text: str) -> None:
+        if not text:
+            return
+        self.txt_shell_out.moveCursor(self.txt_shell_out.textCursor().MoveOperation.End)
+        self.txt_shell_out.insertPlainText(text)
+        self.txt_shell_out.moveCursor(self.txt_shell_out.textCursor().MoveOperation.End)
+
+
+class StatsSheet(BaseOverlaySheet):
+    """Folha de telemetria, dispositivos, area de trabalho remota e diagnostico."""
+
+    def __init__(self, parent=None):
+        super().__init__(["Telemetria", "Dispositivos", "Terminal", "Registros"], parent=parent)
         self.view_tupa = TupaView(self.stack)
         self.view_discovery = DiscoveryView(self.stack)
+        self.view_workspace = RemoteWorkspaceView(self.stack)
         self.view_troubleshoot = TroubleshootView(self.stack)
 
         self.stack.addWidget(self.view_tupa)
         self.stack.addWidget(self.view_discovery)
+        self.stack.addWidget(self.view_workspace)
         self.stack.addWidget(self.view_troubleshoot)
         self.set_ui_scale(1.0)
 

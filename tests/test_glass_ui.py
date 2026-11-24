@@ -203,6 +203,13 @@ def test_shadowed_vector_icons_and_overlay_controls():
         lambda qp, b: icons.draw_speaker(qp, b, muted=True),
         lambda qp, b: icons.draw_fullscreen_corners(qp, b, is_fullscreen=False),
         lambda qp, b: icons.draw_fullscreen_corners(qp, b, is_fullscreen=True),
+        lambda qp, b: icons.draw_cursor_control(qp, b, active=True),
+        lambda qp, b: icons.draw_cursor_control(qp, b, active=False),
+        icons.draw_check,
+        icons.draw_chip,
+        icons.draw_display,
+        lambda qp, b: icons.draw_shield(qp, b, checked=True),
+        icons.draw_alert,
     ):
         fn(p, box)
     p.end()
@@ -223,6 +230,11 @@ def test_shadowed_vector_icons_and_overlay_controls():
         assert ctrl._zone_at(r_audio.center()) == ctrl.ZONE_AUDIO
         assert ctrl._zone_at(r_fs.center()) == ctrl.ZONE_FULLSCREEN
         assert ctrl._zone_at(QPointF(-10, -10)) == -1
+
+        ctrl.set_remote_visible(True)
+        ctrl.set_remote_state(True, True)
+        r_rem = ctrl._zone_rect(ctrl.ZONE_REMOTE)
+        assert ctrl._zone_at(r_rem.center()) == ctrl.ZONE_REMOTE
     finally:
         ctrl.close()
         ctrl.deleteLater()
@@ -325,3 +337,54 @@ def test_no_emojis_in_glass_ui():
         with open(path, "r", encoding="utf-8") as fh:
             content = fh.read()
         assert not emoji_re.search(content), f"Emoji detectado em {path}"
+
+
+def test_interactive_switch_and_glass_installers(monkeypatch):
+    monkeypatch.setenv("DAV_INSTALLER_DRY_RUN", "1")
+    monkeypatch.setenv("DAV_HEADLESS_SYNTHETIC", "1")
+
+    sender = SenderHomePage()
+    from scripts.dav_installer_linux import DavModernLinuxInstaller
+
+    inst_dialogs = [DavModernLinuxInstaller()]
+    if os.name == "nt":
+        from scripts.dav_installer_win import DavModernInstaller
+
+        inst_dialogs.append(DavModernInstaller())
+
+    try:
+        toggled_vals = []
+        sender.interactive_toggled.connect(toggled_vals.append)
+        assert not sender.switch_interactive.isChecked()
+        assert not sender.btn_admin_privilege.isVisible()
+
+        sender.switch_interactive.toggle()
+        assert toggled_vals == [True]
+        assert sender.switch_interactive.isChecked()
+        assert not sender.btn_admin_privilege.isHidden()
+
+        sender.set_interactive_state(True, admin_elevated=True)
+        assert not sender.btn_admin_privilege.isEnabled()
+        sender.resize(1280, 740)
+        assert not sender.grab().isNull()
+
+        for dlg in inst_dialogs:
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            dlg.resize(900, 560)
+            dlg.show()
+            app.processEvents()
+            for step_idx in (0, 1, 2, 3):
+                dlg.current_step = step_idx
+                dlg._update_step_view()
+                app.processEvents()
+                pix = dlg.grab()
+                assert not pix.isNull()
+            dlg.resize(820, 520)
+            app.processEvents()
+    finally:
+        sender.close()
+        sender.deleteLater()
+        for dlg in inst_dialogs:
+            dlg.close()
+            dlg.deleteLater()
+        app.processEvents()

@@ -18,6 +18,32 @@ from src.ui.glass import tokens as T
 _FAMILIES = ",".join(f"'{f}'" if " " in f else f for f in T.FONT_FAMILIES)
 
 
+def apply_glass_app_theme(app) -> None:
+    """Fixa estilo Fusion e paleta escura petrol-glass para imunizar Qt6 contra temas claros (GNOME/Adwaita)."""
+    try:
+        from PySide6.QtGui import QColor, QPalette
+
+        app.setStyle("Fusion")
+        pal = QPalette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#094a60"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#062634"))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#0b3547"))
+        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#0c465a"))
+        pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(255, 255, 255, 145))
+        pal.setColor(QPalette.ColorRole.Button, QColor("#0e4a5e"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.BrightText, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#38bdf8"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#041e2b"))
+        pal.setColor(QPalette.ColorRole.Link, QColor("#7dd3fc"))
+        app.setPalette(pal)
+    except Exception:
+        pass
+
+
 def sheet_qss(scale: float = 1.0) -> str:
     fs = max(12, int(round(19 * scale)))        # tipografia técnica limpa (13px em 1280px)
     fs_small = max(11, int(round(16 * scale)))

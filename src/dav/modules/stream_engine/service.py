@@ -40,6 +40,11 @@ import numpy as np
 
 from src.dav.kernel.contracts import (
     EVENT_AUDIO_FRAME_RX,
+    EVENT_REMOTE_CLIPBOARD,
+    EVENT_REMOTE_FILE_STATUS,
+    EVENT_REMOTE_INPUT_METRICS,
+    EVENT_REMOTE_PERM_CHANGED,
+    EVENT_REMOTE_SHELL_OUTPUT,
     EVENT_STREAM_ROUTE_LOCKED,
     EVENT_STREAM_STATS,
     EVENT_STREAM_STOPPED,
@@ -50,6 +55,9 @@ from src.dav.kernel.result import ServiceResult
 from src.dav.modules.audio.service import AudioService
 from src.dav.modules.capture.service import CaptureService
 from src.dav.modules.codec.service import CodecService
+from src.dav.modules.remote_desktop.elevation import is_process_elevated
+from src.dav.modules.remote_desktop.security_gate import WorkspacePermissions
+from src.dav.modules.remote_desktop.service import RemoteDesktopService
 from src.dav.modules.stream_engine.receiver_worker import ReceiverWorker
 from src.dav.modules.stream_engine.sender_worker import SenderWorker
 from src.dav.modules.stream_engine.subprocess_sender import run_sender_subprocess
@@ -118,12 +126,15 @@ class StreamEngineService:
         self.codec_service = codec_service or CodecService()
         self.transport_service = transport_service or TransportService()
         self.audio_service = audio_service or AudioService()
+        self.remote_desktop_service = RemoteDesktopService()
 
         self._sender: Optional[SenderWorker] = None
         self._receiver: Optional[ReceiverWorker] = None
         self._current_role: Optional[str] = None
         self._active_route: Optional[Dict[str, Any]] = None
         self._latest_stats: Dict[str, Any] = {}
+        self._remote_perms = WorkspacePermissions(admin_elevated=is_process_elevated())
+        self._peer_remote_perms = WorkspacePermissions()
 
         # Estado de subprocesso TX e socket preparado RX (fluxo desktop GIL-free)
         self._dll = None
@@ -225,6 +236,8 @@ class StreamEngineService:
         relay_addr: Optional[Tuple[str, int]] = None,
         codec_type: str = "h264_nvenc",
         audio_enabled: bool = False,
+        input_injector: Optional[Any] = None,
+        initial_permissions: Optional[Dict[str, bool]] = None,
     ) -> ServiceResult[Dict[str, Any]]:
         """Inicia uma sessao de transmissao em thread via `SenderWorker`."""
         if self.is_transmitting or self.is_receiving:
@@ -269,6 +282,15 @@ class StreamEngineService:
             self._latest_stats = stats
             self.bus.publish(EVENT_STREAM_STATS, stats)
 
+        def _on_remote_evt(kind: str, payload: Any) -> None:
+            if kind == "permissions":
+                self.bus.publish(EVENT_REMOTE_PERM_CHANGED, payload)
+            elif kind == "clipboard":
+                self.bus.publish(EVENT_REMOTE_CLIPBOARD, payload)
+            elif kind == "file_status":
+                self.bus.publish(EVENT_REMOTE_FILE_STATUS, payload)
+
+        eff_perms = initial_permissions if initial_permissions is not None else self._remote_perms.to_dict()
         sender = SenderWorker(
             sock=sock,
             capturer=capturer,
@@ -283,6 +305,9 @@ class StreamEngineService:
             audio_capturer=audio_cap,
             audio_encoder=audio_enc,
             audio_enabled=audio_enabled,
+            input_injector=input_injector,
+            initial_permissions=eff_perms,
+            on_remote_event=_on_remote_evt,
         )
         sender.start()
         self._sender = sender
@@ -343,6 +368,25 @@ class StreamEngineService:
             self._latest_stats = stats
             self.bus.publish(EVENT_STREAM_STATS, stats)
 
+        def _on_perm_rx(perms_dict: Dict[str, bool]) -> None:
+            self._peer_remote_perms = WorkspacePermissions.from_dict(perms_dict)
+            self.bus.publish(EVENT_REMOTE_PERM_CHANGED, perms_dict)
+
+        def _on_clip_rx(txt: str) -> None:
+            self.bus.publish(EVENT_REMOTE_CLIPBOARD, txt)
+
+        def _on_file_rx(st: Dict[str, Any]) -> None:
+            self.bus.publish(EVENT_REMOTE_FILE_STATUS, st)
+
+        def _on_shell_rx(out: str) -> None:
+            self.bus.publish(EVENT_REMOTE_SHELL_OUTPUT, out)
+
+        def _on_echo_rx(rtt_ms: float, itp_ms: float) -> None:
+            self.bus.publish(
+                EVENT_REMOTE_INPUT_METRICS,
+                {"input_rtt_ms": rtt_ms, "input_to_photon_ms": itp_ms},
+            )
+
         receiver = ReceiverWorker(
             sock=sock,
             decoder=decoder,
@@ -353,6 +397,11 @@ class StreamEngineService:
             on_audio=_on_audio,
             on_route_locked=_on_route_locked,
             on_stats=_on_stats,
+            on_permissions_changed=_on_perm_rx,
+            on_clipboard_rx=_on_clip_rx,
+            on_file_status=_on_file_rx,
+            on_shell_output=_on_shell_rx,
+            on_input_echo=_on_echo_rx,
         )
         receiver.start()
         self._receiver = receiver
@@ -447,8 +496,8 @@ class StreamEngineService:
         target_fps = fps if fps > 0 else 60
         ctx = mp.get_context("spawn")
         self._sender_stats_queue = ctx.Queue(maxsize=16)
-        self._sender_cmd_queue = ctx.Queue(maxsize=16)
-        self._sender_evt_queue = ctx.Queue(maxsize=16)
+        self._sender_cmd_queue = ctx.Queue(maxsize=64)
+        self._sender_evt_queue = ctx.Queue(maxsize=64)
         self._sender_stop_event = ctx.Event()
 
         self._sender_process = ctx.Process(
@@ -471,6 +520,7 @@ class StreamEngineService:
                 self._sender_evt_queue,
                 bind_port,
                 audio_enabled,
+                self._remote_perms.to_dict(),
             ),
         )
         self._sender_process.start()
@@ -513,6 +563,13 @@ class StreamEngineService:
                         self.bus.publish(EVENT_STREAM_ROUTE_LOCKED, self._active_route)
                         if self._user_p2p_event_callback:
                             self._user_p2p_event_callback(evt[1], evt[2], evt[3])
+                    elif evt[0] == "REMOTE_PERMS":
+                        self._remote_perms = WorkspacePermissions.from_dict(evt[1])
+                        self.bus.publish(EVENT_REMOTE_PERM_CHANGED, evt[1])
+                    elif evt[0] == "REMOTE_CLIPBOARD":
+                        self.bus.publish(EVENT_REMOTE_CLIPBOARD, evt[1])
+                    elif evt[0] == "REMOTE_FILE_STATUS":
+                        self.bus.publish(EVENT_REMOTE_FILE_STATUS, evt[1])
                     elif evt[0] == "log":
                         if self._user_log_callback:
                             try:
@@ -699,6 +756,26 @@ class StreamEngineService:
                 "payload": audio_payload,
             })
 
+        def _on_perm_desk(perms_dict: Dict[str, bool]) -> None:
+            self._peer_remote_perms = WorkspacePermissions.from_dict(perms_dict)
+            self.bus.publish(EVENT_REMOTE_PERM_CHANGED, perms_dict)
+
+        def _on_clip_desk(txt: str) -> None:
+            self.bus.publish(EVENT_REMOTE_CLIPBOARD, txt)
+
+        def _on_file_desk(st: Dict[str, Any]) -> None:
+            self.bus.publish(EVENT_REMOTE_FILE_STATUS, st)
+
+        def _on_shell_desk(out: str) -> None:
+            self.bus.publish(EVENT_REMOTE_SHELL_OUTPUT, out)
+
+        def _on_echo_desk(rtt_ms: float, itp_ms: float) -> None:
+            self.bus.publish(
+                EVENT_REMOTE_INPUT_METRICS,
+                {"input_rtt_ms": rtt_ms, "input_to_photon_ms": itp_ms},
+            )
+
+        self._peer_remote_perms = WorkspacePermissions()
         receiver = ReceiverWorker(
             sock=sock,
             decoder=None,
@@ -709,12 +786,113 @@ class StreamEngineService:
             on_audio=_on_audio,
             on_route_locked=_on_route_locked,
             on_stats=_on_stats,
+            on_permissions_changed=_on_perm_desk,
+            on_clipboard_rx=_on_clip_desk,
+            on_file_status=_on_file_desk,
+            on_shell_output=_on_shell_desk,
+            on_input_echo=_on_echo_desk,
         )
         receiver.start()
         self._receiver = receiver
         self._fallback_running = True
         self._current_role = "receiver"
         return True
+
+    def set_remote_permissions(self, **perms: bool) -> Dict[str, bool]:
+        for k in ("allow_input", "allow_clipboard", "allow_files", "allow_shell", "admin_elevated"):
+            if k in perms and perms[k] is not None:
+                setattr(self._remote_perms, k, bool(perms[k]))
+        snap = self._remote_perms.to_dict()
+        if self._sender is not None:
+            snap = self._sender.set_remote_permissions(**snap)
+        if self._sender_cmd_queue is not None:
+            try:
+                self._sender_cmd_queue.put_nowait(("SET_REMOTE_PERMS", snap))
+            except Exception:
+                pass
+        self.bus.publish(EVENT_REMOTE_PERM_CHANGED, snap)
+        return snap
+
+    def get_remote_permissions(self) -> Dict[str, bool]:
+        return self._remote_perms.to_dict()
+
+    def get_peer_remote_permissions(self) -> Dict[str, bool]:
+        return self._peer_remote_perms.to_dict()
+
+    def panic_revoke_remote(self) -> Dict[str, bool]:
+        self._remote_perms.allow_input = False
+        self._remote_perms.allow_clipboard = False
+        self._remote_perms.allow_files = False
+        self._remote_perms.allow_shell = False
+        snap = self._remote_perms.to_dict()
+        if self._sender is not None:
+            snap = self._sender.panic_revoke_remote()
+        if self._sender_cmd_queue is not None:
+            try:
+                self._sender_cmd_queue.put_nowait(("PANIC_REVOKE_REMOTE",))
+            except Exception:
+                pass
+        self.bus.publish(EVENT_REMOTE_PERM_CHANGED, snap)
+        return snap
+
+    def is_remote_admin_elevated(self) -> bool:
+        return bool(self._remote_perms.admin_elevated or self.remote_desktop_service.is_admin_elevated())
+
+    def request_remote_admin_elevation(
+        self,
+        launcher_fn: Optional[Callable] = None,
+    ) -> ServiceResult[bool]:
+        if self._sender_cmd_queue is not None and self._sender_process is not None and self._sender_process.is_alive():
+            try:
+                self._sender_cmd_queue.put_nowait(("ELEVATE_REMOTE_ADMIN",))
+                return ServiceResult.ok(True)
+            except Exception as exc:
+                return ServiceResult.fail(str(exc))
+
+        res = self.remote_desktop_service.request_admin_elevation(launcher_fn=launcher_fn)
+        if not res.is_success or res.data is None:
+            return ServiceResult.fail(res.error or "Elevacao cancelada.")
+        self._remote_perms.admin_elevated = True
+        if self._sender is not None:
+            self._sender.set_input_injector(res.data)
+        self.bus.publish(EVENT_REMOTE_PERM_CHANGED, self._remote_perms.to_dict())
+        return ServiceResult.ok(True)
+
+    def send_remote_input(self, pkt: Any) -> bool:
+        if self._receiver is not None:
+            return self._receiver.send_remote_input(pkt)
+        return False
+
+    def send_clipboard_text(self, text: str) -> bool:
+        if self._receiver is not None:
+            return self._receiver.send_clipboard_text(text)
+        if self._sender is not None:
+            return self._sender.send_clipboard_text(text)
+        if self._sender_cmd_queue is not None and self._remote_perms.allow_clipboard:
+            try:
+                self._sender_cmd_queue.put_nowait(("SEND_CLIPBOARD", str(text)))
+                return True
+            except Exception:
+                return False
+        return False
+
+    def send_file(self, file_path: str) -> Optional[str]:
+        if self._receiver is not None:
+            return self._receiver.send_file(file_path)
+        if self._sender is not None:
+            return self._sender.send_file(file_path)
+        if self._sender_cmd_queue is not None and self._remote_perms.allow_files:
+            try:
+                self._sender_cmd_queue.put_nowait(("SEND_FILE", str(file_path)))
+                return "queued"
+            except Exception:
+                return None
+        return None
+
+    def send_shell_input(self, command_text: str) -> bool:
+        if self._receiver is not None:
+            return self._receiver.send_shell_input(command_text)
+        return False
 
     def stop(self) -> None:
         self._close_prepared_recv_sock()

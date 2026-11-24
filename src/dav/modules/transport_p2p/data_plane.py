@@ -36,7 +36,9 @@ from src.dav.modules.transport_p2p.packetizer import (
     PT_AUDIO,
     PT_CONTROL,
     PT_FEC,
+    PT_INPUT,
     PT_VIDEO,
+    PT_WORKSPACE,
     pack_datagram,
     split_chunks,
     unpack_and_decrypt,
@@ -69,9 +71,11 @@ class DataPlaneSender:
 
         self._video_seq = 0
         self._audio_seq = 0
+        self._ws_seq = 0
         self._seq_lock = threading.Lock()
         self._video_frame_id = 0
         self._audio_frame_id = 0
+        self._ws_frame_id = 0
         self.fec_shards_sent = 0
         self.last_fec_parity_m = 0
 
@@ -85,6 +89,11 @@ class DataPlaneSender:
             self._audio_seq += 1
             return self._audio_seq
 
+    def _next_ws_seq(self) -> int:
+        with self._seq_lock:
+            self._ws_seq += 1
+            return self._ws_seq
+
     def build_pake_syn(self) -> bytes:
         return self.pake.build_syn()
 
@@ -93,10 +102,12 @@ class DataPlaneSender:
 
     def handle_incoming_packet(self, pkt: bytes) -> Tuple[str, Optional[bytes]]:
         """
-        Trata pacotes de controle recebidos pelo Transmissor:
+        Trata pacotes de controle e area de trabalho recebidos pelo Transmissor:
         - Handshake PAKE (`SYN2`/`ACK2`)
         - Pacote AEAD `PT_CONTROL` (`DAV_SQP1` SQP_ACK)
-        Retorna (evento, resposta_opcional).
+        - Pacote AEAD `PT_INPUT` (24B HID input)
+        - Pacote AEAD `PT_WORKSPACE` (ARQ / Clipboard / Arquivos / PTY)
+        Retorna (evento, payload_ou_resposta_opcional).
         """
         if pkt.startswith(MAGIC_PAKE_SYN) or pkt.startswith(MAGIC_PAKE_ACK):
             valid, reply_ack, newly_confirmed = self.pake.process_control(pkt)
@@ -114,12 +125,40 @@ class DataPlaneSender:
                 # Confirma implicitamente PAKE se o RX ja enviou trafego autenticado valido
                 if not self.pake.confirmed:
                     self.pake.confirmed = True
+                if hdr.payload_type == PT_INPUT:
+                    return "remote_input", plaintext
+                if hdr.payload_type == PT_WORKSPACE:
+                    return "workspace_msg", plaintext
                 if hdr.payload_type == PT_CONTROL:
                     sqp_ack = SqpAckData.unpack(plaintext)
                     if sqp_ack is not None:
                         self.sqp.on_sqp_ack(sqp_ack)
                         return "sqp_ack", None
         return "other", None
+
+    def send_workspace_datagram(self, ws_bytes: bytes, frame_id: int = 0) -> bool:
+        """Empacota mensagem PT_WORKSPACE autenticada via AEAD na fila prioritaria."""
+        cipher = self.pake.cipher
+        if cipher is None or not self.pake.confirmed or not ws_bytes:
+            return False
+        with self._seq_lock:
+            self._ws_frame_id += 1
+            eff_fid = frame_id if frame_id > 0 else self._ws_frame_id
+            seq = self._ws_seq + 1
+            self._ws_seq = seq
+        pkt = pack_datagram(
+            PT_WORKSPACE,
+            ws_bytes,
+            frame_id=eff_fid,
+            seq_num=seq,
+            frag_idx=0,
+            frag_tot=1,
+            flags=0,
+            aead_cipher=cipher,
+        )
+        self.pacer.enqueue_high_priority(pkt)
+        self.pacer.flush_high_priority()
+        return True
 
     def allocate_budget(self, audio_reserved_bytes: int = 240) -> FrameBudget:
         return self.sqp.allocate_frame_budget(audio_reserved_bytes=audio_reserved_bytes)
@@ -247,6 +286,9 @@ class DataPlaneReceiver:
         self._completed_ids: Deque[int] = collections.deque(maxlen=128)
         self._completed_set = set()
         self._ack_seq = 0
+        self._input_seq = 0
+        self._ws_seq = 0
+        self._tx_lock = threading.Lock()
 
         self.fec_recovered_frames = 0
         self.auth_failures = 0
@@ -263,6 +305,46 @@ class DataPlaneReceiver:
     def build_pake_ack(self) -> Optional[bytes]:
         return self.pake.build_ack()
 
+    def build_input_datagram(self, input_bytes: bytes, event_id: int = 0) -> Optional[bytes]:
+        """Constroi datagrama PT_INPUT autenticado via AEAD (thread-safe)."""
+        cipher = self.pake.cipher
+        if cipher is None or not input_bytes:
+            return None
+        with self._tx_lock:
+            self._input_seq += 1
+            seq = self._input_seq
+            eff_fid = event_id if event_id > 0 else seq
+        return pack_datagram(
+            PT_INPUT,
+            input_bytes,
+            frame_id=eff_fid,
+            seq_num=seq,
+            frag_idx=0,
+            frag_tot=1,
+            flags=0,
+            aead_cipher=cipher,
+        )
+
+    def build_workspace_datagram(self, ws_bytes: bytes, msg_id: int = 0) -> Optional[bytes]:
+        """Constroi datagrama PT_WORKSPACE autenticado via AEAD (thread-safe)."""
+        cipher = self.pake.cipher
+        if cipher is None or not ws_bytes:
+            return None
+        with self._tx_lock:
+            self._ws_seq += 1
+            seq = self._ws_seq
+            eff_fid = msg_id if msg_id > 0 else seq
+        return pack_datagram(
+            PT_WORKSPACE,
+            ws_bytes,
+            frame_id=eff_fid,
+            seq_num=seq,
+            frag_idx=0,
+            frag_tot=1,
+            flags=0,
+            aead_cipher=cipher,
+        )
+
     def _mark_completed(self, frame_id: int) -> None:
         if len(self._completed_ids) == self._completed_ids.maxlen:
             old = self._completed_ids.popleft()
@@ -274,12 +356,14 @@ class DataPlaneReceiver:
         cipher = self.pake.cipher
         if cipher is None:
             return None
-        self._ack_seq += 1
+        with self._tx_lock:
+            self._ack_seq += 1
+            seq = self._ack_seq
         return pack_datagram(
             PT_CONTROL,
             ack_data.pack(),
             frame_id=ack_data.last_frame_id,
-            seq_num=self._ack_seq,
+            seq_num=seq,
             frag_idx=0,
             frag_tot=1,
             flags=0,
@@ -317,6 +401,7 @@ class DataPlaneReceiver:
             "audio_payload": None,
             "audio_frame_id": 0,
             "audio_lbrr": False,
+            "workspace_payload": None,
         }
 
         if raw_pkt.startswith(MAGIC_PAKE_SYN) or raw_pkt.startswith(MAGIC_PAKE_ACK):
@@ -346,6 +431,12 @@ class DataPlaneReceiver:
             res["audio_payload"] = plaintext
             res["audio_frame_id"] = hdr.frame_id
             res["audio_lbrr"] = hdr.has_audio_lbrr
+            res["tx_ts_us"] = hdr.timestamp_us
+            return res
+
+        if hdr.payload_type == PT_WORKSPACE:
+            res["kind"] = "workspace_msg"
+            res["workspace_payload"] = plaintext
             res["tx_ts_us"] = hdr.timestamp_us
             return res
 

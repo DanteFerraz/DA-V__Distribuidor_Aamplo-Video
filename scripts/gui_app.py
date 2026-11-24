@@ -67,6 +67,11 @@ if PROJECT_ROOT not in sys.path:
 
 
 def main():
+    if "--elevated-input-broker" in sys.argv:
+        from src.dav.modules.remote_desktop.elevation import run_elevated_broker_cli
+
+        sys.exit(run_elevated_broker_cli(sys.argv[1:]))
+
     _configure_os_realtime_priority()
 
     # Inicialização do Kernel MonoTech v4.0 e Descoberta de Módulos
@@ -115,6 +120,8 @@ def main():
             pass
 
     app = QApplication(sys.argv)
+    from src.ui.glass.qss import apply_glass_app_theme
+    apply_glass_app_theme(app)
     app.setApplicationName("DA-V Video Hub")
     if sys.platform != "win32":
         try:

@@ -94,6 +94,7 @@ QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" pyinstaller --noconfirm --clean 
     --hidden-import src.dav.modules.updater.service \
     --hidden-import src.dav.modules.updater.manifest \
     --hidden-import src.dav.modules.audio.manifest \
+    --hidden-import src.dav.modules.remote_desktop.manifest \
     --hidden-import cryptography \
     --exclude-module PyQt5 \
     --exclude-module PyQt6 \
@@ -122,8 +123,16 @@ QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" pyinstaller --noconfirm --clean 
     --name DA-V_Instalador_Linux_x86_64 \
     --paths "$ROOT_DIR" \
     --add-data "$ROOT_DIR/build_payload/dav_app_payload_linux.tar.gz:." \
+    --add-data "$ROOT_DIR/VERSION:." \
     --add-data "$ROOT_DIR/installer/dav_icon.png:installer" \
     --add-data "$ROOT_DIR/installer/dav_icon.ico:installer" \
+    --hidden-import src.ui.qt_compat \
+    --hidden-import src.ui.glass.tokens \
+    --hidden-import src.ui.glass.paint \
+    --hidden-import src.ui.glass.icons \
+    --hidden-import src.ui.glass.qss \
+    --hidden-import src.ui.glass.widgets \
+    --hidden-import src.ui.glass.installer_shell \
     --exclude-module PyQt5 \
     --exclude-module PyQt6 \
     --exclude-module tkinter \
@@ -144,18 +153,19 @@ cp "$ROOT_DIR/CMakeLists.txt" "$ROOT_DIR/README.md" "$ROOT_DIR/LEIA-ME_LINUX.md"
 if [ -f "$ROOT_DIR/GUIA_RAPIDO_LINUX.md" ]; then
     cp "$ROOT_DIR/GUIA_RAPIDO_LINUX.md" "$STAGE/"
 fi
-cp "$ROOT_DIR/launch_dav.sh" "$ROOT_DIR/build_linux.sh" "$STAGE/"
+cp "$ROOT_DIR/launch_dav.sh" "$ROOT_DIR/build_linux.sh" "$ROOT_DIR/install_linux.sh" "$STAGE/"
 cp "$ROOT_DIR/build/libdav_core.so" "$ROOT_DIR/build/dav_daemon" "$STAGE/build/"
 cp "$ROOT_DIR/dist/DA-V_Instalador_Linux_x86_64" "$STAGE/"
 
 find "$STAGE" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find "$STAGE" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
 
-chmod +x "$STAGE/DA-V" "$STAGE/launch_dav.sh" "$STAGE/build_linux.sh" "$STAGE/scripts/build_linux_bundle.sh" "$STAGE/DA-V_Instalador_Linux_x86_64" "$STAGE/build/dav_daemon"
+chmod +x "$STAGE/DA-V" "$STAGE/install_linux.sh" "$STAGE/launch_dav.sh" "$STAGE/build_linux.sh" "$STAGE/scripts/build_linux_bundle.sh" "$STAGE/DA-V_Instalador_Linux_x86_64" "$STAGE/build/dav_daemon"
 
 OUT_TAR="$ROOT_DIR/release_assets/DA-V_v${VERSION}_Linux_${ARCH}.tar.gz"
 tar -czf "$OUT_TAR" -C "$STAGE_PARENT" "$STAGE_NAME"
 cp "$ROOT_DIR/dist/DA-V_Instalador_Linux_x86_64" "$ROOT_DIR/release_assets/"
+cp "$ROOT_DIR/install_linux.sh" "$ROOT_DIR/release_assets/"
 
 rm -rf "$STAGE_PARENT"
 

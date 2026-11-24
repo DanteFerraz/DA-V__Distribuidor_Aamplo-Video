@@ -22,6 +22,13 @@ import threading
 import time
 from typing import Any, Optional
 
+from src.dav.kernel.contracts import (
+    EVENT_REMOTE_CLIPBOARD,
+    EVENT_REMOTE_FILE_STATUS,
+    EVENT_REMOTE_INPUT_METRICS,
+    EVENT_REMOTE_PERM_CHANGED,
+    EVENT_REMOTE_SHELL_OUTPUT,
+)
 from src.dav.kernel.registry import ModuleRegistry
 from src.dav.modules.audio.service import AudioService
 from src.dav.modules.stream_engine.service import StreamEngineService
@@ -87,6 +94,11 @@ class DavMainWindow(QMainWindow):
     tupa_metrics_signal = Signal(object)
     target_updated_signal = Signal(str, int, str)
     update_checked_signal = Signal(object, bool)
+    remote_perms_signal = Signal(dict)
+    remote_clipboard_signal = Signal(str)
+    remote_file_signal = Signal(dict)
+    remote_shell_signal = Signal(str)
+    remote_metrics_signal = Signal(dict)
 
     def __init__(
         self,
@@ -149,6 +161,8 @@ class DavMainWindow(QMainWindow):
         self._sender_session_epoch: int = 0
         self._active_peer_endpoint: Optional[tuple[str, int]] = None
         self._is_closing: bool = False
+        self._admin_prompted_once: bool = False
+        self._applying_remote_clipboard: bool = False
 
         self._conn_hint_timer = QTimer(self)
         self._conn_hint_timer.setSingleShot(True)
@@ -179,7 +193,18 @@ class DavMainWindow(QMainWindow):
         self.tupa_checker = self.telemetry_service.create_tupa_checker(sample_interval_sec=1.0)
         self.tupa_metrics_signal.connect(self._on_tupa_metrics_updated)
         self.target_updated_signal.connect(self._on_target_updated)
+        self.remote_perms_signal.connect(self._on_remote_perms_event)
+        self.remote_clipboard_signal.connect(self._on_remote_clipboard_event)
+        self.remote_file_signal.connect(self._on_remote_file_event)
+        self.remote_shell_signal.connect(self._on_remote_shell_event)
+        self.remote_metrics_signal.connect(self._on_remote_metrics_event)
         self.tupa_checker.start(lambda snap: self.tupa_metrics_signal.emit(snap))
+
+        self.engine.bus.subscribe(EVENT_REMOTE_PERM_CHANGED, lambda p: self.remote_perms_signal.emit(dict(p or {})))
+        self.engine.bus.subscribe(EVENT_REMOTE_CLIPBOARD, lambda t: self.remote_clipboard_signal.emit(str(t or "")))
+        self.engine.bus.subscribe(EVENT_REMOTE_FILE_STATUS, lambda s: self.remote_file_signal.emit(dict(s or {})))
+        self.engine.bus.subscribe(EVENT_REMOTE_SHELL_OUTPUT, lambda o: self.remote_shell_signal.emit(str(o or "")))
+        self.engine.bus.subscribe(EVENT_REMOTE_INPUT_METRICS, lambda m: self.remote_metrics_signal.emit(dict(m or {})))
 
         self._init_ui()
 
@@ -265,11 +290,15 @@ class DavMainWindow(QMainWindow):
 
         self.video_canvas = VideoCanvasWidget(self.stage_stack)
         self.video_canvas.first_frame_received.connect(self._on_first_video_frame)
+        self.video_canvas.remote_input_event.connect(self._on_canvas_remote_input)
+        self.video_canvas.files_dropped.connect(self._on_files_dropped)
         self.stage_stack.addWidget(self.video_canvas)
 
         self.page_sender = SenderHomePage(self.stage_stack)
         self.page_sender.copy_key_clicked.connect(self._copy_sender_access_key)
         self.page_sender.toggle_send_clicked.connect(self._toggle_sender)
+        self.page_sender.interactive_toggled.connect(self._on_sender_interactive_toggled)
+        self.page_sender.admin_elevation_requested.connect(lambda: self._request_admin_elevation(auto_triggered=False))
         self.stage_stack.addWidget(self.page_sender)
 
         # Folhas sobrepostas translucidas (ocultas ate acionadas pela pilula)
@@ -303,6 +332,9 @@ class DavMainWindow(QMainWindow):
         self.settings_sheet.export_logs_requested.connect(self._export_diagnostic_bundle)
         self.settings_sheet.check_update_requested.connect(self._manual_check_updates)
         self.settings_sheet.about_requested.connect(self._show_author_showcase)
+        self.settings_sheet.remote_perms_changed.connect(self._on_granular_perms_changed)
+        self.settings_sheet.admin_elevation_requested.connect(lambda: self._request_admin_elevation(auto_triggered=False))
+        self.settings_sheet.panic_revoke_requested.connect(self._on_panic_revoke_remote)
 
         self.stats_sheet = StatsSheet(parent=self.central_host)
         self.stats_sheet.hide()
@@ -310,7 +342,11 @@ class DavMainWindow(QMainWindow):
 
         self.view_tupa = self.stats_sheet.view_tupa
         self.view_discovery = self.stats_sheet.view_discovery
+        self.view_workspace = self.stats_sheet.view_workspace
         self.view_troubleshoot = self.stats_sheet.view_troubleshoot
+
+        self.view_workspace.send_file_requested.connect(self._send_p2p_file)
+        self.view_workspace.shell_command_submitted.connect(self._send_remote_shell_cmd)
 
         self.view_discovery.connect_peer_requested.connect(self._quick_connect_peer)
         self.view_discovery.refresh_requested.connect(self._manual_refresh_peers)
@@ -320,8 +356,9 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.export_logs_requested.connect(self._export_diagnostic_bundle)
         self.view_troubleshoot.check_update_requested.connect(self._manual_check_updates)
 
-        # Controles flutuantes no canto inferior direito (Audio & Tela Cheia)
+        # Controles flutuantes no canto inferior direito (Controle Remoto, Audio & Tela Cheia)
         self.overlay_controls = VideoOverlayControls(self.central_host)
+        self.overlay_controls.remote_toggled.connect(self._on_overlay_remote_clicked)
         self.overlay_controls.audio_toggled.connect(self._on_overlay_audio_clicked)
         self.overlay_controls.fullscreen_toggled.connect(self._toggle_fullscreen)
         self.overlay_controls.hide()
@@ -334,12 +371,25 @@ class DavMainWindow(QMainWindow):
         self.nav_pill.set_swap_tooltip("Alternar para Modo Transmissor")
         self.nav_pill.raise_()
 
-        # Atalho global para exportacao de diagnostico
+        # Atalhos globais de seguranca e diagnostico
         try:
             self.shortcut_diag = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
             self.shortcut_diag.activated.connect(self._export_diagnostic_bundle)
+            self.shortcut_panic = QShortcut(QKeySequence("Ctrl+Alt+Shift+Esc"), self)
+            self.shortcut_panic.activated.connect(self._on_panic_revoke_remote)
         except Exception:
             pass
+
+        cb = QApplication.clipboard()
+        if cb is not None:
+            try:
+                cb.dataChanged.connect(self._on_local_clipboard_changed)
+            except Exception:
+                pass
+
+        init_perms = self.engine.get_remote_permissions()
+        self.settings_sheet.sync_remote_permissions(init_perms)
+        self.page_sender.set_interactive_state(False, admin_elevated=bool(init_perms.get("admin_elevated")))
 
         self._set_mode("viewer")
         self._sync_layout_geometry()
@@ -406,6 +456,11 @@ class DavMainWindow(QMainWindow):
             if self.mode == "sender"
             else not self.settings_sheet.chk_audio_rx.isChecked()
         )
+        self.overlay_controls.set_remote_visible(cur_page == self.PAGE_VIDEO and self.mode == "viewer")
+        self.overlay_controls.set_remote_state(
+            self.video_canvas.remote_control_enabled,
+            self.video_canvas.host_allows_input,
+        )
         self.overlay_controls.set_audio_muted(muted)
         self.overlay_controls.set_fullscreen(self.isFullScreen())
         self.overlay_controls.setVisible(show_overlay)
@@ -427,6 +482,176 @@ class DavMainWindow(QMainWindow):
             self.settings_sheet.chk_audio_rx.setChecked(
                 not self.settings_sheet.chk_audio_rx.isChecked()
             )
+
+    def _on_overlay_remote_clicked(self):
+        if not self.video_canvas.host_allows_input:
+            self._append_log("WARN", "O Transmissor ainda não habilitou o Modo Interativo nesta sessão.")
+            return
+        self.video_canvas.remote_control_enabled = not self.video_canvas.remote_control_enabled
+        if not self.video_canvas.remote_control_enabled:
+            from src.dav.modules.remote_desktop.protocol import EvType, InputEventPacket
+
+            self.engine.send_remote_input(InputEventPacket(ev_type=EvType.RELEASE_ALL))
+        else:
+            self.video_canvas.setFocus()
+        self._sync_overlay_controls_state()
+        self.video_canvas.update()
+        state_lbl = "ATIVADO" if self.video_canvas.remote_control_enabled else "PAUSADO"
+        self._append_log("INFO", f"Controle remoto de mouse e teclado {state_lbl}.")
+
+    def _on_canvas_remote_input(self, pkt):
+        self.engine.send_remote_input(pkt)
+
+    def _on_sender_interactive_toggled(self, enabled: bool):
+        snap = self.engine.set_remote_permissions(
+            allow_input=enabled,
+            allow_clipboard=enabled,
+            allow_files=enabled,
+        )
+        self.settings_sheet.sync_remote_permissions(snap)
+        self.page_sender.set_interactive_state(enabled, admin_elevated=bool(snap.get("admin_elevated")))
+        if enabled:
+            self._append_log(
+                "SUCCESS",
+                "[Modo Interativo] Compartilhamento de área de trabalho ativado (Ctrl+Alt+Shift+Esc para revogar).",
+            )
+            if (
+                not snap.get("admin_elevated")
+                and not self._admin_prompted_once
+                and os.environ.get("DAV_HEADLESS_SYNTHETIC") != "1"
+            ):
+                self._admin_prompted_once = True
+                self._request_admin_elevation(auto_triggered=True)
+        else:
+            self._append_log("INFO", "[Modo Interativo] Sessão retornou para Somente Visualização.")
+
+    def _on_granular_perms_changed(self, perms: dict):
+        snap = self.engine.set_remote_permissions(**perms)
+        any_interactive = bool(
+            snap.get("allow_input") or snap.get("allow_clipboard") or snap.get("allow_files") or snap.get("allow_shell")
+        )
+        self.page_sender.set_interactive_state(any_interactive, admin_elevated=bool(snap.get("admin_elevated")))
+
+    def _request_admin_elevation(self, auto_triggered: bool = False):
+        if self.engine.is_remote_admin_elevated():
+            snap = self.engine.get_remote_permissions()
+            snap["admin_elevated"] = True
+            self.settings_sheet.sync_remote_permissions(snap)
+            self.page_sender.set_interactive_state(self.page_sender.switch_interactive.isChecked(), True)
+            return
+
+        self._append_log(
+            "INFO",
+            "[Segurança] Solicitando autorização de Administrador (Windows UAC / Linux Polkit)...",
+        )
+
+        def _elev_worker():
+            res = self.engine.request_remote_admin_elevation()
+            if not res.is_success and not auto_triggered and not self._is_closing:
+                self.bridge.log_message.emit(
+                    "WARN",
+                    f"[Segurança] Elevação Admin não concedida ({res.error}). Operando em modo usuário.",
+                )
+
+        threading.Thread(target=_elev_worker, daemon=True, name="DAV-UI-AdminElevate").start()
+
+    def _on_panic_revoke_remote(self):
+        snap = self.engine.panic_revoke_remote()
+        self.settings_sheet.sync_remote_permissions(snap)
+        self.page_sender.set_interactive_state(False, admin_elevated=bool(snap.get("admin_elevated")))
+        self.page_sender.flash_warning("Controle remoto revogado imediatamente (Modo Somente Vídeo).")
+        self._append_log("WARN", "[PANIC SWITCH] Todas as permissões remotas foram revogadas pelo Host.")
+
+    @Slot(dict)
+    def _on_remote_perms_event(self, perms: dict):
+        if self._is_closing:
+            return
+        if self.mode == "sender" or self.is_sending:
+            any_int = bool(
+                perms.get("allow_input") or perms.get("allow_clipboard")
+                or perms.get("allow_files") or perms.get("allow_shell")
+            )
+            self.settings_sheet.sync_remote_permissions(perms)
+            self.page_sender.set_interactive_state(any_int, admin_elevated=bool(perms.get("admin_elevated")))
+        if self.is_receiving:
+            allow_in = bool(perms.get("allow_input"))
+            was_allowed = self.video_canvas.host_allows_input
+            self.video_canvas.host_allows_input = allow_in
+            self.video_canvas.host_allows_files = bool(perms.get("allow_files"))
+            if allow_in and not was_allowed:
+                self.video_canvas.remote_control_enabled = True
+                self._append_log("SUCCESS", "[Área Remota] O Transmissor liberou o controle interativo.")
+            elif not allow_in and was_allowed:
+                self.video_canvas.remote_control_enabled = False
+                self._append_log("WARN", "[Área Remota] O Transmissor revogou o controle interativo.")
+            self.view_workspace.update_peer_permissions(perms)
+            self._sync_overlay_controls_state()
+            self.video_canvas.update()
+
+    @Slot(str)
+    def _on_remote_clipboard_event(self, text: str):
+        if not text or self._is_closing:
+            return
+        cb = QApplication.clipboard()
+        if cb is not None:
+            self._applying_remote_clipboard = True
+            try:
+                cb.setText(text)
+            finally:
+                self._applying_remote_clipboard = False
+
+    def _on_local_clipboard_changed(self):
+        if self._applying_remote_clipboard or self._is_closing:
+            return
+        if not (self.is_receiving or self.is_sending):
+            return
+        cb = QApplication.clipboard()
+        if cb is None:
+            return
+        txt = cb.text()
+        if txt and len(txt) <= 2 * 1024 * 1024:
+            self.engine.send_clipboard_text(txt)
+
+    @Slot(dict)
+    def _on_remote_file_event(self, info: dict):
+        if self._is_closing:
+            return
+        self.view_workspace.update_file_status(info)
+        if info.get("stage") == "completed":
+            self._append_log("SUCCESS", f"[Arquivo P2P] Arquivo recebido com sucesso: {info.get('filename')}")
+
+    @Slot(str)
+    def _on_remote_shell_event(self, out_text: str):
+        if not self._is_closing:
+            self.view_workspace.append_shell_output(out_text)
+
+    @Slot(dict)
+    def _on_remote_metrics_event(self, metrics: dict):
+        if self._is_closing:
+            return
+        itp = float(metrics.get("input_to_photon_ms", 0.0))
+        if itp > 0.0:
+            self.video_canvas.input_to_photon_ms = itp
+
+    def _on_files_dropped(self, file_paths: list):
+        for fp in file_paths:
+            self._send_p2p_file(fp)
+
+    def _send_p2p_file(self, file_path: str):
+        try:
+            tid = self.engine.send_file(file_path)
+            if tid:
+                fname = os.path.basename(file_path)
+                self.view_workspace.update_file_status({"stage": "sending", "filename": fname, "progress": 100.0})
+                self._append_log("INFO", f"[Arquivo P2P] Enviando '{fname}' ao par conectado...")
+            else:
+                self._append_log("WARN", "[Arquivo P2P] Envio não permitido ou par ainda não conectado.")
+        except Exception as exc:
+            self._append_log("ERROR", f"[Arquivo P2P] Erro ao enviar arquivo: {exc}")
+
+    def _send_remote_shell_cmd(self, cmd_with_nl: str):
+        if not self.engine.send_shell_input(cmd_with_nl):
+            self.view_workspace.append_shell_output("[Aviso] Terminal remoto desabilitado pelo Transmissor.\n")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -772,6 +997,10 @@ class DavMainWindow(QMainWindow):
             self.is_receiving = False
             self._waiting_first_frame = False
             self.settings_sheet.set_connection_state(False)
+            self.video_canvas.remote_control_enabled = False
+            self.video_canvas.host_allows_input = False
+            self.video_canvas.host_allows_files = False
+            self.view_workspace.update_peer_permissions({})
             self.video_canvas.clear_display()
             self.nav_pill.set_over_video(False)
             self.nav_pill.set_live(False)

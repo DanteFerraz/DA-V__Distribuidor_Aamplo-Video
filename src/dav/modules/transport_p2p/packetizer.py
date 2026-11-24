@@ -43,6 +43,8 @@ PT_VIDEO = 0x00
 PT_FEC = 0x01
 PT_AUDIO = 0x02
 PT_CONTROL = 0x03
+PT_INPUT = 0x04      # Eventos HID binarios de ultra-baixa latencia (24 bytes)
+PT_WORKSPACE = 0x05  # Canal confiavel ARQ (Permissoes, Clipboard, Arquivos, PTY, Echo)
 
 # Flags Bitmask
 FLAG_KEYFRAME = 0x01

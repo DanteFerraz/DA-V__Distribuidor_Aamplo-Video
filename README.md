@@ -2,15 +2,15 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Release-v4.9.0-0ea5e9?style=for-the-badge)
+![Version](https://img.shields.io/badge/Release-v5.0.0-0ea5e9?style=for-the-badge)
 ![Core](https://img.shields.io/badge/Architecture-MonoTech%20Core%20Kernel%20v2.0-1e293b?style=for-the-badge)
 ![Cadence](https://img.shields.io/badge/Streaming-Up%20to%204K%20%40%20120%20FPS-10b981?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-GNU%20AGPLv3%20%2B%20Section%207%20Notice-8b5cf6?style=for-the-badge)
 ![Platforms](https://img.shields.io/badge/OS-Windows%2010%2F11%20%7C%20Linux%20x64-6366f1?style=for-the-badge)
 
-**Compartilhamento de tela ponto a ponto de ultra-baixa latência (até 4K 120 FPS) entre Windows e Linux — com pareamento universal por PIN, arquitetura modular MonoTech Core Kernel v2.0, perfuração direta de NAT e fallback automático para CGNAT Simétrico.**
+**Compartilhamento de tela e área de trabalho remota interativa ponto a ponto de ultra-baixa latência (até 4K 120 FPS, meta Input-to-Photon <= 15 ms) entre Windows e Linux — com pareamento universal por PIN, arquitetura modular MonoTech Core Kernel v2.0, elevação administrativa sob demanda (UAC/Polkit), perfuração direta de NAT e fallback automático para CGNAT Simétrico.**
 
-[Arquitetura de Software v4.9](#arquitetura-de-software-v49--monotech-core-kernel) •
+[Arquitetura de Software v5.0](#arquitetura-de-software-v50--monotech-core-kernel) •
 [Protocolo P2P e Travessia de NAT](#engenharia-p2p-stun-single-socket-e-blind-relay) •
 [Formato de Pacote na Rede](#protocolo-binário-de-transporte) •
 [Como Executar](#instalação-e-execução) •
@@ -30,9 +30,9 @@ Em vez de embutir um navegador inteiro (Electron/WebRTC), o DA-V separa estritam
 
 ---
 
-## Arquitetura de Software v4.9 — MonoTech Core Kernel
+## Arquitetura de Software v5.0 — MonoTech Core Kernel
 
-O **DA-V v4.9.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0**. O sistema é decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e fatias verticais desacopladas (`src/dav/modules/`), garantindo isolamento de falhas, latência sub-milissegundo e extensibilidade sem acoplamento direto:
+O **DA-V v5.0.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0**. O sistema é decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e 10 fatias verticais desacopladas (`src/dav/modules/`), garantindo isolamento de falhas, latência sub-milissegundo e extensibilidade sem acoplamento direto:
 
 ```mermaid
 flowchart TB
@@ -53,9 +53,10 @@ flowchart TB
         NET["transport_p2p: STUN, ICE-Lite, PAKE, SQP, FEC e Blind Relay"]
         AUD["audio: WASAPI/PipeWire, Resampler, Opus 48 kHz e ASRC"]
         ENG["stream_engine: Subprocesso TX Lockless e ReceiverWorker"]
+        REM["remote_desktop: Input 24B, UAC/Polkit Broker, Clipboard, Arquivos e PTY"]
         COM["commercial: MonoTech Community Edition 100% Free e Open"]
-        TEL["telemetry: Sondas TUPA (Jitter/RTT) e Hub SDE"]
-        UI["presentation: Shell Glassmorphism PySide6 e Updater"]
+        TEL["telemetry: Sondas TUPA (Jitter/RTT/Input) e Hub SDE"]
+        UI["presentation: Shell Glassmorphism PySide6 e Instaladores"]
     end
 
     REG -->|"Auto-Discovery"| ENG
@@ -63,6 +64,7 @@ flowchart TB
     COD -->|"Compressao H.264"| ENG
     AUD -->|"Mux Opus PCM"| ENG
     NET -->|"Controle SQP/PAKE/FEC"| ENG
+    REM <-->|"PT_INPUT e PT_WORKSPACE"| ENG
     ENG -->|"Eventos"| BUS
     ENG -->|"Alocacao"| POOL
     ENG -->|"Retorno"| RES
@@ -260,7 +262,7 @@ Valores aferidos no pipeline real de captura + codificação + rede + decodifica
 
 Baixe o instalador correspondente ao seu sistema operacional na aba [**Releases**](https://github.com/DanteFerraz/DA-V__Distribuidor_Aamplo-Video/releases):
 - **Windows 10/11 (x64):** Execute `DA-V_Instalador_Windows_x64.exe` (extrai os binários autossuficientes em `%LOCALAPPDATA%\Programs\DA-V`, configura regras do Windows Firewall, cria atalhos na Área de Trabalho / Menu Iniciar e registra o protocolo `dav://`).
-- **Linux (x86_64):** Execute o instalador autossuficiente `./DA-V_Instalador_Linux_x86_64` (instala em `~/.local/share/dav`) ou extraia `DA-V_v4.9.0_Linux_x86_64.tar.gz` / `DA-V_v4.9.0_Linux_Source_Portable.tar.gz`.
+- **Linux (x86_64):** Baixe o pacote `DA-V_v5.0.0_Linux_x86_64.tar.gz` (ou `DA-V_v5.0.0_Linux_Source_Portable.tar.gz`) e execute `chmod +x install_linux.sh && ./install_linux.sh` para desempacotar e abrir o instalador gráfico Glassmorphism em `~/.local/share/dav`.
 
 ---
 
@@ -366,9 +368,9 @@ Distribuidor_Aamplo-Video/
 │   ├── dav_installer_linux.py  # Assistente gráfico de instalação XDG/UFW para Linux
 │   └── setup_firewall.ps1      # Automação de regras UDP no Windows Defender Firewall
 ├── src/
-│   ├── dav/                    # Arquitetura MonoTech Core v4.9.0
+│   ├── dav/                    # Arquitetura MonoTech Core v5.0.0
 │   │   ├── kernel/             # Result, Registry, EventBus, BufferPool, CircuitBreaker, Config
-│   │   └── modules/            # Fatias verticais (audio, capture, codec, transport_p2p, stream_engine, commercial, telemetry, presentation, updater)
+│   │   └── modules/            # 10 fatias verticais (audio, capture, codec, transport_p2p, stream_engine, remote_desktop, commercial, telemetry, presentation, updater)
 │   ├── capture/                # Capturadores C++23 (DXGI Desktop Duplication e X11 MIT-SHM)
 │   ├── codec/                  # HybridEncoder / HybridDecoder (NVENC, libx264 ULL, JPEG, RAW)
 │   ├── core/                   # Configuração TOML, logger, tipos e ponte C-ABI
@@ -381,7 +383,7 @@ Distribuidor_Aamplo-Video/
 ├── tests/                      # Suíte de testes unitários e integração E2E
 ├── CHANGELOG.md                # Histórico semântico de versões
 ├── LEIA-ME_LINUX.md            # Documentação operacional dedicada ao ambiente Linux
-├── VERSION                     # Versão canônica do projeto (4.9.0)
+├── VERSION                     # Versão canônica do projeto (5.0.0)
 └── requirements.txt            # Dependências Python multiplataforma
 ```
 

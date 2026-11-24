@@ -41,6 +41,7 @@ class TupaView(QWidget):
         self._probe_stage_samples = {
             "capture": [], "encode": [], "send": [],
             "recv": [], "decode": [], "render": [],
+            "input": [],
         }
         self._probe_lock = threading.Lock()
         self._bench_fps_history = []
@@ -242,6 +243,7 @@ class TupaView(QWidget):
             ("recv",    "UDP Recebimento",            3.0,  _GLASS_WARN),
             ("decode",  "Ryzen Slice Decode (4T)",   12.0, "#f9a8d4"),
             ("render",  "Qt paintEvent Render",      8.0,  "#fcd34d"),
+            ("input",   "Input-to-Photon (Remoto)",  30.0, "#34d399"),
         ]
         bench_grid = QGridLayout()
         bench_grid.setSpacing(8)
@@ -265,7 +267,9 @@ class TupaView(QWidget):
             lbl_ms.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {_GLASS_TEXT}; min-width: 78px;")
             lbl_ms.setFixedWidth(78)
 
-            lbl_limit = QLabel(f"limite {limit_ms:.0f}ms")
+            lbl_limit = QLabel(
+                "alvo 15ms / teto 30ms" if stage_key == "input" else f"limite {limit_ms:.0f}ms"
+            )
             lbl_limit.setStyleSheet(f"font-size: 10px; color: {_GLASS_MUTED};")
 
             bench_grid.addWidget(lbl_name,  row_idx, 0)
@@ -364,19 +368,33 @@ class TupaView(QWidget):
                 bar_val = min(bar_max, int(p95_ms * 10))
                 cfg["bar"].setValue(bar_val)
 
-                ratio = avg_ms / limit
-                if ratio < 0.8:
-                    bar_color = cfg["color_ok"]
-                    txt_color = _GLASS_OK
-                    status = "OK"
-                elif ratio < 1.0:
-                    bar_color = _GLASS_WARN
-                    txt_color = _GLASS_WARN
-                    status = "MODERADO"
+                if stage_key == "input":
+                    if avg_ms <= 15.0:
+                        bar_color = cfg["color_ok"]
+                        txt_color = _GLASS_OK
+                        status = "META 15ms"
+                    elif avg_ms <= 30.0:
+                        bar_color = _GLASS_WARN
+                        txt_color = _GLASS_WARN
+                        status = "ACEITAVEL"
+                    else:
+                        bar_color = _GLASS_DANGER
+                        txt_color = _GLASS_DANGER
+                        status = "ALERTA"
                 else:
-                    bar_color = _GLASS_DANGER
-                    txt_color = _GLASS_DANGER
-                    status = "ALERTA"
+                    ratio = avg_ms / limit
+                    if ratio < 0.8:
+                        bar_color = cfg["color_ok"]
+                        txt_color = _GLASS_OK
+                        status = "OK"
+                    elif ratio < 1.0:
+                        bar_color = _GLASS_WARN
+                        txt_color = _GLASS_WARN
+                        status = "MODERADO"
+                    else:
+                        bar_color = _GLASS_DANGER
+                        txt_color = _GLASS_DANGER
+                        status = "ALERTA"
 
                 cfg["bar"].setStyleSheet(f"""
                     QProgressBar {{ border-radius: 4px; background: {_GLASS_TRACK_BG}; }}

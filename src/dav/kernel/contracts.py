@@ -23,6 +23,11 @@ EVENT_STREAM_STOPPED = "stream.stopped"
 EVENT_LAN_PEERS_UPDATED = "discovery.peers_updated"
 EVENT_TUPA_SNAPSHOT = "telemetry.tupa_snapshot"
 EVENT_LOG_MESSAGE = "system.log_message"
+EVENT_REMOTE_PERM_CHANGED = "remote.permissions_changed"
+EVENT_REMOTE_CLIPBOARD = "remote.clipboard_synced"
+EVENT_REMOTE_FILE_STATUS = "remote.file_transfer_status"
+EVENT_REMOTE_SHELL_OUTPUT = "remote.shell_output"
+EVENT_REMOTE_INPUT_METRICS = "remote.input_metrics"
 
 
 @runtime_checkable
@@ -92,3 +97,26 @@ class ITelemetryService(Protocol):
     def push_to_sde_hub(self) -> None: ...
     def create_tupa_checker(self, sample_interval_sec: float = 1.0) -> Any: ...
     def probe_send(self, stage: str, t_start: float, t_end: float, frame_id: int = 0, extra: Optional[Dict[str, Any]] = None) -> None: ...
+
+
+@runtime_checkable
+class IRemoteDesktopService(Protocol):
+    def create_injector(
+        self,
+        force_synthetic: bool = False,
+        prefer_elevated: bool = False,
+    ) -> ServiceResult[Any]: ...
+    def create_security_gate(self, **initial_perms: bool) -> Any: ...
+    def create_workspace_agent(
+        self,
+        gate: Any,
+        download_dir: Optional[str] = None,
+    ) -> Any: ...
+    def translate_qt_key(
+        self,
+        qt_key: int,
+        native_scancode: int = 0,
+        native_vk: int = 0,
+    ) -> int: ...
+    def is_admin_elevated(self) -> bool: ...
+    def request_admin_elevation(self) -> ServiceResult[Any]: ...

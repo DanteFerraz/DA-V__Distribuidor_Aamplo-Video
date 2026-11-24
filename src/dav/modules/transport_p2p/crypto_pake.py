@@ -124,6 +124,8 @@ class PacketCipher:
             0: ReplayWindow(size=replay_window_size),  # Video + FEC
             2: ReplayWindow(size=128),                 # Audio
             3: ReplayWindow(size=128),                 # Control (SQP_ACK)
+            4: ReplayWindow(size=512),                 # Remote Input (250 Hz + 2x transitions)
+            5: ReplayWindow(size=256),                 # Workspace Channel (ARQ / Echo / PTY)
         }
         self._replay_window_size = int(replay_window_size)
         self._lock = threading.Lock()

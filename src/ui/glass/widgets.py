@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from src.ui.qt_compat import (
-    QColor, QFont, QHBoxLayout, QLabel, QLineEdit, QPainter, QPalette, QPointF, QPushButton,
+    QColor, QFont, QHBoxLayout, QLabel, QLineEdit, QPainter, QPalette, QPen, QPointF, QPushButton,
     QRectF, QScrollArea, QSize, QSizePolicy, QToolTip, QVBoxLayout, QWidget, Qt, Signal,
 )
 from src.ui.glass import icons, paint
@@ -47,7 +47,9 @@ class GlassCard(QWidget):
         super().__init__(parent)
         self._dark = dark
         self._scale = 1.0
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        if parent is None:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.content_layout = QVBoxLayout(self)
         self.content_layout.setSpacing(0)
         self._apply_metrics()
@@ -449,16 +451,161 @@ class GlassScrollArea(QScrollArea):
 
 
 # ---------------------------------------------------------------------------
-# Controles flutuantes do canto inferior direito (Audio & Tela Cheia)
+# Switch deslizante em pilula neon (Modo Interativo)
+# ---------------------------------------------------------------------------
+class GlassToggleSwitch(QWidget):
+    """Chave deslizante em pilula de vidro com rotulo sombreado e suporte a teclado."""
+
+    toggled = Signal(bool)
+
+    def __init__(
+        self,
+        text: str = "",
+        design_w: float = T.CONTROL_W,
+        design_h: float = 64.0,
+        design_font: int = T.FONT_STATUS,
+        checked: bool = False,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._text = text
+        self._dw, self._dh, self._df = design_w, design_h, design_font
+        self._checked = bool(checked)
+        self._hover = 0.0
+        self._scale = 1.0
+        self._pad = 8
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.apply_scale(1.0)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, checked: bool, emit_signal: bool = False) -> None:
+        val = bool(checked)
+        if val != self._checked:
+            self._checked = val
+            self.update()
+            if emit_signal:
+                self.toggled.emit(self._checked)
+
+    def setText(self, text: str) -> None:
+        self._text = text
+        self.update()
+
+    def text(self) -> str:
+        return self._text
+
+    def toggle(self) -> None:
+        self.setChecked(not self._checked, emit_signal=True)
+
+    def apply_scale(self, scale: float) -> None:
+        self._scale = scale
+        self._pad = T.px(10, scale, 4)
+        self.setFixedSize(
+            T.px(self._dw, scale, 160) + 2 * self._pad,
+            T.px(self._dh, scale, 30) + 2 * self._pad,
+        )
+        f = QFont()
+        f.setFamilies(T.FONT_FAMILIES)
+        f.setPixelSize(T.px(self._df, scale, 10))
+        f.setWeight(QFont.Weight.DemiBold)
+        self.setFont(f)
+        self.update()
+
+    def enterEvent(self, event):
+        self._hover = 1.0
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = 0.0
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            self.toggle()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.isEnabled():
+            self.toggle()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        outer = QRectF(self.rect()).adjusted(self._pad, self._pad, -self._pad, -self._pad)
+        hov = self._hover or (0.65 if self.hasFocus() else 0.0)
+        paint.paint_neon_pill(
+            p,
+            outer,
+            self._scale,
+            hover=hov,
+            fill_alpha=0.22 if self._checked else 0.10,
+            enabled=self.isEnabled(),
+        )
+        if self._checked:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(52, 211, 153, 64))
+            p.drawRoundedRect(outer.adjusted(2, 2, -2, -2), outer.height() / 2.0, outer.height() / 2.0)
+
+        # Trilho do switch a esquerda dentro da pilula
+        sw_h = max(16.0, outer.height() * 0.56)
+        sw_w = sw_h * 1.82
+        sw_x = outer.left() + T.px(22, self._scale, 10)
+        sw_y = outer.center().y() - sw_h / 2.0
+        track = QRectF(sw_x, sw_y, sw_w, sw_h)
+
+        p.setPen(QPen(QColor(255, 255, 255, 225), max(1.2, 1.8 * self._scale)))
+        p.setBrush(QColor(52, 211, 153, 185) if self._checked else QColor(8, 38, 52, 130))
+        p.drawRoundedRect(track, sw_h / 2.0, sw_h / 2.0)
+
+        knob_m = max(2.2, sw_h * 0.14)
+        knob_d = sw_h - 2.0 * knob_m
+        knob_x = (track.right() - knob_m - knob_d) if self._checked else (track.left() + knob_m)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 250))
+        p.drawEllipse(QRectF(knob_x, track.top() + knob_m, knob_d, knob_d))
+
+        txt_rect = QRectF(
+            track.right() + T.px(16, self._scale, 8),
+            outer.top(),
+            max(20.0, outer.right() - track.right() - T.px(32, self._scale, 12)),
+            outer.height(),
+        )
+        fg = QColor(255, 255, 255, 255 if self.isEnabled() else 130)
+        paint.paint_shadowed_text(
+            p,
+            txt_rect,
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            self._text,
+            self.font(),
+            fg,
+            scale=self._scale,
+        )
+        p.end()
+
+
+# ---------------------------------------------------------------------------
+# Controles flutuantes do canto inferior direito (Controle Remoto, Audio & Tela Cheia)
 # ---------------------------------------------------------------------------
 class VideoOverlayControls(QWidget):
-    """Botoes vetoriais flutuantes de Audio e Tela Cheia (referencias 1, 2 e 3)."""
+    """Botoes vetoriais flutuantes de Controle Remoto, Audio e Tela Cheia."""
 
     ZONE_AUDIO = 0
     ZONE_FULLSCREEN = 1
+    ZONE_REMOTE = 2
 
     audio_toggled = Signal()
     fullscreen_toggled = Signal()
+    remote_toggled = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -471,6 +618,9 @@ class VideoOverlayControls(QWidget):
         self._scale = 1.0
         self._audio_muted = False
         self._is_fullscreen = False
+        self._show_remote = False
+        self._remote_active = False
+        self._remote_allowed = False
         self._hover_zone = -1
         self._relayout()
 
@@ -481,6 +631,10 @@ class VideoOverlayControls(QWidget):
     @property
     def is_fullscreen(self) -> bool:
         return self._is_fullscreen
+
+    @property
+    def remote_active(self) -> bool:
+        return self._remote_active
 
     def set_ui_scale(self, scale: float) -> None:
         if abs(scale - self._scale) >= 0.005:
@@ -500,6 +654,26 @@ class VideoOverlayControls(QWidget):
             self._is_fullscreen = fs
             self.update()
 
+    def set_remote_visible(self, visible: bool) -> None:
+        v = bool(visible)
+        if v != self._show_remote:
+            self._show_remote = v
+            self._relayout()
+            self.update()
+
+    def set_remote_state(self, active: bool, allowed_by_host: bool) -> None:
+        a = bool(active and allowed_by_host)
+        al = bool(allowed_by_host)
+        if a != self._remote_active or al != self._remote_allowed:
+            self._remote_active = a
+            self._remote_allowed = al
+            self.update()
+
+    def _active_zones(self) -> List[int]:
+        if self._show_remote:
+            return [self.ZONE_REMOTE, self.ZONE_AUDIO, self.ZONE_FULLSCREEN]
+        return [self.ZONE_AUDIO, self.ZONE_FULLSCREEN]
+
     def _btn_size(self) -> float:
         return float(T.px(48, self._scale, 30))
 
@@ -507,15 +681,19 @@ class VideoOverlayControls(QWidget):
         return float(T.px(10, self._scale, 4))
 
     def _zone_rect(self, zone: int) -> QRectF:
+        zones = self._active_zones()
+        if zone not in zones:
+            return QRectF()
+        idx = zones.index(zone)
         btn = self._btn_size()
         gap = self._gap()
-        y = 0.0 if zone == self.ZONE_AUDIO else (btn + gap)
-        return QRectF(0.0, y, btn, btn)
+        return QRectF(0.0, idx * (btn + gap), btn, btn)
 
     def _relayout(self) -> None:
         btn = int(round(self._btn_size()))
         gap = int(round(self._gap()))
-        self.resize(btn, btn * 2 + gap)
+        n = len(self._active_zones())
+        self.resize(btn, btn * n + gap * max(0, n - 1))
         self.reposition()
 
     def reposition(self) -> None:
@@ -530,7 +708,7 @@ class VideoOverlayControls(QWidget):
         )
 
     def _zone_at(self, pos: QPointF) -> int:
-        for zone in (self.ZONE_AUDIO, self.ZONE_FULLSCREEN):
+        for zone in self._active_zones():
             if self._zone_rect(zone).contains(pos):
                 return zone
         return -1
@@ -539,7 +717,9 @@ class VideoOverlayControls(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         zone = self._zone_at(event.position())
-        if zone == self.ZONE_AUDIO:
+        if zone == self.ZONE_REMOTE:
+            self.remote_toggled.emit()
+        elif zone == self.ZONE_AUDIO:
             self.audio_toggled.emit()
         elif zone == self.ZONE_FULLSCREEN:
             self.fullscreen_toggled.emit()
@@ -558,7 +738,14 @@ class VideoOverlayControls(QWidget):
     def event(self, ev):
         if ev.type() == ev.Type.ToolTip:
             zone = self._zone_at(ev.pos().toPointF()) if hasattr(ev.pos(), "toPointF") else -1
-            if zone == self.ZONE_AUDIO:
+            if zone == self.ZONE_REMOTE:
+                if not self._remote_allowed:
+                    text = "Controle remoto bloqueado pelo Transmissor (Modo Somente Vídeo)"
+                elif self._remote_active:
+                    text = "Pausar controle remoto de mouse e teclado (Ctrl+Alt+M: mouse relativo)"
+                else:
+                    text = "Ativar controle remoto de mouse e teclado"
+            elif zone == self.ZONE_AUDIO:
                 text = "Ativar áudio da transmissão" if self._audio_muted else "Desativar áudio da transmissão"
             elif zone == self.ZONE_FULLSCREEN:
                 text = "Sair da tela cheia (Esc)" if self._is_fullscreen else "Tela cheia (F11)"
@@ -574,9 +761,13 @@ class VideoOverlayControls(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for zone in (self.ZONE_AUDIO, self.ZONE_FULLSCREEN):
+        for zone in self._active_zones():
             r = self._zone_rect(zone)
             hovered = zone == self._hover_zone
+            if zone == self.ZONE_REMOTE and self._remote_active:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(16, 185, 129, 110))
+                p.drawEllipse(r.center(), r.width() * 0.46, r.height() * 0.46)
             if hovered:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(8, 28, 38, 72))
@@ -592,7 +783,10 @@ class VideoOverlayControls(QWidget):
                 icon_sz,
             )
             alpha = 1.0 if hovered else 0.94
-            if zone == self.ZONE_AUDIO:
+            if zone == self.ZONE_REMOTE:
+                eff_alpha = alpha if self._remote_allowed else 0.50
+                icons.draw_cursor_control(p, icon_box, alpha=eff_alpha, active=self._remote_active)
+            elif zone == self.ZONE_AUDIO:
                 icons.draw_speaker(p, icon_box, alpha=alpha, muted=self._audio_muted)
             else:
                 icons.draw_fullscreen_corners(p, icon_box, alpha=alpha, is_fullscreen=self._is_fullscreen)

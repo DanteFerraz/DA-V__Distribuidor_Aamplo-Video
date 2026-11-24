@@ -4,6 +4,20 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [5.0.0] — 2026-11-24
+
+### Módulo completo de compartilhamento de área de trabalho (`src/dav/modules/remote_desktop/`)
+- **10ª fatia vertical no MonoTech Core Kernel:** Implementação completa de controle remoto bidirecional e espaço de trabalho compartilhado (`protocol.py`, `keymap.py`, `security_gate.py`, `injector_base.py`, `injector_win32.py`, `injector_linux.py`, `elevation.py`, `workspace_agent.py`, `service.py`, `manifest.py`), preservando a arquitetura P2P Single-Socket com PAKE CPace-X25519 + ChaCha20-Poly1305 AEAD sobre LAN Direto, WAN STUN e CGNAT Blind Relay (`DAV_RLY1`).
+- **Canal de entrada sub-milissegundo (`PT_INPUT = 0x04`) e meta Input-to-Photon <= 15 ms:** Pacote compacto de 24 bytes (`!BBBBiiIQ`) sem bloqueio *Head-of-Line*, envio redundante `2x` para transições críticas (cliques/teclas), remoção do `sleep(0.05)` no loop reverso (`select(..., 0.002)` + `input_wake_evt` + DSCP EF `IP_TOS=0xB8`), coalescência de ponteiro a `250 Hz` no receptor e injeção nativa (`user32.SendInput` 40B no Windows; cascata `/dev/uinput`, XDG `RemoteDesktop` Portal e `libXtst.so.6` no Linux).
+- **Segurança Zero-Trust, Switch de Modo Interativo e Broker Administrativo (UAC / Polkit):** Sessões iniciam em modo *Somente Visualização* por padrão, com `GlassToggleSwitch` de **Transmissão Interativa** no `SenderHomePage`, revogação de emergência `Ctrl+Alt+Shift+Esc`, `StuckKeyWatchdog` (soltura automática em perda de foco ou timeout de 350 ms) e micro-broker isolado (`--elevated-input-broker`, autenticado via HMAC-SHA256) acionado sob demanda por UAC (`ShellExecuteW("runas")`) no Windows e Polkit (`pkexec`) no Linux.
+- **Canal confiável de área de trabalho (`PT_WORKSPACE = 0x05`) e telemetria TUPÃ:** Sincronização bidirecional de Clipboard deduplicada por SHA-256, transferência P2P de arquivos por *Drag & Drop* com verificação SHA-256 e proteção contra *path traversal*, terminal remoto persistente estilo LTSP (`PtyShellManager` + aba `Terminal` na `StatsSheet`) e nova sonda `TupaInputLatencyProbe` no `TupaView`.
+
+### Redesign Glassmorphism dos instaladores e automação Linux
+- **Design System Glassmorphism unificado nos instaladores (`src/ui/glass/installer_shell.py`):** Novo `DavGlassInstallerDialog` compartilhado por `scripts/dav_installer_win.py` e `scripts/dav_installer_linux.py` com gradiente atmosférico, `GlassCard(dark=True)`, Stepper lateral em pílula neon, ícones vetoriais sombreados, estilo `Fusion` + paleta escura (`apply_glass_app_theme`) imune a temas claros de sistema (GNOME Adwaita).
+- **Desempacotador e assistente Linux (`install_linux.sh`):** Script shell automatizado que detecta pacotes locais ou diretório já desempacotado, valida dependências gráficas X11/Wayland/PipeWire, atualiza `~/.local/share/dav` de forma limpa e abre o instalador gráfico Glassmorphism.
+
+---
+
 ## [4.9.0] — 2026-11-18
 
 ### Governança Jurídica, Licenciamento GNU AGPLv3 + Seção 7 (NOTICE) e Compliance

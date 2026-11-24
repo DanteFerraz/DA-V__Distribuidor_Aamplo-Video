@@ -9,23 +9,34 @@ DirectComposition backing store for tear-free 60-144 FPS rendering.
 
 import time
 from collections import deque
-from typing import Optional
+from typing import Optional, Tuple
 
 from src.ui.qt_compat import (
     QWidget, QPainter, QImage, QColor, QFont, QRect,
-    QBrush, QPen, QLinearGradient, Qt, Signal
+    QBrush, QPen, QLinearGradient, Qt, QTimer, Signal
 )
 from src.ui.theme import Theme
+from src.dav.modules.remote_desktop.keymap import qt_key_to_hid
+from src.dav.modules.remote_desktop.protocol import (
+    EvType,
+    InputEventPacket,
+    KeyMod,
+    MouseBtn,
+    pack_wheel_deltas,
+)
 from src.dav.modules.telemetry.stage_probe import probe_send as _probe_send
 
 
 class VideoCanvasWidget(QWidget):
     """
     Viewport for rendering decoded video frames at high framerate.
-    Features an in-canvas HUD overlay with glassmorphism styling and full-screen toggle.
+    Features an in-canvas HUD overlay, sub-ms remote desktop input capture (250 Hz coalescing),
+    exact inverse Fit/Stretch/Native coordinate mapping, and P2P file drag-and-drop.
     """
 
     first_frame_received = Signal()
+    remote_input_event = Signal(object)
+    files_dropped = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,14 +44,30 @@ class VideoCanvasWidget(QWidget):
         self.fps = 0.0
         self.bitrate_mbps = 0.0
         self.latency_ms = 0.0
+        self.input_to_photon_ms = 0.0
         self.packets_count = 0
         self.frames_count = 0
         self.show_hud = True
         self.hud_mode = "pill"  # "full" | "pill" | "hidden" (compacto por padrao: nao cobre o video)
         self.scale_mode = "fit"  # "fit" | "stretch" | "native"
         self.is_connected = False
+        self.remote_control_enabled = False
+        self.host_allows_input = False
+        self.host_allows_files = False
+        self.relative_mouse_mode = False
+
         self._frame_times = deque(maxlen=60)
+        self._last_move_sent_mono = 0.0
+        self._pending_move: Optional[Tuple[int, int, int, int]] = None
+        self._last_cursor_pos: Optional[Tuple[float, float]] = None
+        self._move_timer = QTimer(self)
+        self._move_timer.setSingleShot(True)
+        self._move_timer.setInterval(4)
+        self._move_timer.timeout.connect(self._flush_coalesced_move)
+
         self.setMinimumSize(480, 270)
+        self.setMouseTracking(True)
+        self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.sender_codec = "H.264 / HEVC ULL"
         self.sender_frame_kb = 24
@@ -88,13 +115,113 @@ class VideoCanvasWidget(QWidget):
 
     def clear_display(self):
         """Resets canvas state upon disconnection."""
+        self._move_timer.stop()
+        self._pending_move = None
+        self._last_cursor_pos = None
         self.current_image = None
         self.is_connected = False
+        self.input_to_photon_ms = 0.0
         self._frame_times.clear()
         self.fps = 0.0
         self.bitrate_mbps = 0.0
         self.latency_ms = 0.0
         self.update()
+
+    @property
+    def is_interactive_active(self) -> bool:
+        return bool(self.is_connected and self.remote_control_enabled and self.host_allows_input)
+
+    def video_target_rect(self) -> QRect:
+        """Retorna o retangulo exato onde o video esta desenhado dentro do widget."""
+        cw, ch = max(1, self.width()), max(1, self.height())
+        if self.current_image is None or self.current_image.isNull():
+            return QRect(0, 0, cw, ch)
+        iw, ih = self.current_image.width(), self.current_image.height()
+        if iw <= 0 or ih <= 0:
+            return QRect(0, 0, cw, ch)
+        if self.scale_mode == "stretch":
+            return QRect(0, 0, cw, ch)
+        if self.scale_mode == "native":
+            return QRect((cw - iw) // 2, (ch - ih) // 2, iw, ih)
+        scale = min(cw / iw, ch / ih)
+        tw, th = max(1, int(iw * scale)), max(1, int(ih * scale))
+        return QRect((cw - tw) // 2, (ch - th) // 2, tw, th)
+
+    def map_widget_pos_to_norm(self, wx: float, wy: float) -> Optional[Tuple[int, int]]:
+        """Mapeia `(wx, wy)` em pixels locais do widget para `[0..65535]` na tela remota."""
+        vr = self.video_target_rect()
+        if vr.width() <= 0 or vr.height() <= 0:
+            return None
+        if wx < vr.left() or wx > (vr.left() + vr.width()) or wy < vr.top() or wy > (vr.top() + vr.height()):
+            return None
+        rx = (wx - vr.left()) / max(1.0, float(vr.width() - 1))
+        ry = (wy - vr.top()) / max(1.0, float(vr.height() - 1))
+        nx = max(0, min(65535, int(round(rx * 65535.0))))
+        ny = max(0, min(65535, int(round(ry * 65535.0))))
+        return (nx, ny)
+
+    @staticmethod
+    def _extract_buttons_mask(buttons) -> int:
+        mask = 0
+        if buttons & Qt.MouseButton.LeftButton:
+            mask |= MouseBtn.LEFT
+        if buttons & Qt.MouseButton.RightButton:
+            mask |= MouseBtn.RIGHT
+        if buttons & Qt.MouseButton.MiddleButton:
+            mask |= MouseBtn.MIDDLE
+        if buttons & Qt.MouseButton.BackButton:
+            mask |= MouseBtn.BACK
+        if buttons & Qt.MouseButton.ForwardButton:
+            mask |= MouseBtn.FORWARD
+        return mask
+
+    @staticmethod
+    def _extract_single_button(btn) -> int:
+        if btn == Qt.MouseButton.LeftButton:
+            return int(MouseBtn.LEFT)
+        if btn == Qt.MouseButton.RightButton:
+            return int(MouseBtn.RIGHT)
+        if btn == Qt.MouseButton.MiddleButton:
+            return int(MouseBtn.MIDDLE)
+        if btn == Qt.MouseButton.BackButton:
+            return int(MouseBtn.BACK)
+        if btn == Qt.MouseButton.ForwardButton:
+            return int(MouseBtn.FORWARD)
+        return 0
+
+    @staticmethod
+    def _extract_modifiers_mask(mods) -> int:
+        mask = 0
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            mask |= KeyMod.SHIFT
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            mask |= KeyMod.CTRL
+        if mods & Qt.KeyboardModifier.AltModifier:
+            mask |= KeyMod.ALT
+        if mods & Qt.KeyboardModifier.MetaModifier:
+            mask |= KeyMod.META
+        return mask
+
+    def _emit_input(self, pkt: InputEventPacket) -> None:
+        pkt.client_ts_us = int(time.perf_counter_ns() // 1000)
+        self.remote_input_event.emit(pkt)
+
+    def _flush_coalesced_move(self) -> None:
+        if self._pending_move is None or not self.is_interactive_active:
+            self._pending_move = None
+            return
+        xv, yv, b_mask, m_mask = self._pending_move
+        self._pending_move = None
+        self._last_move_sent_mono = time.perf_counter()
+        self._emit_input(
+            InputEventPacket(
+                ev_type=EvType.MOVE_REL if self.relative_mouse_mode else EvType.MOVE_ABS,
+                buttons_mask=b_mask,
+                modifiers_mask=m_mask,
+                x_val=xv,
+                y_val=yv,
+            )
+        )
 
     def toggle_fullscreen(self):
         """Alterna a janela entre modo tela cheia e modo janela normal."""
@@ -137,14 +264,155 @@ class VideoCanvasWidget(QWidget):
             return path
         return None
 
+    def mouseMoveEvent(self, event):
+        if not self.is_interactive_active:
+            super().mouseMoveEvent(event)
+            return
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        wx, wy = float(pos.x()), float(pos.y())
+        b_mask = self._extract_buttons_mask(event.buttons())
+        m_mask = self._extract_modifiers_mask(event.modifiers())
+
+        if self.relative_mouse_mode:
+            if self._last_cursor_pos is None:
+                self._last_cursor_pos = (wx, wy)
+                return
+            dx = int(round(wx - self._last_cursor_pos[0]))
+            dy = int(round(wy - self._last_cursor_pos[1]))
+            self._last_cursor_pos = (wx, wy)
+            if dx == 0 and dy == 0:
+                return
+            if self._pending_move is not None:
+                dx += self._pending_move[0]
+                dy += self._pending_move[1]
+            self._pending_move = (dx, dy, b_mask, m_mask)
+        else:
+            mapped = self.map_widget_pos_to_norm(wx, wy)
+            if mapped is None:
+                return
+            self._pending_move = (mapped[0], mapped[1], b_mask, m_mask)
+
+        now = time.perf_counter()
+        if (now - self._last_move_sent_mono) >= 0.004:
+            self._move_timer.stop()
+            self._flush_coalesced_move()
+        elif not self._move_timer.isActive():
+            self._move_timer.start()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        self.setFocus()
+        if not self.is_interactive_active:
+            super().mousePressEvent(event)
+            return
+        single_btn = self._extract_single_button(event.button())
+        if single_btn == 0:
+            return
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        mapped = self.map_widget_pos_to_norm(float(pos.x()), float(pos.y()))
+        if mapped is None and not self.relative_mouse_mode:
+            return
+        if self._pending_move is not None:
+            self._move_timer.stop()
+            self._flush_coalesced_move()
+        xv, yv = (0, 0) if (self.relative_mouse_mode or mapped is None) else mapped
+        self._emit_input(
+            InputEventPacket(
+                ev_type=EvType.BTN_DOWN,
+                buttons_mask=single_btn,
+                modifiers_mask=self._extract_modifiers_mask(event.modifiers()),
+                x_val=xv,
+                y_val=yv,
+            )
+        )
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if not self.is_interactive_active:
+            super().mouseReleaseEvent(event)
+            return
+        single_btn = self._extract_single_button(event.button())
+        if single_btn == 0:
+            return
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        mapped = self.map_widget_pos_to_norm(float(pos.x()), float(pos.y()))
+        xv, yv = (0, 0) if (self.relative_mouse_mode or mapped is None) else mapped
+        self._emit_input(
+            InputEventPacket(
+                ev_type=EvType.BTN_UP,
+                buttons_mask=single_btn,
+                modifiers_mask=self._extract_modifiers_mask(event.modifiers()),
+                x_val=xv,
+                y_val=yv,
+            )
+        )
+        event.accept()
+
     def mouseDoubleClickEvent(self, event):
-        """Duplo clique para alternar tela cheia."""
+        """Quando o controle remoto esta ativo, repassa o segundo clique ao SO remoto."""
+        if self.is_interactive_active:
+            self.mousePressEvent(event)
+            return
         self.toggle_fullscreen()
         event.accept()
 
+    def wheelEvent(self, event):
+        if not self.is_interactive_active:
+            super().wheelEvent(event)
+            return
+        delta = event.angleDelta()
+        dx, dy = int(delta.x()), int(delta.y())
+        if dx == 0 and dy == 0:
+            return
+        self._emit_input(
+            InputEventPacket(
+                ev_type=EvType.WHEEL,
+                buttons_mask=self._extract_buttons_mask(event.buttons()),
+                modifiers_mask=self._extract_modifiers_mask(event.modifiers()),
+                key_or_wheel=pack_wheel_deltas(dx, dy),
+            )
+        )
+        event.accept()
+
     def keyPressEvent(self, event):
-        """Atalhos interativos do teclado no canvas de vídeo."""
+        """Captura teclado remoto (quando ativo) ou atalhos locais do player."""
         key = event.key()
+        mods = event.modifiers()
+        ctrl_alt = bool(
+            (mods & Qt.KeyboardModifier.ControlModifier)
+            and (mods & Qt.KeyboardModifier.AltModifier)
+        )
+
+        # Atalhos locais que funcionam mesmo durante controle remoto
+        if ctrl_alt and key == Qt.Key.Key_M:
+            self.relative_mouse_mode = not self.relative_mouse_mode
+            self._last_cursor_pos = None
+            self.update()
+            event.accept()
+            return
+        if ctrl_alt and key == Qt.Key.Key_F:
+            self.toggle_fullscreen()
+            event.accept()
+            return
+
+        if self.is_interactive_active:
+            if not event.isAutoRepeat():
+                hid_code = qt_key_to_hid(
+                    int(key),
+                    native_scancode=int(event.nativeScanCode()),
+                    native_vk=int(event.nativeVirtualKey()),
+                )
+                if hid_code > 0:
+                    self._emit_input(
+                        InputEventPacket(
+                            ev_type=EvType.KEY_DOWN,
+                            modifiers_mask=self._extract_modifiers_mask(mods),
+                            key_or_wheel=hid_code,
+                        )
+                    )
+            event.accept()
+            return
+
         if key == Qt.Key.Key_F11:
             self.toggle_fullscreen()
             event.accept()
@@ -164,6 +432,50 @@ class VideoCanvasWidget(QWidget):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if self.is_interactive_active:
+            if not event.isAutoRepeat():
+                hid_code = qt_key_to_hid(
+                    int(event.key()),
+                    native_scancode=int(event.nativeScanCode()),
+                    native_vk=int(event.nativeVirtualKey()),
+                )
+                if hid_code > 0:
+                    self._emit_input(
+                        InputEventPacket(
+                            ev_type=EvType.KEY_UP,
+                            modifiers_mask=self._extract_modifiers_mask(event.modifiers()),
+                            key_or_wheel=hid_code,
+                        )
+                    )
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        if self.is_connected and self.host_allows_input:
+            self._emit_input(InputEventPacket(ev_type=EvType.RELEASE_ALL))
+        super().focusOutEvent(event)
+
+    def dragEnterEvent(self, event):
+        if self.is_connected and self.host_allows_files and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if self.is_connected and self.host_allows_files and event.mimeData().hasUrls():
+            local_files = [
+                u.toLocalFile()
+                for u in event.mimeData().urls()
+                if u.isLocalFile() and u.toLocalFile()
+            ]
+            if local_files:
+                self.files_dropped.emit(local_files)
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -210,7 +522,8 @@ class VideoCanvasWidget(QWidget):
 
     def _draw_hud_pill(self, painter: QPainter):
         """Desenha a pílula minimalista no canto superior direito."""
-        pill_w, pill_h = 240, 28
+        pill_w = 278 if self.is_interactive_active else 240
+        pill_h = 28
         pill_rect = QRect(self.width() - pill_w - 16, 16, pill_w, pill_h)
 
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -225,11 +538,16 @@ class VideoCanvasWidget(QWidget):
         painter.setPen(fps_color)
         painter.drawText(pill_rect.adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, f"{self.fps:4.1f} FPS")
 
+        shown_lat = self.input_to_photon_ms if (self.is_interactive_active and self.input_to_photon_ms > 0) else self.latency_ms
         painter.setPen(QColor(Theme.SYS["text_primary"]))
-        painter.drawText(pill_rect.adjusted(75, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, f"· {self.latency_ms:3.1f} ms")
+        painter.drawText(pill_rect.adjusted(75, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, f"· {shown_lat:3.1f} ms")
 
-        painter.setPen(QColor(Theme.SYS["text_accent"]))
-        painter.drawText(pill_rect.adjusted(145, 0, -10, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "PAKE AEAD")
+        badge_txt = (
+            "RELATIVO" if (self.is_interactive_active and self.relative_mouse_mode)
+            else ("INTERATIVO" if self.is_interactive_active else "PAKE AEAD")
+        )
+        painter.setPen(QColor("#86efac") if self.is_interactive_active else QColor(Theme.SYS["text_accent"]))
+        painter.drawText(pill_rect.adjusted(145, 0, -10, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, badge_txt)
 
     def _draw_hud(self, painter: QPainter):
         hud_w, hud_h = 320, 160

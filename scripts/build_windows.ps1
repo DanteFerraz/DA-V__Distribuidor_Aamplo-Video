@@ -1,5 +1,5 @@
 # scripts/build_windows.ps1
-# Script de Compilação Local de Build e Instalador — DA-V v4.9.0
+# Script de Compilação Local de Build e Instalador — DA-V v5.0.0
 # Autor: Dante Ferraz (MonoTech)
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +41,7 @@ py -3.13 -m PyInstaller --noconfirm --clean --onedir --windowed `
   --hidden-import src.dav.modules.updater.service `
   --hidden-import src.dav.modules.updater.manifest `
   --hidden-import src.dav.modules.audio.manifest `
+  --hidden-import src.dav.modules.remote_desktop.manifest `
   --hidden-import comtypes `
   --hidden-import cryptography `
   --exclude-module PyQt5 `
@@ -66,6 +67,10 @@ Copy-Item "$Root\NOTICE" "$Root\dist\DA-V\" -Force
 Copy-Item "$Root\TRADEMARK.md" "$Root\dist\DA-V\" -Force
 Copy-Item "$Root\THIRD_PARTY_LICENSES.md" "$Root\dist\DA-V\" -Force
 Copy-Item "$Root\LICENSES" "$Root\dist\DA-V\LICENSES" -Recurse -Force
+$DllCand = Get-ChildItem -Path "$Root\build" -Recurse -Filter "dav_core.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($DllCand) {
+    Copy-Item $DllCand.FullName "$Root\dist\DA-V\dav_core.dll" -Force
+}
 
 # 2. Teste de Sanidade do Executável Gerado
 Write-Host "[2/4] Executando auto-teste do executavel compilado (--self-check)..."
@@ -86,9 +91,18 @@ Write-Host "[4/4] Compilando instalador autossuficiente DA-V_Instalador_Windows_
 py -3.13 -m PyInstaller --noconfirm --clean --onefile --windowed `
   --name DA-V_Instalador_Windows_x64 `
   --icon "$Root\installer\dav_icon.ico" `
+  --paths "$Root" `
   --add-data "$Root\build_payload\dav_app_payload.zip;." `
+  --add-data "$Root\VERSION;." `
   --add-data "$Root\installer\dav_icon.ico;installer" `
   --add-data "$Root\installer\dav_icon.png;installer" `
+  --hidden-import src.ui.qt_compat `
+  --hidden-import src.ui.glass.tokens `
+  --hidden-import src.ui.glass.paint `
+  --hidden-import src.ui.glass.icons `
+  --hidden-import src.ui.glass.qss `
+  --hidden-import src.ui.glass.widgets `
+  --hidden-import src.ui.glass.installer_shell `
   --exclude-module PyQt5 `
   --exclude-module PyQt6 `
   --exclude-module tkinter `

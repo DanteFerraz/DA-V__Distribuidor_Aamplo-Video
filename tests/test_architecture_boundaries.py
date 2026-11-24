@@ -25,6 +25,7 @@ from src.dav.kernel import (
     IAudioService,
     ICaptureService,
     ICodecService,
+    IRemoteDesktopService,
     IStreamEngineService,
     ITelemetryService,
     ITransportService,
@@ -80,6 +81,7 @@ def test_domain_slices_do_not_import_ui():
         "codec",
         "transport_p2p",
         "audio",
+        "remote_desktop",
         "stream_engine",
         "telemetry",
         "commercial",
@@ -109,6 +111,7 @@ def test_all_manifests_standardized_and_services_resolvable():
         "codec",
         "transport_p2p",
         "audio",
+        "remote_desktop",
         "stream_engine",
         "telemetry",
         "commercial",
@@ -136,6 +139,7 @@ def test_all_manifests_standardized_and_services_resolvable():
     assert isinstance(registry.get_service("codec"), ICodecService)
     assert isinstance(registry.get_service("transport_p2p"), ITransportService)
     assert isinstance(registry.get_service("audio"), IAudioService)
+    assert isinstance(registry.get_service("remote_desktop"), IRemoteDesktopService)
     assert isinstance(registry.get_service("stream_engine"), IStreamEngineService)
     assert isinstance(registry.get_service("telemetry"), ITelemetryService)
 

@@ -29,6 +29,7 @@ _PORTAL_HELPER_CODE = r'''
 import os
 import subprocess
 import sys
+import threading
 import uuid
 
 import gi
@@ -39,11 +40,12 @@ from gi.repository import Gio, GLib
 width = int(sys.argv[1])
 height = int(sys.argv[2])
 fps = int(sys.argv[3])
+enable_rd = (len(sys.argv) > 4 and sys.argv[4] == "1")
 
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 unique_sender = bus.get_unique_name().lstrip(":").replace(".", "_")
 
-def portal_request(method_name: str, params: GLib.Variant, token: str, timeout_s: int = 90):
+def portal_request(iface_name: str, method_name: str, params: GLib.Variant, token: str, timeout_s: int = 90):
     req_path = f"/org/freedesktop/portal/desktop/request/{unique_sender}/{token}"
     loop = GLib.MainLoop()
     outcome = {"code": 2, "results": {}}
@@ -76,7 +78,7 @@ def portal_request(method_name: str, params: GLib.Variant, token: str, timeout_s
         bus.call_sync(
             "org.freedesktop.portal.Desktop",
             "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.ScreenCast",
+            iface_name,
             method_name,
             params,
             GLib.VariantType.new("(o)"),
@@ -90,64 +92,186 @@ def portal_request(method_name: str, params: GLib.Variant, token: str, timeout_s
         bus.signal_unsubscribe(sub_id)
 
     if outcome["code"] != 0:
-        raise RuntimeError(f"Portal {method_name} recusado ou expirado (code={outcome['code']})")
+        raise RuntimeError(f"Portal {iface_name}.{method_name} recusado ou expirado (code={outcome['code']})")
     return outcome["results"]
 
-tok1 = f"dav_{uuid.uuid4().hex[:10]}"
-sess_tok = f"dav_sess_{uuid.uuid4().hex[:10]}"
-res_create = portal_request(
-    "CreateSession",
-    GLib.Variant(
-        "(a{sv})",
-        ({
-            "handle_token": GLib.Variant("s", tok1),
-            "session_handle_token": GLib.Variant("s", sess_tok),
-        },),
-    ),
-    tok1,
-    timeout_s=15,
-)
-session_handle = res_create["session_handle"]
+SC_IFACE = "org.freedesktop.portal.ScreenCast"
+RD_IFACE = "org.freedesktop.portal.RemoteDesktop"
+rd_active = False
+session_handle = None
+res_start = None
 
-tok2 = f"dav_{uuid.uuid4().hex[:10]}"
-select_opts = {
-    "handle_token": GLib.Variant("s", tok2),
-    "types": GLib.Variant("u", 3),        # 1=Monitor | 2=Janela
-    "multiple": GLib.Variant("b", False),
-    "cursor_mode": GLib.Variant("u", 2),  # 2=Cursor embutido na imagem
-}
-try:
-    portal_request(
-        "SelectSources",
-        GLib.Variant("(oa{sv})", (session_handle, select_opts)),
-        tok2,
-        timeout_s=30,
+if enable_rd:
+    try:
+        tok_r1 = f"dav_{uuid.uuid4().hex[:10]}"
+        sess_r = f"dav_rd_{uuid.uuid4().hex[:10]}"
+        res_c = portal_request(
+            RD_IFACE,
+            "CreateSession",
+            GLib.Variant(
+                "(a{sv})",
+                ({
+                    "handle_token": GLib.Variant("s", tok_r1),
+                    "session_handle_token": GLib.Variant("s", sess_r),
+                },),
+            ),
+            tok_r1,
+            timeout_s=15,
+        )
+        session_handle = res_c["session_handle"]
+
+        tok_dev = f"dav_{uuid.uuid4().hex[:10]}"
+        portal_request(
+            RD_IFACE,
+            "SelectDevices",
+            GLib.Variant(
+                "(oa{sv})",
+                (
+                    session_handle,
+                    {
+                        "handle_token": GLib.Variant("s", tok_dev),
+                        "types": GLib.Variant("u", 3),  # 1=Keyboard | 2=Pointer
+                    },
+                ),
+            ),
+            tok_dev,
+            timeout_s=20,
+        )
+
+        tok_src = f"dav_{uuid.uuid4().hex[:10]}"
+        sc_opts = {
+            "handle_token": GLib.Variant("s", tok_src),
+            "types": GLib.Variant("u", 3),
+            "multiple": GLib.Variant("b", False),
+            "cursor_mode": GLib.Variant("u", 2),
+        }
+        portal_request(SC_IFACE, "SelectSources", GLib.Variant("(oa{sv})", (session_handle, sc_opts)), tok_src, timeout_s=30)
+
+        tok_st = f"dav_{uuid.uuid4().hex[:10]}"
+        res_start = portal_request(
+            RD_IFACE,
+            "Start",
+            GLib.Variant("(osa{sv})", (session_handle, "", {"handle_token": GLib.Variant("s", tok_st)})),
+            tok_st,
+            timeout_s=120,
+        )
+        rd_active = True
+    except Exception as rd_err:
+        sys.stderr.write(f"[Portal-Wayland] RemoteDesktop indisponivel ({rd_err}); usando ScreenCast puro.\n")
+        sys.stderr.flush()
+        session_handle = None
+        res_start = None
+        rd_active = False
+
+if not rd_active:
+    tok1 = f"dav_{uuid.uuid4().hex[:10]}"
+    sess_tok = f"dav_sess_{uuid.uuid4().hex[:10]}"
+    res_create = portal_request(
+        SC_IFACE,
+        "CreateSession",
+        GLib.Variant(
+            "(a{sv})",
+            ({
+                "handle_token": GLib.Variant("s", tok1),
+                "session_handle_token": GLib.Variant("s", sess_tok),
+            },),
+        ),
+        tok1,
+        timeout_s=15,
     )
-except Exception:
-    select_opts.pop("cursor_mode", None)
-    tok2b = f"dav_{uuid.uuid4().hex[:10]}"
-    select_opts["handle_token"] = GLib.Variant("s", tok2b)
-    portal_request(
-        "SelectSources",
-        GLib.Variant("(oa{sv})", (session_handle, select_opts)),
-        tok2b,
-        timeout_s=30,
+    session_handle = res_create["session_handle"]
+
+    tok2 = f"dav_{uuid.uuid4().hex[:10]}"
+    select_opts = {
+        "handle_token": GLib.Variant("s", tok2),
+        "types": GLib.Variant("u", 3),
+        "multiple": GLib.Variant("b", False),
+        "cursor_mode": GLib.Variant("u", 2),
+    }
+    try:
+        portal_request(
+            SC_IFACE,
+            "SelectSources",
+            GLib.Variant("(oa{sv})", (session_handle, select_opts)),
+            tok2,
+            timeout_s=30,
+        )
+    except Exception:
+        select_opts.pop("cursor_mode", None)
+        tok2b = f"dav_{uuid.uuid4().hex[:10]}"
+        select_opts["handle_token"] = GLib.Variant("s", tok2b)
+        portal_request(
+            SC_IFACE,
+            "SelectSources",
+            GLib.Variant("(oa{sv})", (session_handle, select_opts)),
+            tok2b,
+            timeout_s=30,
+        )
+
+    tok3 = f"dav_{uuid.uuid4().hex[:10]}"
+    res_start = portal_request(
+        SC_IFACE,
+        "Start",
+        GLib.Variant(
+            "(osa{sv})",
+            (session_handle, "", {"handle_token": GLib.Variant("s", tok3)}),
+        ),
+        tok3,
+        timeout_s=120,
     )
 
-tok3 = f"dav_{uuid.uuid4().hex[:10]}"
-res_start = portal_request(
-    "Start",
-    GLib.Variant(
-        "(osa{sv})",
-        (session_handle, "", {"handle_token": GLib.Variant("s", tok3)}),
-    ),
-    tok3,
-    timeout_s=120,
-)
 streams = res_start.get("streams", [])
 if not streams:
     raise RuntimeError("Nenhum stream retornado pelo XDG Desktop Portal.")
 node_id = int(streams[0][0])
+
+if rd_active:
+    def _stdin_input_bridge():
+        for raw_ln in sys.stdin:
+            parts = raw_ln.strip().split()
+            if not parts:
+                continue
+            op = parts[0]
+            try:
+                if op == "M_ABS" and len(parts) >= 3:
+                    bus.call_sync(
+                        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                        RD_IFACE, "NotifyPointerMotionAbsolute",
+                        GLib.Variant("(oa{sv}udd)", (session_handle, {}, node_id, float(parts[1]), float(parts[2]))),
+                        None, Gio.DBusCallFlags.NONE, 2000, None,
+                    )
+                elif op == "M_REL" and len(parts) >= 3:
+                    bus.call_sync(
+                        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                        RD_IFACE, "NotifyPointerMotion",
+                        GLib.Variant("(oa{sv}dd)", (session_handle, {}, float(parts[1]), float(parts[2]))),
+                        None, Gio.DBusCallFlags.NONE, 2000, None,
+                    )
+                elif op == "BTN" and len(parts) >= 3:
+                    bus.call_sync(
+                        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                        RD_IFACE, "NotifyPointerButton",
+                        GLib.Variant("(oa{sv}iu)", (session_handle, {}, int(parts[1]), int(parts[2]))),
+                        None, Gio.DBusCallFlags.NONE, 2000, None,
+                    )
+                elif op == "WHEEL" and len(parts) >= 3:
+                    bus.call_sync(
+                        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                        RD_IFACE, "NotifyPointerAxisDiscrete",
+                        GLib.Variant("(oa{sv}ui)", (session_handle, {}, int(parts[1]), int(parts[2]))),
+                        None, Gio.DBusCallFlags.NONE, 2000, None,
+                    )
+                elif op == "KEY" and len(parts) >= 3:
+                    bus.call_sync(
+                        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                        RD_IFACE, "NotifyKeyboardKeycode",
+                        GLib.Variant("(oa{sv}iu)", (session_handle, {}, int(parts[1]), int(parts[2]))),
+                        None, Gio.DBusCallFlags.NONE, 2000, None,
+                    )
+            except Exception:
+                pass
+
+    threading.Thread(target=_stdin_input_bridge, daemon=True).start()
 
 fd_reply, fd_list = bus.call_with_unix_fd_list_sync(
     "org.freedesktop.portal.Desktop",
@@ -250,13 +374,15 @@ class WaylandPortalCapturer:
     sem bloqueio mesmo quando o compositor Wayland nao emite danos em tela parada.
     """
 
-    def __init__(self, width: int, height: int, fps: int = 60):
+    def __init__(self, width: int, height: int, fps: int = 60, enable_remote_desktop: bool = True):
         self.width = int(width)
         self.height = int(height)
         self.fps = max(1, int(fps))
+        self.enable_remote_desktop = bool(enable_remote_desktop)
         self.frame_bytes = self.width * self.height * 4
 
         self._proc: Optional[subprocess.Popen] = None
+        self._stdin_lock = threading.Lock()
         self._stop_evt = threading.Event()
         self._first_frame_evt = threading.Event()
         self._lock = threading.Lock()
@@ -289,8 +415,17 @@ class WaylandPortalCapturer:
         env = _build_clean_host_env()
         try:
             self._proc = subprocess.Popen(
-                [host_py, "-u", "-c", _PORTAL_HELPER_CODE, str(self.width), str(self.height), str(self.fps)],
-                stdin=subprocess.DEVNULL,
+                [
+                    host_py,
+                    "-u",
+                    "-c",
+                    _PORTAL_HELPER_CODE,
+                    str(self.width),
+                    str(self.height),
+                    str(self.fps),
+                    "1" if self.enable_remote_desktop else "0",
+                ],
+                stdin=subprocess.PIPE if self.enable_remote_desktop else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=max(self.frame_bytes * 2, 1048576),
@@ -374,6 +509,20 @@ class WaylandPortalCapturer:
         with self._lock:
             np.copyto(dst_bgra, self._latest_frame)
         return True
+
+    def send_remote_input_cmd(self, cmd_line: str) -> bool:
+        """Envia comando de ponteiro/teclado ao helper XDG RemoteDesktop via stdin."""
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.poll() is not None:
+            return False
+        data = (cmd_line if cmd_line.endswith("\n") else f"{cmd_line}\n").encode("utf-8")
+        with self._stdin_lock:
+            try:
+                proc.stdin.write(data)
+                proc.stdin.flush()
+                return True
+            except Exception:
+                return False
 
     def close(self):
         self._stop_evt.set()

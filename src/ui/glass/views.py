@@ -27,6 +27,7 @@ from src.ui.glass.widgets import (
     GlassLabel,
     GlassLineEdit,
     GlassSpacer,
+    GlassToggleSwitch,
 )
 
 _IPV4_PORT_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?$")
@@ -216,14 +217,17 @@ class ViewerConnectingPage(CardPage):
 
 
 class SenderHomePage(CardPage):
-    """Tela principal do Modo Transmissor com dois botoes em pilula neon."""
+    """Tela principal do Modo Transmissor com controle de Modo Interativo e gatilho Admin."""
 
     copy_key_clicked = Signal()
     toggle_send_clicked = Signal()
+    interactive_toggled = Signal(bool)
+    admin_elevation_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent, dark=False)
         self._is_sending = False
+        self._admin_elevated = False
         self._base_status = ""
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
@@ -234,29 +238,59 @@ class SenderHomePage(CardPage):
         self.lbl_title = GlassLabel("Modo Transmissor", design_px=T.FONT_TITLE, weight=600)
         lay.addWidget(self.lbl_title)
 
-        lay.addStretch(7)
+        lay.addStretch(4)
 
         self.btn_copy_key = GlassButton(
             "Copiar Chave de acesso",
             design_w=T.CONTROL_W,
-            design_h=T.BUTTON_H,
-            design_font=T.FONT_BUTTON,
+            design_h=96.0,
+            design_font=42,
         )
         self.btn_copy_key.clicked.connect(self.copy_key_clicked.emit)
         lay.addWidget(self.btn_copy_key, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        lay.addWidget(GlassSpacer(42))
+        lay.addWidget(GlassSpacer(18))
+
+        self.switch_interactive = GlassToggleSwitch(
+            "Transmissão Interativa (Área de Trabalho)",
+            design_w=T.CONTROL_W,
+            design_h=62.0,
+            design_font=24,
+            checked=False,
+        )
+        self.switch_interactive.setToolTip(
+            "Quando ativado, permite que o convidado controle mouse/teclado e sincronize área de trabalho"
+        )
+        self.switch_interactive.toggled.connect(self._on_interactive_switch_changed)
+        lay.addWidget(self.switch_interactive, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        lay.addWidget(GlassSpacer(10))
+
+        self.btn_admin_privilege = GlassButton(
+            "Autorizar Privilégio Admin (UAC / Polkit)",
+            design_w=T.CONTROL_W,
+            design_h=52.0,
+            design_font=22,
+        )
+        self.btn_admin_privilege.setToolTip(
+            "Solicita autorização de Administrador no Windows (UAC) ou Linux (Polkit) para controlar janelas de sistema"
+        )
+        self.btn_admin_privilege.clicked.connect(self.admin_elevation_requested.emit)
+        self.btn_admin_privilege.setVisible(False)
+        lay.addWidget(self.btn_admin_privilege, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        lay.addWidget(GlassSpacer(18))
 
         self.btn_toggle_send = GlassButton(
             "Iniciar Transmissão",
             design_w=T.CONTROL_W,
-            design_h=T.BUTTON_H,
-            design_font=T.FONT_BUTTON,
+            design_h=96.0,
+            design_font=42,
         )
         self.btn_toggle_send.clicked.connect(self.toggle_send_clicked.emit)
         lay.addWidget(self.btn_toggle_send, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        lay.addWidget(GlassSpacer(14))
+        lay.addWidget(GlassSpacer(12))
 
         self.lbl_status = GlassLabel(
             "",
@@ -267,7 +301,22 @@ class SenderHomePage(CardPage):
         )
         lay.addWidget(self.lbl_status)
 
-        lay.addStretch(6)
+        lay.addStretch(4)
+
+    def _on_interactive_switch_changed(self, checked: bool) -> None:
+        self.btn_admin_privilege.setVisible(bool(checked))
+        self.interactive_toggled.emit(bool(checked))
+
+    def set_interactive_state(self, interactive: bool, admin_elevated: bool = False) -> None:
+        self._admin_elevated = bool(admin_elevated)
+        self.switch_interactive.setChecked(bool(interactive), emit_signal=False)
+        self.btn_admin_privilege.setVisible(bool(interactive))
+        if self._admin_elevated:
+            self.btn_admin_privilege.setText("Privilégio Admin Ativo (UAC / Polkit)")
+            self.btn_admin_privilege.setEnabled(False)
+        else:
+            self.btn_admin_privilege.setText("Autorizar Privilégio Admin (UAC / Polkit)")
+            self.btn_admin_privilege.setEnabled(True)
 
     def set_sending_state(self, sending: bool, detail: str = "") -> None:
         self._is_sending = bool(sending)

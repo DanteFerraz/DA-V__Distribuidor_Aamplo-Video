@@ -32,6 +32,15 @@ from src.dav.modules.audio.codec_opus import OpusAudioEncoder
 from src.dav.modules.capture.service import enumerate_system_monitors
 from src.dav.modules.capture.wayland_portal import WaylandPortalCapturer, is_wayland_session
 from src.dav.modules.codec.encoder import VideoEncoder
+from src.dav.modules.remote_desktop.injector_base import MonitorBounds
+from src.dav.modules.remote_desktop.protocol import (
+    EvType,
+    InputEventPacket,
+    pack_input_echo,
+)
+from src.dav.modules.remote_desktop.security_gate import SecurityGate, WorkspacePermissions
+from src.dav.modules.remote_desktop.service import RemoteDesktopService
+from src.dav.modules.remote_desktop.workspace_agent import WorkspaceAgent
 from src.dav.modules.telemetry.stage_probe import probe_init, probe_send as _probe_send
 from src.dav.modules.transport_p2p.blind_relay import normalize_pin, wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
@@ -140,6 +149,9 @@ class SenderTransportEndpoint:
         bitrate_kbps: int = 12000,
         fps: int = 60,
         audio_muted_evt: Optional[threading.Event] = None,
+        monitor_bounds: Optional[MonitorBounds] = None,
+        initial_permissions: Optional[Dict[str, bool]] = None,
+        input_wake_evt: Optional[threading.Event] = None,
     ):
         self.clean_pin = normalize_pin(pin)
         self.target_ip = str(initial_target_ip or "").strip()
@@ -151,6 +163,8 @@ class SenderTransportEndpoint:
         self.cmd_queue = cmd_queue
         self.evt_queue = evt_queue
         self.audio_muted_evt = audio_muted_evt
+        self.input_wake_evt = input_wake_evt or threading.Event()
+        self.monitor_bounds = monitor_bounds or MonitorBounds()
 
         self.candidates: List[Tuple[str, int, str]] = []
         self.relay_addr: Optional[Tuple[str, int]] = None
@@ -163,6 +177,9 @@ class SenderTransportEndpoint:
         self.last_keepalive = time.monotonic()
         self._ctrl_lock = threading.Lock()
         self._active_encoder: Optional[VideoEncoder] = None
+        self._echo_counter: int = 0
+        self._elevating_lock = threading.Lock()
+        self._elevating_in_progress = False
 
         self.dp = DataPlaneSender(
             pin=pin,
@@ -171,10 +188,34 @@ class SenderTransportEndpoint:
             fps=fps,
         )
 
+        self.rd_service = RemoteDesktopService()
+        init_perms = WorkspacePermissions.from_dict(initial_permissions or {})
+        self.security_gate = SecurityGate(initial_perms=init_perms)
+        inj_res = self.rd_service.create_injector(bounds=self.monitor_bounds)
+        self.input_injector = inj_res.data
+        if self.input_injector is not None and getattr(self.input_injector, "is_elevated", False):
+            self.security_gate.update_permissions(admin_elevated=True)
+
+        self.workspace_agent = WorkspaceAgent(
+            gate=self.security_gate,
+            on_clipboard_rx=lambda txt: self._emit_event(("REMOTE_CLIPBOARD", txt)),
+            on_file_status=lambda st: self._emit_event(("REMOTE_FILE_STATUS", st)),
+            send_wire_fn=lambda wf: self.dp.send_workspace_datagram(wf),
+        )
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0xB8)
+        except Exception:
+            pass
+        if hasattr(socket, "SO_PRIORITY"):
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_PRIORITY, 6)
+            except Exception:
+                pass
         disable_win_udp_connreset(self.sock)
 
         desired_bind = int(bind_port or 9000)
@@ -214,6 +255,63 @@ class SenderTransportEndpoint:
                 self.evt_queue.put_nowait(payload)
             except Exception:
                 pass
+
+    def attach_wayland_portal(self, portal_cap: WaylandPortalCapturer) -> None:
+        """Conecta a ponte de injecao XDG RemoteDesktop caso o processo nao esteja usando uinput elevado."""
+        if self.input_injector is not None and getattr(self.input_injector, "is_elevated", False):
+            return
+        res = self.rd_service.create_injector(
+            bounds=self.monitor_bounds,
+            wayland_cmd_fn=portal_cap.send_remote_input_cmd,
+        )
+        if res.is_success and res.data is not None:
+            self.input_injector = res.data
+
+    def _request_admin_async(self) -> None:
+        with self._elevating_lock:
+            if self._elevating_in_progress:
+                return
+            self._elevating_in_progress = True
+
+        def _worker():
+            try:
+                res = self.rd_service.request_admin_elevation(bounds=self.monitor_bounds)
+                if res.is_success and res.data is not None:
+                    old = self.input_injector
+                    self.input_injector = res.data
+                    if old is not None and old is not res.data:
+                        try:
+                            old.release_all()
+                        except Exception:
+                            pass
+                    snap = self.security_gate.update_permissions(admin_elevated=True).to_dict()
+                    if self.dp.pake.confirmed:
+                        self.workspace_agent.broadcast_permissions()
+                    self._emit_event(("REMOTE_PERMS", snap))
+                    self._emit_event((
+                        "log",
+                        "SUCCESS",
+                        "[Area Remota] Privilegio Administrativo (UAC/Polkit) ativo para injecao global.",
+                    ))
+                else:
+                    self._emit_event((
+                        "log",
+                        "WARN",
+                        f"[Area Remota] Elevacao Admin nao concedida ({res.error}). Mantendo modo usuario.",
+                    ))
+            finally:
+                with self._elevating_lock:
+                    self._elevating_in_progress = False
+
+        threading.Thread(target=_worker, daemon=True, name="DAV-Admin-Elevate").start()
+
+    def tick_remote_housekeeping(self, now_mono: Optional[float] = None) -> None:
+        now_m = now_mono if now_mono is not None else time.monotonic()
+        if self.input_injector is not None:
+            self.input_injector.tick_watchdog(now_mono=now_m)
+        if self.dp.pake.confirmed:
+            for rf in self.workspace_agent.channel.poll_retransmits(now_mono=now_m):
+                self.dp.send_workspace_datagram(rf)
 
     def _send_punch_burst(self):
         syn_pkt = self.dp.build_pake_syn()
@@ -309,6 +407,34 @@ class SenderTransportEndpoint:
                         self.audio_muted_evt.set()
                     else:
                         self.audio_muted_evt.clear()
+                elif action == "SET_REMOTE_PERMS" and len(cmd) > 1 and isinstance(cmd[1], dict):
+                    p_dict = dict(cmd[1])
+                    p_dict.pop("admin_elevated", None)
+                    updated = self.security_gate.update_permissions(**p_dict)
+                    if not updated.allow_input and self.input_injector is not None:
+                        self.input_injector.release_all()
+                    if self.dp.pake.confirmed:
+                        self.workspace_agent.broadcast_permissions()
+                    self._emit_event(("REMOTE_PERMS", updated.to_dict()))
+                elif action == "PANIC_REVOKE_REMOTE":
+                    updated = self.security_gate.panic_revoke_all()
+                    if self.input_injector is not None:
+                        self.input_injector.release_all()
+                    if self.dp.pake.confirmed:
+                        self.workspace_agent.broadcast_permissions()
+                    self._emit_event(("REMOTE_PERMS", updated.to_dict()))
+                    self._emit_event(("log", "WARN", "[Seguranca] Controle remoto revogado imediatamente no Host."))
+                elif action == "ELEVATE_REMOTE_ADMIN":
+                    self._request_admin_async()
+                elif action == "SEND_CLIPBOARD" and len(cmd) > 1:
+                    if self.security_gate.permissions.allow_clipboard and self.dp.pake.confirmed:
+                        self.workspace_agent.build_clipboard_frames(str(cmd[1]))
+                elif action == "SEND_FILE" and len(cmd) > 1:
+                    if self.security_gate.permissions.allow_files and self.dp.pake.confirmed:
+                        try:
+                            self.workspace_agent.build_file_transfer_frames(str(cmd[1]))
+                        except Exception as f_exc:
+                            self._emit_event(("log", "WARN", f"[Arquivo P2P] Falha ao enviar: {f_exc}"))
 
         while True:
             try:
@@ -351,8 +477,28 @@ class SenderTransportEndpoint:
                     except Exception:
                         pass
 
-                if evt == "pake_confirmed" and encoder is not None:
-                    encoder.request_keyframe(force=True)
+                if evt == "pake_confirmed":
+                    if encoder is not None:
+                        encoder.request_keyframe(force=True)
+                    self.workspace_agent.broadcast_permissions()
+                continue
+            elif evt == "remote_input" and reply_ack is not None:
+                in_pkt = InputEventPacket.unpack(reply_ack)
+                if in_pkt is not None and self.security_gate.allow_input_packet(in_pkt):
+                    if self.input_injector is not None:
+                        self.input_injector.inject(in_pkt)
+                    self._echo_counter += 1
+                    if (
+                        in_pkt.is_critical_transition
+                        or in_pkt.ev_type == EvType.HEARTBEAT
+                        or (self._echo_counter & 0x07) == 0
+                    ) and in_pkt.client_ts_us > 0:
+                        self.dp.send_workspace_datagram(pack_input_echo(in_pkt.client_ts_us))
+                    if in_pkt.is_critical_transition or in_pkt.ev_type == EvType.WHEEL:
+                        self.input_wake_evt.set()
+                continue
+            elif evt == "workspace_msg" and reply_ack is not None:
+                self.workspace_agent.handle_incoming_wire(reply_ack, is_host=True)
                 continue
             elif evt == "sqp_ack":
                 continue
@@ -433,6 +579,16 @@ class SenderTransportEndpoint:
 
     def close(self):
         try:
+            self.workspace_agent.close()
+        except Exception:
+            pass
+        if self.input_injector is not None:
+            try:
+                self.input_injector.close()
+            except Exception:
+                pass
+        self.rd_service.close()
+        try:
             self.sock.close()
         except Exception:
             pass
@@ -454,6 +610,7 @@ def run_sender_subprocess(
     evt_queue: Optional["mp.Queue"] = None,
     bind_port: Optional[int] = None,
     audio_enabled: bool = True,
+    initial_permissions: Optional[Dict[str, bool]] = None,
 ):
     """Subprocesso dedicado de captura, compressao e envio UDP a 60 FPS."""
     if sys.platform == "win32":
@@ -527,6 +684,8 @@ def run_sender_subprocess(
     audio_muted_evt = threading.Event()
     if not audio_enabled:
         audio_muted_evt.set()
+    input_wake_evt = threading.Event()
+    mon_bounds = MonitorBounds(left=src_x, top=src_y, width=src_w, height=src_h)
 
     effective_bind_port = int(bind_port if bind_port is not None else (target_port or 9000))
 
@@ -541,6 +700,9 @@ def run_sender_subprocess(
         bitrate_kbps=bitrate_kbps,
         fps=fps,
         audio_muted_evt=audio_muted_evt,
+        monitor_bounds=mon_bounds,
+        initial_permissions=initial_permissions,
+        input_wake_evt=input_wake_evt,
     )
 
     _tel_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -748,9 +910,10 @@ def run_sender_subprocess(
                                 "INFO",
                                 "[Wayland] Sessao Wayland detectada — aguardando autorizacao no portal PipeWire...",
                             ))
-                        candidate = WaylandPortalCapturer(width=width, height=height, fps=fps)
+                        candidate = WaylandPortalCapturer(width=width, height=height, fps=fps, enable_remote_desktop=True)
                         if candidate.start(wait_first_frame_timeout=60.0):
                             portal_cap = candidate
+                            transport.attach_wayland_portal(portal_cap)
                             if cmd_queue is not None:
                                 cmd_queue.put(("request_idr",))
                             if evt_queue is not None:
@@ -825,9 +988,10 @@ def run_sender_subprocess(
                                                 "WARN",
                                                 "[Captura Linux] XWayland bloqueou leitura X11. Migrando para PipeWire Portal...",
                                             ))
-                                        candidate = WaylandPortalCapturer(width=width, height=height, fps=fps)
+                                        candidate = WaylandPortalCapturer(width=width, height=height, fps=fps, enable_remote_desktop=True)
                                         if candidate.start(wait_first_frame_timeout=60.0):
                                             portal_cap = candidate
+                                            transport.attach_wayland_portal(portal_cap)
                                             portal_cap.grab_into(arrays[buf_idx])
                                             if cmd_queue is not None:
                                                 cmd_queue.put(("request_idr",))
@@ -960,11 +1124,18 @@ def run_sender_subprocess(
 
             now = time.perf_counter()
             slack = t_target - now
-            if slack > 0.003:
-                time.sleep(slack - 0.0015)
-            while time.perf_counter() < t_target:
+            if slack > 0.002:
+                woke = input_wake_evt.wait(timeout=slack - 0.001)
+                if woke:
+                    input_wake_evt.clear()
+                    t_target = time.perf_counter()
+            while time.perf_counter() < t_target and not input_wake_evt.is_set():
                 pass
-            t_target = max(t_target + frame_interval, time.perf_counter())
+            if input_wake_evt.is_set():
+                input_wake_evt.clear()
+                t_target = time.perf_counter() + frame_interval
+            else:
+                t_target = max(t_target + frame_interval, time.perf_counter())
 
         encoder.close()
 
@@ -1041,16 +1212,19 @@ def run_sender_subprocess(
                 audio_cap.close()
 
     def _control_rx_worker():
+        _set_thread_perf(THREAD_PRIORITY_TIME_CRITICAL, 0)
+        last_hk = time.monotonic()
         while not stop_event.is_set():
             try:
-                if transport.dp.pake.confirmed and is_streaming_active.is_set():
-                    time.sleep(0.05)
-                    continue
-                rlist, _, _ = select.select([transport.sock], [], [], 0.005)
-                if rlist or not transport.dp.pake.confirmed:
+                rlist, _, _ = select.select([transport.sock], [], [], 0.002)
+                if rlist or not transport.dp.pake.confirmed or (cmd_queue is not None and not cmd_queue.empty()):
                     transport.poll_control()
+                now_hk = time.monotonic()
+                if (now_hk - last_hk) >= 0.025:
+                    last_hk = now_hk
+                    transport.tick_remote_housekeeping(now_mono=now_hk)
             except Exception:
-                time.sleep(0.005)
+                time.sleep(0.002)
 
     t_ctrl = threading.Thread(target=_control_rx_worker, daemon=True, name="DAV-Control-RX")
     t_ctrl.start()
