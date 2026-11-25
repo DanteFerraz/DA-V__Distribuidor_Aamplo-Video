@@ -191,23 +191,14 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Cache vgamepad build (Rust)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-vgamepad-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-vgamepad-
-
       - name: Install Python runtime & packaging dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest pyinstaller
+          # vgamepad has no wheels for Py3.12 on Windows; skip to avoid 1h+ Rust build
+          # App falls back to synthetic mode (DAV_HEADLESS_SYNTHETIC=1 in tests)
+          python -m pip uninstall -y vgamepad 2>$null
 
       - name: Execute Unit & P2P End-to-End Validation Suite
         shell: pwsh
@@ -249,7 +240,6 @@ jobs:
             --hidden-import src.dav.modules.universal_input.manifest `
             --hidden-import PySide6.QtMultimedia `
             --collect-all sdl2dll `
-            --collect-all vgamepad `
             --hidden-import comtypes `
             --hidden-import cryptography `
             --exclude-module PyQt5 `
