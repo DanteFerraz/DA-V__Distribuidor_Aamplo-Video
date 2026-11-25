@@ -198,7 +198,9 @@ jobs:
           # vgamepad has no wheels for Py3.12 on Windows; exclude to avoid 1h+ Rust build
           # App falls back to synthetic mode (DAV_HEADLESS_SYNTHETIC=1 in tests)
           python -m pip install pytest pyinstaller
-          python -m pip install -r requirements.txt --exclude vgamepad
+          # Install requirements except vgamepad
+          $reqs = Get-Content requirements.txt | Where-Object { $_ -notmatch '^\s*vgamepad' -and $_ -notmatch '^\s*#' }
+          $reqs | ForEach-Object { python -m pip install $_ }
 
       - name: Execute Unit & P2P End-to-End Validation Suite
         shell: pwsh
