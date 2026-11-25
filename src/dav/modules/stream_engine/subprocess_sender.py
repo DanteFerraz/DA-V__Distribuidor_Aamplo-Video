@@ -36,6 +36,7 @@ from src.dav.modules.remote_desktop.injector_base import MonitorBounds
 from src.dav.modules.remote_desktop.protocol import (
     EvType,
     InputEventPacket,
+    WsMsgType,
     pack_input_echo,
 )
 from src.dav.modules.remote_desktop.security_gate import SecurityGate, WorkspacePermissions
@@ -44,8 +45,16 @@ from src.dav.modules.remote_desktop.workspace_agent import WorkspaceAgent
 from src.dav.modules.telemetry.stage_probe import probe_init, probe_send as _probe_send
 from src.dav.modules.transport_p2p.blind_relay import normalize_pin, wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
+from src.dav.modules.transport_p2p.crypto_pake import MAGIC_PAKE_ACK, MAGIC_PAKE_SYN
 from src.dav.modules.transport_p2p.data_plane import DataPlaneSender
 from src.dav.modules.transport_p2p.packetizer import MAGIC_ACK, MAGIC_PLI, MAGIC_SYN
+from src.dav.modules.universal_input.gamepad_virtual_hub import VirtualGamepadHub
+from src.dav.modules.universal_input.models import (
+    ClientKeyboardProfileDTO,
+    GamepadStateDTO,
+    RumbleAckDTO,
+    RumbleRequestDTO,
+)
 from src.dav.modules.transport_p2p.service import disable_win_udp_connreset
 from src.dav.modules.transport_p2p.signaling_client import (
     build_peer_candidates,
@@ -181,6 +190,14 @@ class SenderTransportEndpoint:
         self._elevating_lock = threading.Lock()
         self._elevating_in_progress = False
 
+        self._pin_raw = pin
+        self._bitrate_kbps = bitrate_kbps
+        self._fps = fps
+        self._extra_peers: Dict[bytes, Dict[str, Any]] = {}
+        self._pending_extra_dp: Optional[DataPlaneSender] = None
+        self._pending_extra_cands: List[Tuple[str, int, str]] = []
+        self.client_keyboard_profiles: Dict[str, Dict[str, str]] = {}
+
         self.dp = DataPlaneSender(
             pin=pin,
             send_raw_fn=self.send_datagram,
@@ -201,6 +218,10 @@ class SenderTransportEndpoint:
             on_clipboard_rx=lambda txt: self._emit_event(("REMOTE_CLIPBOARD", txt)),
             on_file_status=lambda st: self._emit_event(("REMOTE_FILE_STATUS", st)),
             send_wire_fn=lambda wf: self.dp.send_workspace_datagram(wf),
+        )
+        self.gamepad_hub = VirtualGamepadHub(
+            on_rumble_to_peer=self._send_rumble_to_peer,
+            on_roster_changed=lambda roster: self._emit_event(("GAMEPAD_ROSTER", roster)),
         )
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -305,6 +326,162 @@ class SenderTransportEndpoint:
 
         threading.Thread(target=_worker, daemon=True, name="DAV-Admin-Elevate").start()
 
+    def has_any_confirmed_peer(self) -> bool:
+        if self.dp.pake.confirmed:
+            return True
+        return any(e["dp"].pake.confirmed for e in self._extra_peers.values())
+
+    def _send_to_addr(self, pkt: bytes, addr: Optional[Tuple[str, int]]) -> None:
+        if not addr:
+            return
+        if self.relay_addr and addr == self.relay_addr:
+            try:
+                self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", pkt), self.relay_addr)
+            except OSError:
+                pass
+            return
+        try:
+            self.sock.sendto(pkt, addr)
+        except OSError:
+            pass
+
+    def _create_extra_peer_entry(self, peer_nonce: bytes, addr: Tuple[str, int], dp_inst: Optional[DataPlaneSender] = None) -> Dict[str, Any]:
+        entry: Dict[str, Any] = {
+            "peer_id": f"peer:{peer_nonce.hex()[:12]}",
+            "addr": (addr[0], int(addr[1])),
+            "last_seen": time.monotonic(),
+        }
+        dp_obj = dp_inst or DataPlaneSender(
+            pin=self._pin_raw,
+            send_raw_fn=lambda raw, ep=entry: self._send_to_addr(raw, ep["addr"]),
+            initial_bitrate_kbps=self._bitrate_kbps,
+            fps=self._fps,
+        )
+        dp_obj.pacer._send_fn = lambda raw, ep=entry: self._send_to_addr(raw, ep["addr"])
+        ws_obj = WorkspaceAgent(
+            gate=self.security_gate,
+            on_clipboard_rx=lambda txt: self._emit_event(("REMOTE_CLIPBOARD", txt)),
+            on_file_status=lambda st: self._emit_event(("REMOTE_FILE_STATUS", st)),
+            send_wire_fn=lambda wf, d=dp_obj: d.send_workspace_datagram(wf),
+        )
+        entry["dp"] = dp_obj
+        entry["ws_agent"] = ws_obj
+        return entry
+
+    def _send_rumble_to_peer(self, peer_id: str, rumble_payload: bytes) -> None:
+        if peer_id == "peer:primary":
+            if self.dp.pake.confirmed:
+                wf = self.workspace_agent.channel.send_unreliable(WsMsgType.GAMEPAD_RUMBLE, rumble_payload)
+                self.dp.send_workspace_datagram(wf)
+            return
+        for entry in self._extra_peers.values():
+            if entry["peer_id"] == peer_id and entry["dp"].pake.confirmed:
+                wf = entry["ws_agent"].channel.send_unreliable(WsMsgType.GAMEPAD_RUMBLE, rumble_payload)
+                entry["dp"].send_workspace_datagram(wf)
+                return
+
+    def _broadcast_permissions_all(self) -> None:
+        if self.dp.pake.confirmed:
+            self.workspace_agent.broadcast_permissions()
+        for entry in self._extra_peers.values():
+            if entry["dp"].pake.confirmed:
+                entry["ws_agent"].broadcast_permissions()
+
+    def broadcast_audio_frame(self, encoded_audio: bytes, is_lbrr: bool = False) -> None:
+        if self.dp.pake.confirmed:
+            self.dp.send_audio_frame(encoded_audio, is_lbrr=is_lbrr)
+        for entry in self._extra_peers.values():
+            if entry["dp"].pake.confirmed:
+                entry["dp"].send_audio_frame(encoded_audio, is_lbrr=is_lbrr)
+
+    def broadcast_video_frame(
+        self,
+        compressed_payload: bytes,
+        is_keyframe: bool,
+        frame_interval_sec: float,
+        stop_check: Optional[Any] = None,
+    ) -> Tuple[int, int, int]:
+        tot_pkts = 0
+        tot_bytes = 0
+        max_m = 0
+        if self.dp.pake.confirmed:
+            p, b, m = self.dp.send_video_frame(
+                compressed_payload,
+                is_keyframe=is_keyframe,
+                frame_interval_sec=frame_interval_sec,
+                pir_mode=False,
+                stop_check=stop_check,
+            )
+            tot_pkts += p
+            tot_bytes += b
+            max_m = max(max_m, m)
+        for entry in self._extra_peers.values():
+            if entry["dp"].pake.confirmed:
+                p, b, m = entry["dp"].send_video_frame(
+                    compressed_payload,
+                    is_keyframe=is_keyframe,
+                    frame_interval_sec=frame_interval_sec,
+                    pir_mode=False,
+                    stop_check=stop_check,
+                )
+                tot_pkts += p
+                tot_bytes += b
+                max_m = max(max_m, m)
+        return tot_pkts, tot_bytes, max_m
+
+    def _handle_host_ws_messages(self, peer_id: str, accepted_msgs: list) -> None:
+        for msg in accepted_msgs:
+            if msg.msg_type == WsMsgType.CLIENT_INPUT_PROFILE:
+                d = msg.decode_json() or {}
+                prof = ClientKeyboardProfileDTO.from_dict(d).to_dict()
+                self.client_keyboard_profiles[peer_id] = prof
+                self._emit_event(("CLIENT_KB_PROFILE", {"peer_id": peer_id, **prof}))
+            elif msg.msg_type == WsMsgType.GAMEPAD_RUMBLE_ACK:
+                ack = RumbleAckDTO.from_json_bytes(msg.payload)
+                if ack is not None:
+                    now_us = int(time.perf_counter_ns() // 1000)
+                    rtt_ms = max(0.1, (now_us - ack.sent_ts_us) / 1000.0) if ack.sent_ts_us > 0 else 0.5
+                    self._emit_event((
+                        "GAMEPAD_RUMBLE_ACK",
+                        {
+                            "peer_id": peer_id,
+                            "local_slot": ack.local_slot,
+                            "ok": ack.ok,
+                            "request_id": ack.request_id,
+                            "rtt_ms": round(rtt_ms, 2),
+                            "device_name": ack.device_name,
+                            "backend": ack.backend,
+                        },
+                    ))
+
+    def _process_remote_input_bytes(self, peer_id: str, dp_ref: DataPlaneSender, raw_24b: bytes) -> None:
+        in_pkt = InputEventPacket.unpack(raw_24b)
+        if in_pkt is None or not self.security_gate.allow_input_packet(in_pkt):
+            return
+        if in_pkt.ev_type == EvType.GAMEPAD_STATE:
+            gp_state = GamepadStateDTO.from_packet_fields(
+                in_pkt.buttons_mask,
+                in_pkt.modifiers_mask,
+                in_pkt.x_val,
+                in_pkt.y_val,
+                in_pkt.key_or_wheel,
+                in_pkt.client_ts_us,
+            )
+            self.gamepad_hub.handle_gamepad_state(peer_id, gp_state)
+        else:
+            if self.input_injector is not None:
+                self.input_injector.inject(in_pkt)
+
+        self._echo_counter += 1
+        if (
+            in_pkt.is_critical_transition
+            or in_pkt.ev_type == EvType.HEARTBEAT
+            or (self._echo_counter & 0x07) == 0
+        ) and in_pkt.client_ts_us > 0:
+            dp_ref.send_workspace_datagram(pack_input_echo(in_pkt.client_ts_us))
+        if in_pkt.is_critical_transition or in_pkt.ev_type in (EvType.WHEEL, EvType.GAMEPAD_STATE):
+            self.input_wake_evt.set()
+
     def tick_remote_housekeeping(self, now_mono: Optional[float] = None) -> None:
         now_m = now_mono if now_mono is not None else time.monotonic()
         if self.input_injector is not None:
@@ -312,6 +489,10 @@ class SenderTransportEndpoint:
         if self.dp.pake.confirmed:
             for rf in self.workspace_agent.channel.poll_retransmits(now_mono=now_m):
                 self.dp.send_workspace_datagram(rf)
+        for entry in list(self._extra_peers.values()):
+            if entry["dp"].pake.confirmed:
+                for rf in entry["ws_agent"].channel.poll_retransmits(now_mono=now_m):
+                    entry["dp"].send_workspace_datagram(rf)
 
     def _send_punch_burst(self):
         syn_pkt = self.dp.build_pake_syn()
@@ -382,15 +563,29 @@ class SenderTransportEndpoint:
                     peer_dict = cmd[1] if len(cmd) > 1 and isinstance(cmd[1], dict) else {}
                     my_pub_ip = cmd[2] if len(cmd) > 2 else None
                     relay_dict = cmd[3] if len(cmd) > 3 and isinstance(cmd[3], dict) else peer_dict.get("_relay")
-                    self.candidates = build_peer_candidates(peer_dict, my_public_ip=my_pub_ip)
+                    new_cands = build_peer_candidates(peer_dict, my_public_ip=my_pub_ip)
                     if relay_dict and relay_dict.get("host") and relay_dict.get("port"):
                         self.relay_addr = (str(relay_dict["host"]), int(relay_dict["port"]))
-                    self.use_relay = False
-                    self.punch_locked = False
-                    self.punch_started_at = time.monotonic()
-                    self.last_relay_bind = 0.0
-                    self._send_punch_burst()
-                    print(f"[Sender P2P] Hole-Punching PAKE concorrente para candidatos: {self.candidates}")
+                    if self.dp.pake.confirmed:
+                        self._pending_extra_cands = new_cands
+                        self._pending_extra_dp = DataPlaneSender(
+                            pin=self._pin_raw,
+                            send_raw_fn=lambda _raw: None,
+                            initial_bitrate_kbps=self._bitrate_kbps,
+                            fps=self._fps,
+                        )
+                        syn_extra = self._pending_extra_dp.build_pake_syn()
+                        for cip, cport, _ in new_cands:
+                            self._send_to_addr(syn_extra, (cip, int(cport)))
+                        print(f"[Sender Multi-Peer] Sondando novo receptor adicional em {new_cands}")
+                    else:
+                        self.candidates = new_cands
+                        self.use_relay = False
+                        self.punch_locked = False
+                        self.punch_started_at = time.monotonic()
+                        self.last_relay_bind = 0.0
+                        self._send_punch_burst()
+                        print(f"[Sender P2P] Hole-Punching PAKE concorrente para candidatos: {self.candidates}")
                 elif action in ("REQUEST_KEYFRAME", "request_idr"):
                     if encoder is not None:
                         encoder.request_keyframe(force=True)
@@ -401,6 +596,7 @@ class SenderTransportEndpoint:
                     self.target_ip = ""
                     self.use_relay = False
                     self.punch_locked = False
+                    self.gamepad_hub.release_all_neutral()
                     print("[Sender] Transmissao em Standby (0% captura/encode).")
                 elif action == "AUDIO_MUTE" and self.audio_muted_evt is not None:
                     if bool(cmd[1]):
@@ -413,26 +609,49 @@ class SenderTransportEndpoint:
                     updated = self.security_gate.update_permissions(**p_dict)
                     if not updated.allow_input and self.input_injector is not None:
                         self.input_injector.release_all()
-                    if self.dp.pake.confirmed:
-                        self.workspace_agent.broadcast_permissions()
+                    if not updated.allow_gamepad:
+                        self.gamepad_hub.release_all_neutral()
+                    self._broadcast_permissions_all()
                     self._emit_event(("REMOTE_PERMS", updated.to_dict()))
                 elif action == "PANIC_REVOKE_REMOTE":
                     updated = self.security_gate.panic_revoke_all()
                     if self.input_injector is not None:
                         self.input_injector.release_all()
-                    if self.dp.pake.confirmed:
-                        self.workspace_agent.broadcast_permissions()
+                    self.gamepad_hub.release_all_neutral()
+                    self._broadcast_permissions_all()
                     self._emit_event(("REMOTE_PERMS", updated.to_dict()))
                     self._emit_event(("log", "WARN", "[Seguranca] Controle remoto revogado imediatamente no Host."))
                 elif action == "ELEVATE_REMOTE_ADMIN":
                     self._request_admin_async()
+                elif action == "TEST_GAMEPAD_RUMBLE":
+                    slot_arg = cmd[1] if len(cmd) > 1 else None
+                    dispatches = self.gamepad_hub.trigger_test_rumble(host_slot=slot_arg)
+                    if slot_arg is None and not dispatches:
+                        raw_req = RumbleRequestDTO(
+                            local_slot=0xFF,
+                            is_test_pulse=True,
+                            low_freq_u16=52000,
+                            high_freq_u16=38000,
+                            duration_ms=500,
+                        ).pack()
+                        if self.dp.pake.confirmed:
+                            self._send_rumble_to_peer("peer:primary", raw_req)
+                        for entry in self._extra_peers.values():
+                            if entry["dp"].pake.confirmed:
+                                self._send_rumble_to_peer(entry["peer_id"], raw_req)
                 elif action == "SEND_CLIPBOARD" and len(cmd) > 1:
-                    if self.security_gate.permissions.allow_clipboard and self.dp.pake.confirmed:
+                    if self.security_gate.permissions.allow_clipboard and self.has_any_confirmed_peer():
                         self.workspace_agent.build_clipboard_frames(str(cmd[1]))
+                        for entry in self._extra_peers.values():
+                            if entry["dp"].pake.confirmed:
+                                entry["ws_agent"].build_clipboard_frames(str(cmd[1]))
                 elif action == "SEND_FILE" and len(cmd) > 1:
-                    if self.security_gate.permissions.allow_files and self.dp.pake.confirmed:
+                    if self.security_gate.permissions.allow_files and self.has_any_confirmed_peer():
                         try:
                             self.workspace_agent.build_file_transfer_frames(str(cmd[1]))
+                            for entry in self._extra_peers.values():
+                                if entry["dp"].pake.confirmed:
+                                    entry["ws_agent"].build_file_transfer_frames(str(cmd[1]))
                         except Exception as f_exc:
                             self._emit_event(("log", "WARN", f"[Arquivo P2P] Falha ao enviar: {f_exc}"))
 
@@ -443,6 +662,61 @@ class SenderTransportEndpoint:
                 break
 
             if not in_pkt:
+                continue
+
+            # Roteamento PAKE multi-peer (distingue Peer 1 vs Peers adicionais 2..4 pelo nonce CPace de 16B)
+            is_pake_pkt = (
+                (in_pkt.startswith(MAGIC_PAKE_SYN) and len(in_pkt) == 65)
+                or (in_pkt.startswith(MAGIC_PAKE_ACK) and len(in_pkt) == 81)
+            )
+            if is_pake_pkt:
+                p_nonce = in_pkt[17:33]
+                is_primary_peer = (
+                    not self.dp.pake.confirmed
+                    or self.dp.pake.peer_nonce is None
+                    or self.dp.pake.peer_nonce == p_nonce
+                )
+                if not is_primary_peer:
+                    extra_entry = self._extra_peers.get(p_nonce)
+                    if extra_entry is None and len(self._extra_peers) < 3:
+                        dp_seed = self._pending_extra_dp
+                        self._pending_extra_dp = None
+                        extra_entry = self._create_extra_peer_entry(p_nonce, in_addr, dp_inst=dp_seed)
+                        self._extra_peers[p_nonce] = extra_entry
+                    if extra_entry is not None:
+                        extra_entry["addr"] = (in_addr[0], int(in_addr[1]))
+                        extra_entry["last_seen"] = time.monotonic()
+                        ex_evt, ex_reply = extra_entry["dp"].handle_incoming_packet(in_pkt)
+                        if ex_reply is not None:
+                            self._send_to_addr(ex_reply, extra_entry["addr"])
+                        if ex_evt == "pake_confirmed":
+                            self.is_streaming_active.set()
+                            if encoder is not None:
+                                encoder.request_keyframe(force=True)
+                            extra_entry["ws_agent"].broadcast_permissions()
+                            self._emit_event((
+                                "log",
+                                "SUCCESS",
+                                f"[Multi-Peer] Cliente adicional conectado em {in_addr[0]}:{in_addr[1]}.",
+                            ))
+                    continue
+
+            # Verifica primeiro se o datagrama cifrado pertence a um peer adicional conectado
+            handled_by_extra = False
+            if not is_pake_pkt and self._extra_peers:
+                for extra_entry in self._extra_peers.values():
+                    if extra_entry["addr"] == in_addr:
+                        ex_evt, ex_payload = extra_entry["dp"].handle_incoming_packet(in_pkt)
+                        if ex_evt != "other":
+                            extra_entry["last_seen"] = time.monotonic()
+                            handled_by_extra = True
+                            if ex_evt == "remote_input" and ex_payload is not None:
+                                self._process_remote_input_bytes(extra_entry["peer_id"], extra_entry["dp"], ex_payload)
+                            elif ex_evt == "workspace_msg" and ex_payload is not None:
+                                msgs = extra_entry["ws_agent"].handle_incoming_wire(ex_payload, is_host=True)
+                                self._handle_host_ws_messages(extra_entry["peer_id"], msgs)
+                            break
+            if handled_by_extra:
                 continue
 
             evt, reply_ack = self.dp.handle_incoming_packet(in_pkt)
@@ -483,22 +757,11 @@ class SenderTransportEndpoint:
                     self.workspace_agent.broadcast_permissions()
                 continue
             elif evt == "remote_input" and reply_ack is not None:
-                in_pkt = InputEventPacket.unpack(reply_ack)
-                if in_pkt is not None and self.security_gate.allow_input_packet(in_pkt):
-                    if self.input_injector is not None:
-                        self.input_injector.inject(in_pkt)
-                    self._echo_counter += 1
-                    if (
-                        in_pkt.is_critical_transition
-                        or in_pkt.ev_type == EvType.HEARTBEAT
-                        or (self._echo_counter & 0x07) == 0
-                    ) and in_pkt.client_ts_us > 0:
-                        self.dp.send_workspace_datagram(pack_input_echo(in_pkt.client_ts_us))
-                    if in_pkt.is_critical_transition or in_pkt.ev_type == EvType.WHEEL:
-                        self.input_wake_evt.set()
+                self._process_remote_input_bytes("peer:primary", self.dp, reply_ack)
                 continue
             elif evt == "workspace_msg" and reply_ack is not None:
-                self.workspace_agent.handle_incoming_wire(reply_ack, is_host=True)
+                msgs = self.workspace_agent.handle_incoming_wire(reply_ack, is_host=True)
+                self._handle_host_ws_messages("peer:primary", msgs)
                 continue
             elif evt == "sqp_ack":
                 continue
@@ -578,6 +841,16 @@ class SenderTransportEndpoint:
                     pass
 
     def close(self):
+        try:
+            self.gamepad_hub.close()
+        except Exception:
+            pass
+        for entry in list(self._extra_peers.values()):
+            try:
+                entry["ws_agent"].close()
+            except Exception:
+                pass
+        self._extra_peers.clear()
         try:
             self.workspace_agent.close()
         except Exception:
@@ -1049,7 +1322,7 @@ def run_sender_subprocess(
     ):
         nonlocal total_frames_encoded, total_frames_sent, total_bytes_sent, total_packets_sent, latest_payload_kb, latest_lat_ms
 
-        if not transport.dp.pake.confirmed:
+        if not transport.has_any_confirmed_peer():
             return
 
         frame_interval = 1.0 / float(max(1, fps))
@@ -1067,11 +1340,10 @@ def run_sender_subprocess(
         is_keyframe = encoder.last_frame_was_keyframe or (frame_id == 1)
 
         t_send_start = time.perf_counter()
-        pkts_sent, frame_sent_bytes, _ = transport.dp.send_video_frame(
+        pkts_sent, frame_sent_bytes, _ = transport.broadcast_video_frame(
             payload,
             is_keyframe=is_keyframe,
             frame_interval_sec=frame_interval,
-            pir_mode=False,
             stop_check=stop_event.is_set,
         )
         t_send_end = time.perf_counter()
@@ -1107,7 +1379,7 @@ def run_sender_subprocess(
         while not stop_event.is_set():
             transport.poll_control(encoder)
 
-            if not is_streaming_active.is_set() or not transport.dp.pake.confirmed:
+            if not is_streaming_active.is_set() or not transport.has_any_confirmed_peer():
                 time.sleep(0.01)
                 t_target = time.perf_counter() + frame_interval
                 continue
@@ -1152,7 +1424,7 @@ def run_sender_subprocess(
         while not stop_event.is_set() or not ready_buffers.empty():
             transport.poll_control(encoder)
 
-            if not is_streaming_active.is_set() or not transport.dp.pake.confirmed:
+            if not is_streaming_active.is_set() or not transport.has_any_confirmed_peer():
                 time.sleep(0.01)
                 continue
 
@@ -1181,35 +1453,36 @@ def run_sender_subprocess(
         encoder.close()
 
     def _audio_tx_worker():
-        audio_cap = None
-        audio_enc = None
-        silent_run = 0
-        try:
-            audio_cap = create_audio_capturer()
-            audio_enc = OpusAudioEncoder(bitrate_bps=96000, enable_lbrr_piggyback=True)
-            while not stop_event.is_set():
-                pcm = audio_cap.read_frame(timeout=0.025)
-                if pcm is None:
-                    continue
-                if audio_muted_evt.is_set() or not is_streaming_active.is_set() or not transport.dp.pake.confirmed:
-                    continue
-                if int(np.max(np.abs(pcm))) <= 2:
-                    silent_run += 1
-                    if silent_run > 2 and (silent_run % 20) != 0:
+        while not stop_event.is_set():
+            audio_cap = None
+            audio_enc = None
+            try:
+                audio_cap = create_audio_capturer()
+                audio_enc = OpusAudioEncoder(bitrate_bps=96000, enable_lbrr_piggyback=True)
+                while not stop_event.is_set():
+                    pcm = audio_cap.read_frame(timeout=0.025)
+                    if pcm is None:
                         continue
-                else:
-                    silent_run = 0
-                use_lbrr = transport.dp.sqp.loss_rate > 0.005
-                enc_pkt = audio_enc.encode(pcm, lbrr_active=use_lbrr)
-                if enc_pkt:
-                    transport.dp.send_audio_frame(enc_pkt, is_lbrr=use_lbrr)
-        except Exception as exc:
-            print(f"[Audio TX] Desativado ({exc}).")
-        finally:
-            if audio_enc is not None:
-                audio_enc.close()
-            if audio_cap is not None:
-                audio_cap.close()
+                    if audio_muted_evt.is_set() or not is_streaming_active.is_set() or not transport.has_any_confirmed_peer():
+                        continue
+                    use_lbrr = transport.dp.sqp.loss_rate > 0.005
+                    enc_pkt = audio_enc.encode(pcm, lbrr_active=use_lbrr)
+                    if enc_pkt:
+                        transport.broadcast_audio_frame(enc_pkt, is_lbrr=use_lbrr)
+            except Exception as exc:
+                print(f"[Audio TX] Reiniciando captura apos falha transitoria ({exc}).")
+                time.sleep(0.35)
+            finally:
+                if audio_enc is not None:
+                    try:
+                        audio_enc.close()
+                    except Exception:
+                        pass
+                if audio_cap is not None:
+                    try:
+                        audio_cap.close()
+                    except Exception:
+                        pass
 
     def _control_rx_worker():
         _set_thread_perf(THREAD_PRIORITY_TIME_CRITICAL, 0)

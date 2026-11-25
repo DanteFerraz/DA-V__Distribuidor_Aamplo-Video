@@ -40,7 +40,9 @@ jobs:
             libxcb-shape0 \
             libxcb-xinerama0 \
             libxcb-xfixes0 \
-            libdbus-1-3
+            libdbus-1-3 \
+            libsdl2-2.0-0 \
+            pulseaudio-utils
 
       - name: Compile C++23 Native Core (libdav_core.so & dav_daemon)
         run: |
@@ -101,6 +103,9 @@ jobs:
             --hidden-import src.dav.modules.updater.manifest \
             --hidden-import src.dav.modules.audio.manifest \
             --hidden-import src.dav.modules.remote_desktop.manifest \
+            --hidden-import src.dav.modules.universal_input.manifest \
+            --hidden-import PySide6.QtMultimedia \
+            --collect-all sdl2dll \
             --hidden-import cryptography \
             --exclude-module PyQt5 \
             --exclude-module PyQt6 \
@@ -229,6 +234,10 @@ jobs:
             --hidden-import src.dav.modules.updater.manifest `
             --hidden-import src.dav.modules.audio.manifest `
             --hidden-import src.dav.modules.remote_desktop.manifest `
+            --hidden-import src.dav.modules.universal_input.manifest `
+            --hidden-import PySide6.QtMultimedia `
+            --collect-all sdl2dll `
+            --collect-all vgamepad `
             --hidden-import comtypes `
             --hidden-import cryptography `
             --exclude-module PyQt5 `

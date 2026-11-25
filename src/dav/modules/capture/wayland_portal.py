@@ -268,6 +268,13 @@ if rd_active:
                         GLib.Variant("(oa{sv}iu)", (session_handle, {}, int(parts[1]), int(parts[2]))),
                         None, Gio.DBusCallFlags.NONE, 2000, None,
                     )
+                elif op == "KSYM" and len(parts) >= 3:
+                    bus.call_sync(
+                        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                        RD_IFACE, "NotifyKeyboardKeysym",
+                        GLib.Variant("(oa{sv}iu)", (session_handle, {}, int(parts[1]), int(parts[2]))),
+                        None, Gio.DBusCallFlags.NONE, 2000, None,
+                    )
             except Exception:
                 pass
 

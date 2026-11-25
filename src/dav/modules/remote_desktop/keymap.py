@@ -151,7 +151,7 @@ _QT_SPECIAL_TO_HID: Dict[int, int] = {
     0x01000026: 0x47,  # Key_ScrollLock
     0x01000053: 0xE3,  # Key_Super_L
     0x01000054: 0xE7,  # Key_Super_R
-    # Pontuacao ASCII
+    # Pontuacao ASCII e Dead Keys (atalhos como Ctrl+~)
     0x20: 0x2C,        # Space
     0x27: 0x34,        # '
     0x2C: 0x36,        # ,
@@ -164,7 +164,13 @@ _QT_SPECIAL_TO_HID: Dict[int, int] = {
     0x5C: 0x31,        # \
     0x5D: 0x30,        # ]
     0x60: 0x35,        # `
+    0x7E: 0x35,        # ~ (Key_AsciiTilde)
     0xC7: 0x33,        # Key_CCedilla (Ç ABNT2)
+    0x01001250: 0x35,  # Key_Dead_Grave (`)
+    0x01001251: 0x2F,  # Key_Dead_Acute (´)
+    0x01001252: 0x34,  # Key_Dead_Circumflex (^)
+    0x01001253: 0x35,  # Key_Dead_Tilde (~)
+    0x01001257: 0x23,  # Key_Dead_Diaeresis (¨)
 }
 
 # Simbolos Shiftados ASCII -> mesma tecla fisica base
@@ -234,6 +240,10 @@ def qt_key_to_hid(qt_key: int, native_scancode: int = 0, native_vk: int = 0) -> 
         return 0x87
     if vk == 0xE2:  # VK_OEM_102 (\ | no teclado ABNT2)
         return 0x64
+    if vk == 0xC0:  # VK_OEM_3 (` ~ US / ' " ABNT2)
+        return 0x35
+    if vk == 0xDE:  # VK_OEM_7 (~ ^ ABNT2 / ' " US)
+        return 0x34
 
     # Fallback por ScanCode fisico (X11 keycode = evdev + 8 ou Win32 Set-1)
     sc = int(native_scancode)

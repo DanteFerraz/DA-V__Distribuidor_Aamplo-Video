@@ -80,11 +80,13 @@ class SessionRecord:
 
         self.is_paired = False
         self.pair_event = asyncio.Event()
+        self.paired_receivers: List[dict] = []
 
         # Endpoints ativos no Blind Encrypted UDP Relay (fallback CGNAT Simétrico)
         self.relay_mode = False
         self.relay_sender_addr: Optional[Tuple[str, int]] = None
         self.relay_receiver_addr: Optional[Tuple[str, int]] = None
+        self.relay_receiver_addrs: List[Tuple[str, int]] = []
         self.relayed_packets = 0
 
 
@@ -124,13 +126,21 @@ class RendezvousUdpGateway(asyncio.DatagramProtocol):
                 record.relay_sender_addr = addr
                 if inner == b"BIND":
                     self.transport.sendto(b"DAV_RLY_ACK", addr)
-                    if record.relay_receiver_addr:
+                    if record.relay_receiver_addr or record.relay_receiver_addrs:
                         self.transport.sendto(b"DAV_RLY_PEER_READY", addr)
-                elif inner and record.relay_receiver_addr:
-                    self.transport.sendto(inner, record.relay_receiver_addr)
-                    record.relayed_packets += 1
+                elif inner:
+                    targets = record.relay_receiver_addrs or (
+                        [record.relay_receiver_addr] if record.relay_receiver_addr else []
+                    )
+                    for r_addr in targets:
+                        self.transport.sendto(inner, r_addr)
+                        record.relayed_packets += 1
             elif role == b"R":
                 record.relay_receiver_addr = addr
+                if addr not in record.relay_receiver_addrs:
+                    if len(record.relay_receiver_addrs) >= 8:
+                        record.relay_receiver_addrs.pop(0)
+                    record.relay_receiver_addrs.append(addr)
                 if inner == b"BIND":
                     self.transport.sendto(b"DAV_RLY_ACK", addr)
                     if record.relay_sender_addr:
@@ -309,19 +319,26 @@ class DavRendezvousServer:
                         writer.write(b": connected\n\n")
                         await writer.drain()
 
+                        sent_idx = 0
                         t_deadline = time.time() + SESSION_TTL_SEC
                         while time.time() < t_deadline and not writer.is_closing():
                             record.last_active = time.time()
-                            if record.is_paired:
+                            while sent_idx < len(record.paired_receivers):
+                                peer_dict = record.paired_receivers[sent_idx]
+                                sent_idx += 1
                                 peer_payload = {
                                     "status": "paired",
-                                    "peer": self._build_receiver_peer_dict(record),
+                                    "peer": peer_dict,
+                                    "peer_index": sent_idx,
                                     "relay": {"host": relay_host, "port": self.stun_port},
                                 }
                                 evt_bytes = f"event: paired\ndata: {json.dumps(peer_payload)}\n\n".encode("utf-8")
                                 writer.write(evt_bytes)
                                 await writer.drain()
-                                break
+
+                            record.pair_event.clear()
+                            if sent_idx < len(record.paired_receivers):
+                                continue
 
                             try:
                                 await asyncio.wait_for(record.pair_event.wait(), timeout=10.0)
@@ -394,7 +411,7 @@ class DavRendezvousServer:
                     resp_data = {"error": "PIN não encontrado ou sessão expirada"}
                 else:
                     record = self.sessions[clean_pin]
-                    # Suporta reconexão limpa de um novo Receptor ao mesmo PIN ativo
+                    # Suporta múltiplos Receptores e reconexões limpas no mesmo PIN ativo
                     record.receiver_node = node_name
                     record.receiver_local_ip = local_ip
                     record.receiver_local_port = local_port
@@ -402,6 +419,10 @@ class DavRendezvousServer:
                     record.receiver_public_port = public_port
                     record.receiver_candidates = candidates
                     record.receiver_nat_type = nat_type
+                    peer_entry = self._build_receiver_peer_dict(record)
+                    if len(record.paired_receivers) >= 32:
+                        record.paired_receivers.pop(0)
+                    record.paired_receivers.append(peer_entry)
                     record.is_paired = True
                     record.last_active = time.time()
                     record.pair_event.set()
@@ -435,14 +456,26 @@ class DavRendezvousServer:
                         resp_data = {"error": "Token inválido"}
                     else:
                         record.last_active = time.time()
-                        if record.is_paired:
+                        since_index = int(body_json.get("since_index", 0) or 0)
+                        if record.is_paired and len(record.paired_receivers) > since_index:
+                            new_peers = record.paired_receivers[since_index:]
+                            resp_data = {
+                                "status": "paired",
+                                "peer": new_peers[-1],
+                                "peers": new_peers,
+                                "next_index": len(record.paired_receivers),
+                                "relay": {"host": relay_host, "port": self.stun_port},
+                            }
+                        elif record.is_paired and since_index == 0:
                             resp_data = {
                                 "status": "paired",
                                 "peer": self._build_receiver_peer_dict(record),
+                                "peers": [self._build_receiver_peer_dict(record)],
+                                "next_index": 1,
                                 "relay": {"host": relay_host, "port": self.stun_port},
                             }
                         else:
-                            resp_data = {"status": "waiting"}
+                            resp_data = {"status": "waiting", "next_index": len(record.paired_receivers)}
 
             # ── 6. Ativação explícita de Blind Relay (POST /p2p/relay_init) ──
             elif method == "POST" and (raw_path == "/p2p/relay_init" or raw_path.endswith("/relay_init")):

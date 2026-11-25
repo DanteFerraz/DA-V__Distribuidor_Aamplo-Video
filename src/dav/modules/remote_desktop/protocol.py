@@ -48,6 +48,8 @@ class EvType(IntEnum):
     KEY_UP = 7
     HEARTBEAT = 8
     RELEASE_ALL = 9
+    KEY_UNICODE = 10
+    GAMEPAD_STATE = 11
 
 
 class MouseBtn(IntEnum):
@@ -78,6 +80,10 @@ class WsMsgType(IntEnum):
     SHELL_STDIN = 0x07
     SHELL_STDOUT = 0x08
     SHELL_RESIZE = 0x09
+    CLIENT_INPUT_PROFILE = 0x0A
+    GAMEPAD_RUMBLE = 0x0B
+    GAMEPAD_RUMBLE_ACK = 0x0C
+    GAMEPAD_ROSTER = 0x0D
 
 
 def pack_wheel_deltas(dx: int, dy: int) -> int:
@@ -113,6 +119,7 @@ class InputEventPacket:
             EvType.KEY_DOWN,
             EvType.KEY_UP,
             EvType.RELEASE_ALL,
+            EvType.KEY_UNICODE,
         )
 
     def pack(self) -> bytes:
@@ -135,7 +142,7 @@ class InputEventPacket:
         ver, ev_t, btns, mods, xv, yv, kw, ts_us = INPUT_STRUCT.unpack(data)
         if ver != INPUT_PROTOCOL_VERSION:
             return None
-        if ev_t < EvType.MOVE_ABS or ev_t > EvType.RELEASE_ALL:
+        if ev_t < EvType.MOVE_ABS or ev_t > EvType.GAMEPAD_STATE:
             return None
         return cls(
             version=ver,

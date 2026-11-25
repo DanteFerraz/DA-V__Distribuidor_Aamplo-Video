@@ -26,6 +26,7 @@ from src.dav.modules.remote_desktop.protocol import (
     MouseBtn,
     unpack_wheel_deltas,
 )
+from src.dav.modules.universal_input.keyboard_translator import HostKeyboardReproducer
 
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
@@ -50,6 +51,7 @@ XBUTTON2 = 0x0002
 
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
 
 SM_XVIRTUALSCREEN = 76
@@ -160,6 +162,36 @@ class Win32InputInjector(BaseInputInjector):
         sent = self._user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
         return sent == 1
 
+    def _send_unicode(self, codepoint: int) -> bool:
+        units = HostKeyboardReproducer.codepoint_to_utf16_units(codepoint)
+        if not units:
+            return False
+        n_inputs = len(units) * 2
+        batch = (_INPUT * n_inputs)()
+        idx = 0
+        for u16 in units:
+            batch[idx].type = INPUT_KEYBOARD
+            batch[idx].u.ki = _KEYBDINPUT(
+                wVk=0,
+                wScan=int(u16) & 0xFFFF,
+                dwFlags=KEYEVENTF_UNICODE,
+                time=0,
+                dwExtraInfo=0,
+            )
+            idx += 1
+            batch[idx].type = INPUT_KEYBOARD
+            batch[idx].u.ki = _KEYBDINPUT(
+                wVk=0,
+                wScan=int(u16) & 0xFFFF,
+                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                time=0,
+                dwExtraInfo=0,
+            )
+            idx += 1
+        ptr = ctypes.cast(batch, ctypes.POINTER(_INPUT))
+        sent = self._user32.SendInput(n_inputs, ptr, ctypes.sizeof(_INPUT))
+        return int(sent) == n_inputs
+
     def _send_key(self, hid_code: int, is_up: bool) -> bool:
         sc, is_ext = hid_to_win32_scancode(hid_code)
         if sc <= 0:
@@ -180,6 +212,36 @@ class Win32InputInjector(BaseInputInjector):
         )
         sent = self._user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
         return sent == 1
+
+    def _send_unicode(self, codepoint: int) -> bool:
+        units = HostKeyboardReproducer.codepoint_to_utf16_units(codepoint)
+        if not units:
+            return False
+        n_inputs = len(units) * 2
+        batch = (_INPUT * n_inputs)()
+        idx = 0
+        for u16 in units:
+            batch[idx].type = INPUT_KEYBOARD
+            batch[idx].u.ki = _KEYBDINPUT(
+                wVk=0,
+                wScan=int(u16) & 0xFFFF,
+                dwFlags=KEYEVENTF_UNICODE,
+                time=0,
+                dwExtraInfo=0,
+            )
+            idx += 1
+            batch[idx].type = INPUT_KEYBOARD
+            batch[idx].u.ki = _KEYBDINPUT(
+                wVk=0,
+                wScan=int(u16) & 0xFFFF,
+                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                time=0,
+                dwExtraInfo=0,
+            )
+            idx += 1
+        ptr = ctypes.cast(batch, ctypes.POINTER(_INPUT))
+        sent = self._user32.SendInput(n_inputs, ptr, ctypes.sizeof(_INPUT))
+        return int(sent) == n_inputs
 
     def _inject_native(self, pkt: InputEventPacket) -> bool:
         et = pkt.ev_type
@@ -225,5 +287,8 @@ class Win32InputInjector(BaseInputInjector):
 
         if et == EvType.KEY_UP:
             return self._send_key(pkt.key_or_wheel, is_up=True)
+
+        if et == EvType.KEY_UNICODE:
+            return self._send_unicode(pkt.key_or_wheel)
 
         return False

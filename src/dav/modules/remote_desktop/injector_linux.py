@@ -35,6 +35,10 @@ from src.dav.modules.remote_desktop.protocol import (
     MouseBtn,
     unpack_wheel_deltas,
 )
+from src.dav.modules.universal_input.keyboard_translator import (
+    HostKeyboardReproducer,
+    unicode_to_xkb_keysym,
+)
 
 # Constantes Linux input/uinput (`linux/input-event-codes.h` & `linux/uinput.h`)
 EV_SYN = 0x00
@@ -78,6 +82,7 @@ class LinuxUInputInjector(BaseInputInjector):
         import fcntl
 
         self._fcntl = fcntl
+        self._reproducer = HostKeyboardReproducer()
         uinput_path = "/dev/uinput" if os.path.exists("/dev/uinput") else "/dev/input/uinput"
         self._fd = os.open(uinput_path, os.O_WRONLY | os.O_NONBLOCK)
 
@@ -191,6 +196,12 @@ class LinuxUInputInjector(BaseInputInjector):
                 return False
             return self._emit([(EV_KEY, ev_key, 1 if et == EvType.KEY_DOWN else 0)])
 
+        if et == EvType.KEY_UNICODE:
+            seq = self._reproducer.codepoint_to_uinput_sequence(pkt.key_or_wheel)
+            if not seq:
+                return False
+            return self._emit(seq)
+
         return False
 
     def close(self) -> None:
@@ -259,6 +270,13 @@ class WaylandPortalInputInjector(BaseInputInjector):
                 return False
             state = 1 if et == EvType.KEY_DOWN else 0
             return self._send_cmd(f"KEY {ev_key} {state}\n")
+        if et == EvType.KEY_UNICODE:
+            ksym = unicode_to_xkb_keysym(pkt.key_or_wheel)
+            if ksym <= 0:
+                return False
+            ok_down = self._send_cmd(f"KSYM {ksym} 1\n")
+            ok_up = self._send_cmd(f"KSYM {ksym} 0\n")
+            return ok_down and ok_up
         return False
 
 
@@ -280,6 +298,18 @@ class X11XTestInjector(BaseInputInjector):
         self._x11.XCloseDisplay.restype = ctypes.c_int
         self._x11.XFlush.argtypes = [ctypes.c_void_p]
         self._x11.XFlush.restype = ctypes.c_int
+        self._x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._x11.XSync.restype = ctypes.c_int
+        self._x11.XChangeKeyboardMapping.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.c_int,
+        ]
+        self._x11.XChangeKeyboardMapping.restype = ctypes.c_int
+        self._scratch_keycode = 247
+        self._scratch_ksym = 0
 
         self._xtst.XTestFakeMotionEvent.argtypes = [
             ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong
@@ -358,6 +388,20 @@ class X11XTestInjector(BaseInputInjector):
             if kc <= 0:
                 return False
             self._xtst.XTestFakeKeyEvent(self._dpy, kc, 1 if et == EvType.KEY_DOWN else 0, 0)
+            self._x11.XFlush(self._dpy)
+            return True
+
+        if et == EvType.KEY_UNICODE:
+            ksym = unicode_to_xkb_keysym(pkt.key_or_wheel)
+            if ksym <= 0:
+                return False
+            if self._scratch_ksym != ksym:
+                sym_arr = (ctypes.c_ulong * 2)(ksym, ksym)
+                self._x11.XChangeKeyboardMapping(self._dpy, self._scratch_keycode, 2, sym_arr, 1)
+                self._x11.XSync(self._dpy, 0)
+                self._scratch_ksym = ksym
+            self._xtst.XTestFakeKeyEvent(self._dpy, self._scratch_keycode, 1, 0)
+            self._xtst.XTestFakeKeyEvent(self._dpy, self._scratch_keycode, 0, 0)
             self._x11.XFlush(self._dpy)
             return True
 

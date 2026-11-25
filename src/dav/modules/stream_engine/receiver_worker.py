@@ -34,6 +34,13 @@ from src.dav.modules.transport_p2p.blind_relay import unwrap_relay_packet, wrap_
 from src.dav.modules.transport_p2p.candidates import is_lan_address
 from src.dav.modules.transport_p2p.data_plane import DataPlaneReceiver
 from src.dav.modules.transport_p2p.packetizer import MAGIC_ACK, MAGIC_PLI, MAGIC_RLY, MAGIC_SYN
+from src.dav.modules.universal_input.gamepad_capturer import BaseGamepadBackend, UniversalGamepadCapturer
+from src.dav.modules.universal_input.keyboard_translator import detect_local_keyboard_profile
+from src.dav.modules.universal_input.models import (
+    GamepadStateDTO,
+    RumbleAckDTO,
+    RumbleRequestDTO,
+)
 
 logger = logging.getLogger("DAV.StreamEngine.Receiver")
 
@@ -58,6 +65,9 @@ class ReceiverWorker:
         on_file_status: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_shell_output: Optional[Callable[[str], None]] = None,
         on_input_echo: Optional[Callable[[float, float], None]] = None,
+        on_rumble_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        gamepad_backend: Optional[BaseGamepadBackend] = None,
+        enable_gamepad_capture: bool = True,
     ):
         self.sock = sock
         self.decoder = decoder
@@ -75,6 +85,7 @@ class ReceiverWorker:
         self.on_file_status = on_file_status
         self.on_shell_output = on_shell_output
         self.on_input_echo = on_input_echo
+        self.on_rumble_event = on_rumble_event
 
         try:
             self.sock.settimeout(0.015)
@@ -110,6 +121,7 @@ class ReceiverWorker:
         self._ws_gate = SecurityGate(
             WorkspacePermissions(
                 allow_input=True,
+                allow_gamepad=True,
                 allow_clipboard=True,
                 allow_files=True,
                 allow_shell=True,
@@ -122,13 +134,29 @@ class ReceiverWorker:
             on_shell_output=self.on_shell_output,
             send_wire_fn=self.send_workspace_raw,
         )
+        self._kb_profile_sent = False
+        self.gamepad_capturer: Optional[UniversalGamepadCapturer] = (
+            UniversalGamepadCapturer(
+                on_state_changed=self._on_local_gamepad_state,
+                backend=gamepad_backend,
+            )
+            if enable_gamepad_capture
+            else None
+        )
 
     def start(self) -> None:
         self._running = True
+        if self.gamepad_capturer is not None:
+            self.gamepad_capturer.start()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="DAV-Receiver-Loop")
         self._thread.start()
 
     def stop(self) -> None:
+        if self.gamepad_capturer is not None:
+            try:
+                self.gamepad_capturer.set_enabled(False)
+            except Exception:
+                pass
         if self._running and self.dp.pake.confirmed and self.peer_permissions.allow_input:
             try:
                 rel_pkt = InputEventPacket(ev_type=EvType.RELEASE_ALL)
@@ -140,6 +168,11 @@ class ReceiverWorker:
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.6)
+        if self.gamepad_capturer is not None:
+            try:
+                self.gamepad_capturer.close()
+            except Exception:
+                pass
         try:
             self.workspace_agent.close()
         except Exception:
@@ -154,11 +187,50 @@ class ReceiverWorker:
         except Exception:
             pass
 
+    def set_gamepad_enabled(self, enabled: bool) -> bool:
+        if self.gamepad_capturer is None:
+            return False
+        self.gamepad_capturer.set_enabled(bool(enabled))
+        return self.gamepad_capturer.enabled
+
+    @property
+    def is_gamepad_enabled(self) -> bool:
+        return bool(self.gamepad_capturer is not None and self.gamepad_capturer.enabled)
+
+    def _on_local_gamepad_state(self, state: GamepadStateDTO) -> None:
+        if not self._running or not self.dp.pake.confirmed or not self.peer_permissions.allow_gamepad:
+            return
+        b_byte, m_byte, xv, yv, kw, ts = state.to_packet_fields()
+        pkt = InputEventPacket(
+            ev_type=EvType.GAMEPAD_STATE,
+            buttons_mask=b_byte,
+            modifiers_mask=m_byte,
+            x_val=xv,
+            y_val=yv,
+            key_or_wheel=kw,
+            client_ts_us=ts,
+        )
+        self.send_remote_input(pkt)
+
+    def _maybe_send_client_kb_profile(self) -> None:
+        if self._kb_profile_sent or not self.dp.pake.confirmed:
+            return
+        self._kb_profile_sent = True
+        try:
+            prof = detect_local_keyboard_profile().to_dict()
+            frame = self.workspace_agent.channel.send_json(WsMsgType.CLIENT_INPUT_PROFILE, prof)
+            self.send_workspace_raw(frame)
+        except Exception:
+            pass
+
     def send_remote_input(self, pkt: InputEventPacket) -> bool:
         """Empacota e envia evento PT_INPUT em < 0.1 ms no mesmo socket UDP."""
         if not self._running or not self.dp.pake.confirmed:
             return False
-        if not self.peer_permissions.allow_input and pkt.ev_type != EvType.RELEASE_ALL:
+        if pkt.ev_type == EvType.GAMEPAD_STATE:
+            if not self.peer_permissions.allow_gamepad:
+                return False
+        elif not self.peer_permissions.allow_input and pkt.ev_type != EvType.RELEASE_ALL:
             return False
         if pkt.client_ts_us <= 0:
             pkt.client_ts_us = int(time.perf_counter_ns() // 1000)
@@ -168,7 +240,8 @@ class ReceiverWorker:
             return False
         self._send_to_sender(dgram)
         self._last_input_sent_mono = time.monotonic()
-        self._last_buttons_mask = int(pkt.buttons_mask)
+        if pkt.ev_type != EvType.GAMEPAD_STATE:
+            self._last_buttons_mask = int(pkt.buttons_mask)
         if pkt.is_critical_transition:
             self._redundant_queue.append((self._last_input_sent_mono + 0.002, raw_24b))
         return True
@@ -392,7 +465,12 @@ class ReceiverWorker:
                             self.sock.sendto(ev["reply_pake"], addr)
                     except Exception:
                         pass
+                if self.dp.pake.confirmed:
+                    self._maybe_send_client_kb_profile()
                 continue
+
+            if self.dp.pake.confirmed and not self._kb_profile_sent:
+                self._maybe_send_client_kb_profile()
 
             if ev["kind"] in ("video_frame", "audio_frame", "fragment", "workspace_msg") and not self._punch_locked:
                 if self.relay_addr and addr == self.relay_addr:
@@ -417,6 +495,40 @@ class ReceiverWorker:
                         self.peer_permissions = WorkspacePermissions.from_dict(p_dict)
                         if self.on_permissions_changed:
                             self.on_permissions_changed(self.peer_permissions.to_dict())
+                    elif msg.msg_type == WsMsgType.GAMEPAD_RUMBLE:
+                        req = RumbleRequestDTO.unpack(msg.payload)
+                        if req is not None:
+                            if self.gamepad_capturer is not None:
+                                ok, dev_name = self.gamepad_capturer.trigger_rumble(
+                                    local_slot=req.local_slot,
+                                    low_u16=req.low_freq_u16,
+                                    high_u16=req.high_freq_u16,
+                                    duration_ms=req.duration_ms,
+                                )
+                                b_name = self.gamepad_capturer.backend.backend_name
+                            else:
+                                ok, dev_name, b_name = False, "Capturador de controles desativado", "none"
+                            ack = RumbleAckDTO(
+                                local_slot=req.local_slot,
+                                ok=ok,
+                                request_id=req.request_id,
+                                sent_ts_us=req.sent_ts_us,
+                                device_name=dev_name,
+                                backend=b_name,
+                            )
+                            ack_frame = self.workspace_agent.channel.send_unreliable(
+                                WsMsgType.GAMEPAD_RUMBLE_ACK,
+                                ack.to_json_bytes(),
+                            )
+                            self.send_workspace_raw(ack_frame)
+                            if self.on_rumble_event is not None:
+                                self.on_rumble_event({
+                                    "local_slot": req.local_slot,
+                                    "ok": ok,
+                                    "device_name": dev_name,
+                                    "backend": b_name,
+                                    "is_test_pulse": req.is_test_pulse,
+                                })
                     elif msg.msg_type == WsMsgType.INPUT_ECHO:
                         echo_vals = unpack_input_echo(msg.payload)
                         if echo_vals is not None:

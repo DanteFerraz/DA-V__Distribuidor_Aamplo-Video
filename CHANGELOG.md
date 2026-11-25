@@ -4,6 +4,21 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [5.1.0] — 2026-11-24
+
+### Universalizador de entradas de teclado e controles (`src/dav/modules/universal_input/`)
+- **11ª fatia vertical no MonoTech Core Kernel (`IUniversalInputService`):** Novo domínio puro isento de acoplamento com UI contendo tradutor semântico de teclado (`keyboard_translator.py`), normalizador heurístico de gamepads (`gamepad_normalizer.py`), capturador multi-backend com vibração local (`gamepad_capturer.py`) e barramento de controles virtuais no Host (`gamepad_virtual_hub.py`).
+- **Tradução fiel ao teclado do cliente conectado (`EvType.KEY_UNICODE = 10`):** Habilitada composição nativa de *dead keys* (`WA_InputMethodEnabled` + `inputMethodEvent` em `VideoCanvasWidget`) e tradução automática de símbolos do layout do cliente (`~`, `~/`, `ã`, `õ`, `ç`, `/`, `?`, `\`, `|`, `'`, `"` e combinações `AltGr`), reproduzidos de forma determinística no Host via `SendInput(KEYEVENTF_UNICODE)` UTF-16LE no Windows, `NotifyKeyboardKeysym` no Wayland XDG Portal, `XChangeKeyboardMapping` em X11 e sequências XKB em `/dev/uinput` no Linux, preservando `KEY_DOWN/KEY_UP` HID para jogos (`WASD`) e atalhos (`Ctrl+~`, `Ctrl+C`, `Alt+Tab`).
+- **Suporte universal a DualShock 4, DualSense, Xbox, Switch Pro e Gamepads Genéricos (`EvType.GAMEPAD_STATE = 11`):** Leitura unificada via `SDL2` (`SDL_GameController` + `SDL_Joystick` + `SDL_Haptic` + HIDAPI PS4/PS5 Rumble) com contingência nativa `XInput`/`WinMM` no Windows e `evdev` (`FF_RUMBLE`) no Linux, empacotada nos exatos 24 bytes de `PT_INPUT` sem alterar o protocolo de rede.
+- **Múltiplos controles simultâneos via acessos P2P concorrentes (`VirtualGamepadHub`):** Suporte a até 4 pares P2P autenticados simultaneamente no mesmo PIN (`dav_rendezvous.py`, `signaling_client.py` e roteamento por nonce CPace no `stream_engine`) e até 8 slots de controles virtuais no Host (`VDS4Gamepad` para DualShock 4/DualSense e `VX360Gamepad` para Xbox/Genéricos via `ViGEmBus` no Windows; `/dev/uinput` com recepção `EV_FF` no Linux).
+- **Botão flutuante de controles (`ZONE_GAMEPAD`) e Testador de Controles com vibração remota:** Novo botão vetorial de ativar/desativar controles em `VideoOverlayControls` ao lado do botão de mouse, além do painel `GamepadTesterWidget` (aba `Controles` da `StatsSheet`), cujo botão **Testar Controle (Vibrar Cliente)** dispara pulso bimotor (`WsMsgType.GAMEPAD_RUMBLE`) que vibra fisicamente o controle do cliente remoto e exibe confirmação em tempo real (`GAMEPAD_RUMBLE_ACK` com nome do dispositivo e RTT).
+
+### Recuperação e blindagem da transmissão de áudio (`src/dav/modules/audio/` e `src/ui/audio_sink.py`)
+- **Preservação do decodificador Opus entre reconexões e troca de modo:** Corrigida falha em que `DesktopAudioPlayer.stop()` destruía permanentemente `OpusAudioDecoder._codec_ctx = None`; adicionados `OpusAudioDecoder.ensure_open()` e `AudioJitterAsrcBuffer.reset()`.
+- **Cadência contínua de quadros de áudio TX e reconexão automática WASAPI / PipeWire:** Removido descarte de quadros silenciosos em `_audio_tx_worker` que desalinhava `frame_id` no buffer ASRC, adicionada reconexão automática contra `AUDCLNT_E_DEVICE_INVALIDATED` (prompts UAC e troca de fone/HDMI), decodificação universal PCM `int16`/`int24`/`int32`/`float32` + downmix 5.1/7.1, leitura não-bloqueante `--raw` com injeção de silêncio em `LinuxPipeWireAudioCapturer` e negociação automática `Int16`/`Float32` + *hot-plug* em `QAudioSink`.
+
+---
+
 ## [5.0.0] — 2026-11-24
 
 ### Módulo completo de compartilhamento de área de trabalho (`src/dav/modules/remote_desktop/`)

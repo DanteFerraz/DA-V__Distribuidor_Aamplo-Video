@@ -16,6 +16,7 @@ from src.dav.modules.audio.capturer import (
     AUDIO_FRAME_SAMPLES,
     AUDIO_SAMPLE_RATE,
     SyntheticAudioCapturer,
+    decode_raw_pcm_bytes_to_float32,
     resample_to_48k_stereo_s16,
 )
 from src.dav.modules.audio.codec_opus import OpusAudioDecoder, OpusAudioEncoder
@@ -142,3 +143,60 @@ def test_data_plane_audio_and_video_multiplex():
         jb.close()
         aenc.close()
         cap.close()
+
+
+def test_audio_player_stop_preserves_opus_decoder_across_reconnects():
+    """Regressao v5.1: `DesktopAudioPlayer.stop()` nao pode destruir o contexto Opus entre reconexoes."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from src.ui.qt_compat import QApplication
+    from src.ui.audio_sink import DesktopAudioPlayer
+
+    _ = QApplication.instance() or QApplication([])
+    jb = AudioJitterAsrcBuffer()
+    player = DesktopAudioPlayer(jitter_buffer=jb)
+    cap = SyntheticAudioCapturer(freq_hz=440.0, amplitude=0.35)
+    cap.start()
+    enc = OpusAudioEncoder(bitrate_bps=96000, enable_lbrr_piggyback=True)
+
+    try:
+        player.start()
+        for fid in range(1, 5):
+            player.push_network_packet(fid, fid * 10000, enc.encode(cap.read_frame()))
+        # Simula desconexao / falha de PIN / troca de modo
+        player.stop()
+        assert jb.decoder._codec_ctx is not None
+
+        # Reconecta na mesma sessao da GUI -> audio deve decodificar perfeitamente com amplitude real!
+        player.start()
+        for fid in range(1, 5):
+            player.push_network_packet(fid, fid * 10000, enc.encode(cap.read_frame()))
+        raw_out = jb.pop_pcm_bytes(max_frames=8)
+        samples = np.frombuffer(raw_out, dtype=np.int16)
+        assert samples.size >= 480 * 2
+        assert int(np.max(np.abs(samples))) > 2000
+    finally:
+        player.stop(destroy_codec=True)
+        enc.close()
+        cap.close()
+
+
+def test_decode_24bit_32bit_and_surround_downmix():
+    """Valida decodificacao de DACs 24-bit packed, 32-bit int e downmix 5.1 -> estereo 48 kHz."""
+    # 10 ms estereo 24-bit signed little-endian (+0x200000 ~= +0.25)
+    sample_24 = (0x200000).to_bytes(3, "little", signed=True)
+    raw_24 = sample_24 * (480 * 2)
+    f24 = decode_raw_pcm_bytes_to_float32(raw_24, bits_per_sample=24, is_float=False)
+    assert f24 is not None and f24.size == 480 * 2
+    f24_stereo = f24.reshape(480, 2)
+    assert f24_stereo.shape == (480, 2)
+    assert 0.20 < float(np.mean(f24_stereo)) < 0.30
+
+    # Downmix 5.1 (6 canais float32 @ 48 kHz) -> estereo s16
+    surround_51 = np.zeros((480, 6), dtype=np.float32)
+    surround_51[:, 2] = 0.5  # Canal Central (FC) distribuido igualmente em L e R
+    stereo_out = resample_to_48k_stereo_s16(surround_51, src_rate=48000, src_channels=6, is_float=True)
+    assert stereo_out.shape == (480, 2)
+    assert int(np.max(stereo_out[:, 0])) > 8000
+    assert np.allclose(stereo_out[:, 0], stereo_out[:, 1], atol=2)
+

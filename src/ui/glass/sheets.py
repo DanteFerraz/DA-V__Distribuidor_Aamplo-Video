@@ -164,6 +164,7 @@ class SettingsSheet(BaseOverlaySheet):
     remote_perms_changed = Signal(dict)
     admin_elevation_requested = Signal()
     panic_revoke_requested = Signal()
+    open_gamepad_tester_requested = Signal()
 
     def __init__(
         self,
@@ -378,10 +379,17 @@ class SettingsSheet(BaseOverlaySheet):
         perm_lay = QVBoxLayout(perm_group)
         perm_lay.setSpacing(8)
 
-        self.chk_allow_input = QCheckBox("Permitir Controle de Mouse e Teclado Remoto")
+        self.chk_allow_input = QCheckBox("Permitir Controle de Mouse e Teclado Remoto (Tradução Universal)")
         self.chk_allow_input.setChecked(False)
         self.chk_allow_input.toggled.connect(self._emit_remote_perms)
         perm_lay.addWidget(self.chk_allow_input)
+
+        self.chk_allow_gamepad = QCheckBox(
+            "Permitir Controles / Gamepads Remotos (DualShock 4, DualSense, Xbox e Genéricos)"
+        )
+        self.chk_allow_gamepad.setChecked(False)
+        self.chk_allow_gamepad.toggled.connect(self._emit_remote_perms)
+        perm_lay.addWidget(self.chk_allow_gamepad)
 
         self.chk_allow_clip_files = QCheckBox("Permitir Área de Transferência (Clipboard) e Envio de Arquivos P2P")
         self.chk_allow_clip_files.setChecked(False)
@@ -398,6 +406,10 @@ class SettingsSheet(BaseOverlaySheet):
         self.btn_sheet_admin = QPushButton("Autorizar Privilégio Admin (UAC / Polkit)")
         self.btn_sheet_admin.clicked.connect(self.admin_elevation_requested.emit)
         perm_btns.addWidget(self.btn_sheet_admin, stretch=1)
+
+        self.btn_open_gamepad_tester = QPushButton("Testador de Controles (Vibrar)")
+        self.btn_open_gamepad_tester.clicked.connect(self.open_gamepad_tester_requested.emit)
+        perm_btns.addWidget(self.btn_open_gamepad_tester, stretch=1)
 
         self.btn_panic_revoke = QPushButton("Revogar Controle Agora (Ctrl+Alt+Shift+Esc)")
         self.btn_panic_revoke.setObjectName("stopBtn")
@@ -552,6 +564,7 @@ class SettingsSheet(BaseOverlaySheet):
         clip_files = self.chk_allow_clip_files.isChecked()
         self.remote_perms_changed.emit({
             "allow_input": self.chk_allow_input.isChecked(),
+            "allow_gamepad": self.chk_allow_gamepad.isChecked(),
             "allow_clipboard": clip_files,
             "allow_files": clip_files,
             "allow_shell": self.chk_allow_shell.isChecked(),
@@ -560,6 +573,7 @@ class SettingsSheet(BaseOverlaySheet):
     def sync_remote_permissions(self, perms: dict) -> None:
         for chk, val in (
             (self.chk_allow_input, bool(perms.get("allow_input", False))),
+            (self.chk_allow_gamepad, bool(perms.get("allow_gamepad", False))),
             (
                 self.chk_allow_clip_files,
                 bool(perms.get("allow_clipboard", False) or perms.get("allow_files", False)),
@@ -576,6 +590,180 @@ class SettingsSheet(BaseOverlaySheet):
         else:
             self.btn_sheet_admin.setText("Autorizar Privilégio Admin (UAC / Polkit)")
             self.btn_sheet_admin.setEnabled(True)
+
+
+class GamepadTesterWidget(QGroupBox):
+    """
+    Painel Universalizador e Testador de Controles (Slots 1..8 + Vibracao Remota P2P):
+    - Exibe os controles conectados por acessos remotos (DualShock 4, DualSense, Xbox, Switch Pro e Genericos);
+    - Ao clicar em 'Testar Controle (Vibrar Cliente)', envia pulso Force-Feedback P2P que vibra
+      fisicamente o controle do cliente conectado e exibe o ACK + RTT em tempo real.
+    """
+
+    test_remote_rumble_requested = Signal(object)
+    test_local_rumble_requested = Signal()
+    install_driver_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__("Universalizador e Testador de Controles (Multi-Gamepad & Vibração Remota)", parent)
+        self._roster: list = []
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        drv_row = QHBoxLayout()
+        drv_row.setSpacing(10)
+        self.lbl_driver_status = QLabel("Barramento Virtual: Verificando suporte a controles virtuais...")
+        self.lbl_driver_status.setStyleSheet(f"color: {T.SHEET_TEXT_DIM}; font-weight: 600;")
+        drv_row.addWidget(self.lbl_driver_status, stretch=1)
+
+        self.lbl_kb_profile = QLabel("Teclado Remoto: Aguardando cliente")
+        self.lbl_kb_profile.setStyleSheet(f"color: {T.SHEET_TEXT_DIM};")
+        drv_row.addWidget(self.lbl_kb_profile)
+
+        self.btn_install_driver = QPushButton("Instalar Driver ViGEmBus (UAC)")
+        self.btn_install_driver.setVisible(False)
+        self.btn_install_driver.clicked.connect(self.install_driver_requested.emit)
+        drv_row.addWidget(self.btn_install_driver)
+        lay.addLayout(drv_row)
+
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(8)
+        ctrl_row.addWidget(QLabel("Alvo do Teste:"))
+        self.cmb_slot_target = QComboBox()
+        self.cmb_slot_target.addItem("Todos os Controles Conectados (Broadcast)", None)
+        ctrl_row.addWidget(_compact_field(self.cmb_slot_target), stretch=1)
+
+        self.btn_test_remote_rumble = QPushButton("Testar Controle (Vibrar Cliente)")
+        self.btn_test_remote_rumble.setToolTip(
+            "Envia comando de vibração bimotor pelo túnel P2P para vibrar o controle físico do cliente conectado"
+        )
+        self.btn_test_remote_rumble.clicked.connect(self._on_test_remote_clicked)
+        ctrl_row.addWidget(self.btn_test_remote_rumble)
+
+        self.btn_test_local_rumble = QPushButton("Vibrar Local")
+        self.btn_test_local_rumble.setToolTip("Testa a vibração de controles conectados localmente nesta máquina")
+        self.btn_test_local_rumble.clicked.connect(self.test_local_rumble_requested.emit)
+        ctrl_row.addWidget(self.btn_test_local_rumble)
+        lay.addLayout(ctrl_row)
+
+        self.lbl_slots_telemetry = QLabel(
+            "Slots Virtuais (0/8 ativos): Conecte controles DualShock 4, DualSense, Xbox ou Genéricos nos clientes remotos."
+        )
+        self.lbl_slots_telemetry.setWordWrap(True)
+        self.lbl_slots_telemetry.setStyleSheet(f"color: {T.SHEET_TEXT};")
+        lay.addWidget(self.lbl_slots_telemetry)
+
+        self.lbl_rumble_ack = QLabel(
+            "Pronto para teste: clique em 'Testar Controle (Vibrar Cliente)' para acionar os motores do controle remoto."
+        )
+        self.lbl_rumble_ack.setWordWrap(True)
+        self.lbl_rumble_ack.setStyleSheet(f"color: {T.SHEET_TEXT_DIM};")
+        lay.addWidget(self.lbl_rumble_ack)
+
+    def _on_test_remote_clicked(self) -> None:
+        slot_data = self.cmb_slot_target.currentData()
+        self.lbl_rumble_ack.setText("Enviando pulso de vibração bimotor ao cliente remoto...")
+        self.lbl_rumble_ack.setStyleSheet("color: #93c5fd; font-weight: 600;")
+        self.test_remote_rumble_requested.emit(slot_data)
+
+    def update_driver_status(self, info: dict) -> None:
+        drv_name = info.get("driver_name", "Gamepad Virtual")
+        ready = bool(info.get("driver_ready", False))
+        is_win = info.get("platform") == "windows"
+        if ready:
+            self.lbl_driver_status.setText(f"Barramento Virtual Pronto: {drv_name} (Xbox 360 + DualShock 4)")
+            self.lbl_driver_status.setStyleSheet("color: #86efac; font-weight: 600;")
+            self.btn_install_driver.setVisible(False)
+        else:
+            hint = "Instale o ViGEmBus para emular XInput/DS4" if is_win else "Autorize Polkit Admin (/dev/uinput)"
+            self.lbl_driver_status.setText(f"Barramento Virtual em Diagnóstico: {hint}")
+            self.lbl_driver_status.setStyleSheet("color: #fcd34d; font-weight: 600;")
+            self.btn_install_driver.setVisible(is_win)
+
+    def update_client_keyboard_profile(self, info: dict) -> None:
+        layout_code = info.get("layout_code", "auto")
+        variant = info.get("variant", "standard")
+        self.lbl_kb_profile.setText(f"Teclado Cliente: {layout_code} ({variant})")
+        self.lbl_kb_profile.setStyleSheet("color: #a7f3d0; font-weight: 600;")
+
+    @staticmethod
+    def _format_buttons(mask: int) -> str:
+        names = []
+        for bit, lbl in (
+            (0x0001, "A/Cross"),
+            (0x0002, "B/Circle"),
+            (0x0004, "X/Square"),
+            (0x0008, "Y/Triangle"),
+            (0x0010, "LB/L1"),
+            (0x0020, "RB/R1"),
+            (0x0040, "Select/Share"),
+            (0x0080, "Start/Options"),
+            (0x0100, "L3"),
+            (0x0200, "R3"),
+            (0x0400, "Guide/PS"),
+            (0x0800, "Touchpad"),
+            (0x1000, "Up"),
+            (0x2000, "Down"),
+            (0x4000, "Left"),
+            (0x8000, "Right"),
+        ):
+            if mask & bit:
+                names.append(lbl)
+        return "+".join(names) if names else "Repouso"
+
+    def update_roster(self, roster: list) -> None:
+        self._roster = list(roster or [])
+        prev_data = self.cmb_slot_target.currentData()
+        self.cmb_slot_target.blockSignals(True)
+        self.cmb_slot_target.clear()
+        self.cmb_slot_target.addItem("Todos os Controles Conectados (Broadcast)", None)
+        lines = []
+        for item in self._roster:
+            h_slot = int(item.get("host_slot", 0))
+            dev_name = item.get("device_name") or item.get("kind_label", "Gamepad")
+            prof = str(item.get("emulated_profile", "x360")).upper()
+            peer_tag = str(item.get("peer_id", "cliente"))[-8:]
+            self.cmb_slot_target.addItem(f"Slot #{h_slot + 1}: {dev_name} [{prof} · {peer_tag}]", h_slot)
+            btns_txt = self._format_buttons(int(item.get("buttons_mask", 0)))
+            lt = int(item.get("lt_u8", 0))
+            rt = int(item.get("rt_u8", 0))
+            lx = int(item.get("lx_i16", 0))
+            ly = int(item.get("ly_i16", 0))
+            lines.append(
+                f"Slot #{h_slot + 1} [{prof}] {dev_name} ({peer_tag}) — Botões: {btns_txt} | "
+                f"L2:{lt:3d} R2:{rt:3d} | LX:{lx:6d} LY:{ly:6d}"
+            )
+        idx = self.cmb_slot_target.findData(prev_data)
+        self.cmb_slot_target.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_slot_target.blockSignals(False)
+
+        if lines:
+            self.lbl_slots_telemetry.setText(
+                f"Slots Virtuais ({len(lines)}/8 ativos):\n" + "\n".join(lines)
+            )
+            self.lbl_slots_telemetry.setStyleSheet("color: #e2e8f0; font-weight: 600;")
+        else:
+            self.lbl_slots_telemetry.setText(
+                "Slots Virtuais (0/8 ativos): Conecte controles DualShock 4, DualSense, Xbox ou Genéricos nos clientes remotos."
+            )
+            self.lbl_slots_telemetry.setStyleSheet(f"color: {T.SHEET_TEXT};")
+
+    def show_rumble_ack(self, ack: dict) -> None:
+        ok = bool(ack.get("ok", False))
+        dev = ack.get("device_name") or "Controle Remoto"
+        rtt = float(ack.get("rtt_ms", 0.0))
+        backend = ack.get("backend", "")
+        if ok:
+            b_tag = f" · {backend}" if backend else ""
+            self.lbl_rumble_ack.setText(
+                f"Vibração confirmada no cliente: {dev} (RTT {rtt:.1f} ms{b_tag})."
+            )
+            self.lbl_rumble_ack.setStyleSheet("color: #86efac; font-weight: 700;")
+        else:
+            self.lbl_rumble_ack.setText(
+                f"Aviso do cliente remoto: {dev} (conecte um controle físico USB/Bluetooth no cliente)."
+            )
+            self.lbl_rumble_ack.setStyleSheet("color: #fcd34d; font-weight: 600;")
 
 
 class RemoteWorkspaceView(QWidget):
@@ -613,6 +801,9 @@ class RemoteWorkspaceView(QWidget):
         self.lbl_file_status.setStyleSheet(f"color: {T.SHEET_TEXT_DIM};")
         st_lay.addWidget(self.lbl_file_status)
         lay.addWidget(status_group)
+
+        self.gamepad_tester = GamepadTesterWidget(self)
+        lay.addWidget(self.gamepad_tester)
 
         term_group = QGroupBox("Terminal Remoto Persistente (LTSP PTY / PowerShell)")
         term_lay = QVBoxLayout(term_group)
@@ -658,6 +849,8 @@ class RemoteWorkspaceView(QWidget):
         parts = []
         if perms.get("allow_input"):
             parts.append("Mouse/Teclado")
+        if perms.get("allow_gamepad"):
+            parts.append("Controles")
         if perms.get("allow_files") or perms.get("allow_clipboard"):
             parts.append("Clipboard/Arquivos")
         if perms.get("allow_shell"):
@@ -700,10 +893,10 @@ class RemoteWorkspaceView(QWidget):
 
 
 class StatsSheet(BaseOverlaySheet):
-    """Folha de telemetria, dispositivos, area de trabalho remota e diagnostico."""
+    """Folha de telemetria, dispositivos, controles/area remota e diagnostico."""
 
     def __init__(self, parent=None):
-        super().__init__(["Telemetria", "Dispositivos", "Terminal", "Registros"], parent=parent)
+        super().__init__(["Telemetria", "Dispositivos", "Controles", "Registros"], parent=parent)
         self.view_tupa = TupaView(self.stack)
         self.view_discovery = DiscoveryView(self.stack)
         self.view_workspace = RemoteWorkspaceView(self.stack)

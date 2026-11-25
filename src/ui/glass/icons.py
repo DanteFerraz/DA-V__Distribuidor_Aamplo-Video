@@ -363,6 +363,71 @@ def draw_cursor_control(
     )
 
 
+def _draw_gamepad_geom(p: QPainter, box: QRectF, color: QColor, *, active: bool) -> None:
+    size = min(box.width(), box.height())
+    left = box.center().x() - size * 0.5
+    top = box.center().y() - size * 0.5
+
+    # Silhueta ergonomica de gamepad (ponte central + empunhaduras laterais)
+    body = QPainterPath()
+    body.moveTo(left + size * 0.28, top + size * 0.28)
+    body.lineTo(left + size * 0.72, top + size * 0.28)
+    body.quadTo(left + size * 0.86, top + size * 0.28, left + size * 0.89, top + size * 0.48)
+    body.lineTo(left + size * 0.91, top + size * 0.68)
+    body.quadTo(left + size * 0.91, top + size * 0.80, left + size * 0.79, top + size * 0.80)
+    body.quadTo(left + size * 0.71, top + size * 0.80, left + size * 0.65, top + size * 0.64)
+    body.lineTo(left + size * 0.35, top + size * 0.64)
+    body.quadTo(left + size * 0.29, top + size * 0.80, left + size * 0.21, top + size * 0.80)
+    body.quadTo(left + size * 0.09, top + size * 0.80, left + size * 0.09, top + size * 0.68)
+    body.lineTo(left + size * 0.11, top + size * 0.48)
+    body.quadTo(left + size * 0.14, top + size * 0.28, left + size * 0.28, top + size * 0.28)
+    body.closeSubpath()
+
+    # Recortes internos: D-Pad a esquerda e botoes de acao a direita
+    cutouts = QPainterPath()
+    d_cx, d_cy = left + size * 0.30, top + size * 0.46
+    arm_w, arm_l = size * 0.055, size * 0.15
+    cutouts.addRoundedRect(QRectF(d_cx - arm_w / 2, d_cy - arm_l / 2, arm_w, arm_l), 1.0, 1.0)
+    cutouts.addRoundedRect(QRectF(d_cx - arm_l / 2, d_cy - arm_w / 2, arm_l, arm_w), 1.0, 1.0)
+
+    b_cx, b_cy = left + size * 0.70, top + size * 0.46
+    dot_r = size * 0.032
+    spread = size * 0.068
+    for dx, dy in ((0.0, -spread), (0.0, spread), (-spread, 0.0), (spread, 0.0)):
+        cutouts.addEllipse(QPointF(b_cx + dx, b_cy + dy), dot_r, dot_r)
+
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawPath(body.subtracted(cutouts))
+
+    if not active:
+        slash_pen = QPen(color, max(1.6, size * 0.095))
+        slash_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(slash_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawLine(
+            QPointF(left + size * 0.16, top + size * 0.20),
+            QPointF(left + size * 0.84, top + size * 0.84),
+        )
+
+
+def draw_gamepad(
+    p: QPainter,
+    box: QRectF,
+    alpha: float = 1.0,
+    active: bool = True,
+    shadow: bool = True,
+) -> None:
+    """Controle / gamepad vetorial para ativar ou desativar controles remotos."""
+    _render_shadowed(
+        p,
+        box,
+        alpha,
+        lambda qp, rc, col: _draw_gamepad_geom(qp, rc, col, active=active),
+        shadow=shadow,
+    )
+
+
 def _draw_check_geom(p: QPainter, box: QRectF, color: QColor) -> None:
     size = min(box.width(), box.height())
     left = box.center().x() - size * 0.5

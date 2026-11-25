@@ -29,6 +29,7 @@ from src.dav.kernel import (
     IStreamEngineService,
     ITelemetryService,
     ITransportService,
+    IUniversalInputService,
     ModuleManifest,
     ModuleRegistry,
 )
@@ -82,6 +83,7 @@ def test_domain_slices_do_not_import_ui():
         "transport_p2p",
         "audio",
         "remote_desktop",
+        "universal_input",
         "stream_engine",
         "telemetry",
         "commercial",
@@ -105,13 +107,14 @@ def test_domain_slices_do_not_import_ui():
 
 
 def test_all_manifests_standardized_and_services_resolvable():
-    """Valida padronizacao dos 9 manifestos e resolucao singleton via `ModuleRegistry.get_service`."""
+    """Valida padronizacao dos 11 manifestos e resolucao singleton via `ModuleRegistry.get_service`."""
     expected_slices = {
         "capture",
         "codec",
         "transport_p2p",
         "audio",
         "remote_desktop",
+        "universal_input",
         "stream_engine",
         "telemetry",
         "commercial",
@@ -140,6 +143,7 @@ def test_all_manifests_standardized_and_services_resolvable():
     assert isinstance(registry.get_service("transport_p2p"), ITransportService)
     assert isinstance(registry.get_service("audio"), IAudioService)
     assert isinstance(registry.get_service("remote_desktop"), IRemoteDesktopService)
+    assert isinstance(registry.get_service("universal_input"), IUniversalInputService)
     assert isinstance(registry.get_service("stream_engine"), IStreamEngineService)
     assert isinstance(registry.get_service("telemetry"), ITelemetryService)
 

@@ -28,6 +28,7 @@ from src.dav.modules.remote_desktop.protocol import EvType, InputEventPacket, Ws
 @dataclass
 class WorkspacePermissions:
     allow_input: bool = False
+    allow_gamepad: bool = False
     allow_clipboard: bool = False
     allow_files: bool = False
     allow_shell: bool = False
@@ -35,11 +36,18 @@ class WorkspacePermissions:
 
     @property
     def is_interactive(self) -> bool:
-        return bool(self.allow_input or self.allow_clipboard or self.allow_files or self.allow_shell)
+        return bool(
+            self.allow_input
+            or self.allow_gamepad
+            or self.allow_clipboard
+            or self.allow_files
+            or self.allow_shell
+        )
 
     def to_dict(self) -> Dict[str, bool]:
         return {
             "allow_input": bool(self.allow_input),
+            "allow_gamepad": bool(self.allow_gamepad),
             "allow_clipboard": bool(self.allow_clipboard),
             "allow_files": bool(self.allow_files),
             "allow_shell": bool(self.allow_shell),
@@ -50,6 +58,7 @@ class WorkspacePermissions:
     def from_dict(cls, data: Dict[str, Any]) -> "WorkspacePermissions":
         return cls(
             allow_input=bool(data.get("allow_input", False)),
+            allow_gamepad=bool(data.get("allow_gamepad", False)),
             allow_clipboard=bool(data.get("allow_clipboard", False)),
             allow_files=bool(data.get("allow_files", False)),
             allow_shell=bool(data.get("allow_shell", False)),
@@ -63,8 +72,8 @@ class SecurityGate:
     def __init__(
         self,
         initial_perms: Optional[WorkspacePermissions] = None,
-        max_events_per_sec: float = 650.0,
-        burst_capacity: float = 120.0,
+        max_events_per_sec: float = 2400.0,
+        burst_capacity: float = 240.0,
         on_revoke: Optional[Callable[[], None]] = None,
     ):
         self._lock = threading.Lock()
@@ -73,7 +82,7 @@ class SecurityGate:
         self._capacity = max(20.0, float(burst_capacity))
         self._tokens = self._capacity
         self._last_refill = time.monotonic()
-        self._recent_transitions: Deque[Tuple[int, int, int, int]] = collections.deque(maxlen=96)
+        self._recent_transitions: Deque[Tuple[int, int, int, int]] = collections.deque(maxlen=128)
         self._recent_set = set()
         self._on_revoke = on_revoke
         self.blocked_packets: int = 0
@@ -87,7 +96,14 @@ class SecurityGate:
 
     def update_permissions(self, **kwargs: Any) -> WorkspacePermissions:
         with self._lock:
-            for key in ("allow_input", "allow_clipboard", "allow_files", "allow_shell", "admin_elevated"):
+            for key in (
+                "allow_input",
+                "allow_gamepad",
+                "allow_clipboard",
+                "allow_files",
+                "allow_shell",
+                "admin_elevated",
+            ):
                 if key in kwargs and kwargs[key] is not None:
                     setattr(self._perms, key, bool(kwargs[key]))
             return WorkspacePermissions(**self._perms.to_dict())
@@ -96,6 +112,7 @@ class SecurityGate:
         """Revoga imediatamente todas as permissoes interativas (atalho Ctrl+Alt+Shift+Esc)."""
         with self._lock:
             self._perms.allow_input = False
+            self._perms.allow_gamepad = False
             self._perms.allow_clipboard = False
             self._perms.allow_files = False
             self._perms.allow_shell = False
@@ -110,9 +127,14 @@ class SecurityGate:
 
     def allow_input_packet(self, pkt: InputEventPacket) -> bool:
         with self._lock:
-            if not self._perms.allow_input:
-                self.blocked_packets += 1
-                return False
+            if pkt.ev_type == EvType.GAMEPAD_STATE:
+                if not self._perms.allow_gamepad:
+                    self.blocked_packets += 1
+                    return False
+            else:
+                if not self._perms.allow_input:
+                    self.blocked_packets += 1
+                    return False
 
             # Deduplicacao de pacotes criticos enviados 2x pelo cliente contra perda UDP
             if pkt.is_critical_transition and pkt.client_ts_us > 0:
@@ -138,9 +160,18 @@ class SecurityGate:
 
     def allow_workspace_msg(self, msg_type: int) -> bool:
         with self._lock:
-            if msg_type in (WsMsgType.ACK, WsMsgType.PERM_UPDATE, WsMsgType.INPUT_ECHO):
+            if msg_type in (
+                WsMsgType.ACK,
+                WsMsgType.PERM_UPDATE,
+                WsMsgType.INPUT_ECHO,
+                WsMsgType.CLIENT_INPUT_PROFILE,
+                WsMsgType.GAMEPAD_ROSTER,
+                WsMsgType.GAMEPAD_RUMBLE_ACK,
+            ):
                 return True
-            if msg_type == WsMsgType.CLIPBOARD_TEXT:
+            if msg_type == WsMsgType.GAMEPAD_RUMBLE:
+                ok = self._perms.allow_gamepad
+            elif msg_type == WsMsgType.CLIPBOARD_TEXT:
                 ok = self._perms.allow_clipboard
             elif msg_type in (WsMsgType.FILE_META, WsMsgType.FILE_CHUNK, WsMsgType.FILE_DONE):
                 ok = self._perms.allow_files

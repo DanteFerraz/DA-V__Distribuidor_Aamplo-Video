@@ -471,9 +471,9 @@ class P2PChannelClient:
 
             if on_paired_callback:
                 def _sse_or_poll_worker():
-                    last_peer_sig = None
+                    recent_peers: Dict[Tuple[object, ...], float] = {}
+                    poll_since_idx = 0
                     while self.is_running:
-                        paired_in_cycle = False
                         try:
                             sse_url = f"{self.base_url}/p2p/events?pin={clean_pin}&token={token}"
                             sse_req = urllib.request.Request(sse_url, headers={"Accept": "text/event-stream"})
@@ -494,17 +494,21 @@ class P2PChannelClient:
                                                     peer.get("local_ip"),
                                                     peer.get("local_port"),
                                                 )
-                                                if peer_sig != last_peer_sig:
-                                                    last_peer_sig = peer_sig
+                                                now_m = time.monotonic()
+                                                if (now_m - recent_peers.get(peer_sig, 0.0)) >= 1.0:
+                                                    recent_peers[peer_sig] = now_m
                                                     on_paired_callback(peer)
-                                                paired_in_cycle = True
-                                                return
+                                                if "peer_index" in evt_data:
+                                                    poll_since_idx = max(poll_since_idx, int(evt_data["peer_index"]))
+                                                else:
+                                                    # Servidor legado encerra SSE no 1o par; aguarda breve intervalo antes de reconectar
+                                                    poll_since_idx += 1
                                         except Exception:
                                             pass
                         except Exception as sse_err:
                             logger.debug(f"Fluxo SSE encerrado ({sse_err}); alternando para polling.")
 
-                        if paired_in_cycle or not self.is_running:
+                        if not self.is_running:
                             return
 
                         for _ in range(80):
@@ -514,19 +518,31 @@ class P2PChannelClient:
                             try:
                                 p_req = urllib.request.Request(
                                     f"{self.base_url}/p2p/poll",
-                                    data=json.dumps({"pin": clean_pin, "token": token}).encode("utf-8"),
+                                    data=json.dumps(
+                                        {"pin": clean_pin, "token": token, "since_index": poll_since_idx}
+                                    ).encode("utf-8"),
                                     headers={"Content-Type": "application/json"},
                                 )
                                 with urllib.request.urlopen(p_req, timeout=3.0) as p_resp:
                                     p_data = json.loads(p_resp.read().decode("utf-8"))
                                     if p_data.get("status") == "paired":
-                                        peer = dict(p_data["peer"])
-                                        peer["_relay"] = p_data.get("relay") or default_relay
-                                        on_paired_callback(peer)
-                                        return
+                                        peers_list = p_data.get("peers") or [p_data["peer"]]
+                                        poll_since_idx = int(p_data.get("next_index", poll_since_idx + len(peers_list)))
+                                        for raw_p in peers_list:
+                                            peer = dict(raw_p)
+                                            peer["_relay"] = p_data.get("relay") or default_relay
+                                            peer_sig = (
+                                                peer.get("public_ip"),
+                                                peer.get("public_port"),
+                                                peer.get("local_ip"),
+                                                peer.get("local_port"),
+                                            )
+                                            now_m = time.monotonic()
+                                            if (now_m - recent_peers.get(peer_sig, 0.0)) >= 1.0:
+                                                recent_peers[peer_sig] = now_m
+                                                on_paired_callback(peer)
                             except Exception:
                                 continue
-                        break
 
                 t = threading.Thread(target=_sse_or_poll_worker, daemon=True, name=f"P2P-SSE-{clean_pin}")
                 t.start()

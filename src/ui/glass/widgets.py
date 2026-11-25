@@ -597,15 +597,17 @@ class GlassToggleSwitch(QWidget):
 # Controles flutuantes do canto inferior direito (Controle Remoto, Audio & Tela Cheia)
 # ---------------------------------------------------------------------------
 class VideoOverlayControls(QWidget):
-    """Botoes vetoriais flutuantes de Controle Remoto, Audio e Tela Cheia."""
+    """Botoes vetoriais flutuantes de Controle Remoto, Controles/Gamepads, Audio e Tela Cheia."""
 
     ZONE_AUDIO = 0
     ZONE_FULLSCREEN = 1
     ZONE_REMOTE = 2
+    ZONE_GAMEPAD = 3
 
     audio_toggled = Signal()
     fullscreen_toggled = Signal()
     remote_toggled = Signal()
+    gamepad_toggled = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -621,6 +623,10 @@ class VideoOverlayControls(QWidget):
         self._show_remote = False
         self._remote_active = False
         self._remote_allowed = False
+        self._show_gamepad = False
+        self._gamepad_active = False
+        self._gamepad_allowed = False
+        self._gamepad_count = 0
         self._hover_zone = -1
         self._relayout()
 
@@ -635,6 +641,10 @@ class VideoOverlayControls(QWidget):
     @property
     def remote_active(self) -> bool:
         return self._remote_active
+
+    @property
+    def gamepad_active(self) -> bool:
+        return self._gamepad_active
 
     def set_ui_scale(self, scale: float) -> None:
         if abs(scale - self._scale) >= 0.005:
@@ -669,10 +679,31 @@ class VideoOverlayControls(QWidget):
             self._remote_allowed = al
             self.update()
 
+    def set_gamepad_visible(self, visible: bool) -> None:
+        v = bool(visible)
+        if v != self._show_gamepad:
+            self._show_gamepad = v
+            self._relayout()
+            self.update()
+
+    def set_gamepad_state(self, active: bool, allowed: bool = True, count: int = 0) -> None:
+        a = bool(active and allowed)
+        al = bool(allowed)
+        c = max(0, int(count))
+        if a != self._gamepad_active or al != self._gamepad_allowed or c != self._gamepad_count:
+            self._gamepad_active = a
+            self._gamepad_allowed = al
+            self._gamepad_count = c
+            self.update()
+
     def _active_zones(self) -> List[int]:
+        zones: List[int] = []
         if self._show_remote:
-            return [self.ZONE_REMOTE, self.ZONE_AUDIO, self.ZONE_FULLSCREEN]
-        return [self.ZONE_AUDIO, self.ZONE_FULLSCREEN]
+            zones.append(self.ZONE_REMOTE)
+        if self._show_gamepad:
+            zones.append(self.ZONE_GAMEPAD)
+        zones.extend([self.ZONE_AUDIO, self.ZONE_FULLSCREEN])
+        return zones
 
     def _btn_size(self) -> float:
         return float(T.px(48, self._scale, 30))
@@ -719,6 +750,8 @@ class VideoOverlayControls(QWidget):
         zone = self._zone_at(event.position())
         if zone == self.ZONE_REMOTE:
             self.remote_toggled.emit()
+        elif zone == self.ZONE_GAMEPAD:
+            self.gamepad_toggled.emit()
         elif zone == self.ZONE_AUDIO:
             self.audio_toggled.emit()
         elif zone == self.ZONE_FULLSCREEN:
@@ -745,6 +778,14 @@ class VideoOverlayControls(QWidget):
                     text = "Pausar controle remoto de mouse e teclado (Ctrl+Alt+M: mouse relativo)"
                 else:
                     text = "Ativar controle remoto de mouse e teclado"
+            elif zone == self.ZONE_GAMEPAD:
+                if not self._gamepad_allowed:
+                    text = "Controles / gamepads bloqueados pelo Transmissor"
+                elif self._gamepad_active:
+                    suffix = f" ({self._gamepad_count} ativo(s))" if self._gamepad_count > 0 else ""
+                    text = f"Desativar controles / gamepads{suffix} (DualShock, DualSense, Xbox e Genéricos)"
+                else:
+                    text = "Ativar controles / gamepads (DualShock, DualSense, Xbox e Genéricos)"
             elif zone == self.ZONE_AUDIO:
                 text = "Ativar áudio da transmissão" if self._audio_muted else "Desativar áudio da transmissão"
             elif zone == self.ZONE_FULLSCREEN:
@@ -764,7 +805,9 @@ class VideoOverlayControls(QWidget):
         for zone in self._active_zones():
             r = self._zone_rect(zone)
             hovered = zone == self._hover_zone
-            if zone == self.ZONE_REMOTE and self._remote_active:
+            if (zone == self.ZONE_REMOTE and self._remote_active) or (
+                zone == self.ZONE_GAMEPAD and self._gamepad_active
+            ):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(16, 185, 129, 110))
                 p.drawEllipse(r.center(), r.width() * 0.46, r.height() * 0.46)
@@ -786,6 +829,22 @@ class VideoOverlayControls(QWidget):
             if zone == self.ZONE_REMOTE:
                 eff_alpha = alpha if self._remote_allowed else 0.50
                 icons.draw_cursor_control(p, icon_box, alpha=eff_alpha, active=self._remote_active)
+            elif zone == self.ZONE_GAMEPAD:
+                eff_alpha = alpha if self._gamepad_allowed else 0.50
+                icons.draw_gamepad(p, icon_box, alpha=eff_alpha, active=self._gamepad_active)
+                if self._gamepad_count > 0:
+                    badge_d = max(13.0, r.width() * 0.34)
+                    badge_rc = QRectF(r.right() - badge_d, r.top(), badge_d, badge_d)
+                    p.setPen(QPen(QColor(255, 255, 255, 220), 1.0))
+                    p.setBrush(QColor(5, 150, 105, 235))
+                    p.drawEllipse(badge_rc)
+                    bf = QFont()
+                    bf.setFamilies(T.FONT_FAMILIES)
+                    bf.setPixelSize(max(9, int(round(badge_d * 0.68))))
+                    bf.setWeight(QFont.Weight.Bold)
+                    p.setFont(bf)
+                    p.setPen(QColor(255, 255, 255))
+                    p.drawText(badge_rc, Qt.AlignmentFlag.AlignCenter, str(min(9, self._gamepad_count)))
             elif zone == self.ZONE_AUDIO:
                 icons.draw_speaker(p, icon_box, alpha=alpha, muted=self._audio_muted)
             else:

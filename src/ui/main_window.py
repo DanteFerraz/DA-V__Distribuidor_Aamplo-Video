@@ -23,6 +23,9 @@ import time
 from typing import Any, Optional
 
 from src.dav.kernel.contracts import (
+    EVENT_CLIENT_KEYBOARD_PROFILE,
+    EVENT_GAMEPAD_ROSTER_CHANGED,
+    EVENT_GAMEPAD_RUMBLE_ACK,
     EVENT_REMOTE_CLIPBOARD,
     EVENT_REMOTE_FILE_STATUS,
     EVENT_REMOTE_INPUT_METRICS,
@@ -37,6 +40,7 @@ from src.dav.modules.telemetry.tupa_checker import TupaMetricsSnapshot
 from src.dav.modules.transport_p2p.blind_relay import normalize_pin
 from src.dav.modules.transport_p2p.service import TransportService
 from src.dav.modules.transport_p2p.signaling_client import P2PChannelClient
+from src.dav.modules.universal_input.service import UniversalInputService
 from src.ui.audio_sink import DesktopAudioPlayer
 from src.ui.bridge import DecodeWorker, EngineBridge, find_available_port
 from src.ui.glass import paint as glass_paint
@@ -99,6 +103,9 @@ class DavMainWindow(QMainWindow):
     remote_file_signal = Signal(dict)
     remote_shell_signal = Signal(str)
     remote_metrics_signal = Signal(dict)
+    gamepad_roster_signal = Signal(list)
+    gamepad_rumble_ack_signal = Signal(dict)
+    client_kb_profile_signal = Signal(dict)
 
     def __init__(
         self,
@@ -120,6 +127,9 @@ class DavMainWindow(QMainWindow):
         self.transport_service: TransportService = self.kernel.get_service("transport_p2p") or TransportService()
         self.audio_service: AudioService = self.kernel.get_service("audio") or AudioService()
         self.telemetry_service: TelemetryService = self.kernel.get_service("telemetry") or TelemetryService()
+        self.universal_input_service: UniversalInputService = (
+            self.kernel.get_service("universal_input") or UniversalInputService()
+        )
 
         self.version_str = self._load_version()
         self.setWindowTitle(f"DA-V v{self.version_str} — Distribuidor Amplo de Vídeo")
@@ -163,6 +173,8 @@ class DavMainWindow(QMainWindow):
         self._is_closing: bool = False
         self._admin_prompted_once: bool = False
         self._applying_remote_clipboard: bool = False
+        self._client_gamepad_enabled: bool = False
+        self._host_gamepad_count: int = 0
 
         self._conn_hint_timer = QTimer(self)
         self._conn_hint_timer.setSingleShot(True)
@@ -198,6 +210,9 @@ class DavMainWindow(QMainWindow):
         self.remote_file_signal.connect(self._on_remote_file_event)
         self.remote_shell_signal.connect(self._on_remote_shell_event)
         self.remote_metrics_signal.connect(self._on_remote_metrics_event)
+        self.gamepad_roster_signal.connect(self._on_gamepad_roster_event)
+        self.gamepad_rumble_ack_signal.connect(self._on_gamepad_rumble_ack_event)
+        self.client_kb_profile_signal.connect(self._on_client_kb_profile_event)
         self.tupa_checker.start(lambda snap: self.tupa_metrics_signal.emit(snap))
 
         self.engine.bus.subscribe(EVENT_REMOTE_PERM_CHANGED, lambda p: self.remote_perms_signal.emit(dict(p or {})))
@@ -205,6 +220,9 @@ class DavMainWindow(QMainWindow):
         self.engine.bus.subscribe(EVENT_REMOTE_FILE_STATUS, lambda s: self.remote_file_signal.emit(dict(s or {})))
         self.engine.bus.subscribe(EVENT_REMOTE_SHELL_OUTPUT, lambda o: self.remote_shell_signal.emit(str(o or "")))
         self.engine.bus.subscribe(EVENT_REMOTE_INPUT_METRICS, lambda m: self.remote_metrics_signal.emit(dict(m or {})))
+        self.engine.bus.subscribe(EVENT_GAMEPAD_ROSTER_CHANGED, lambda r: self.gamepad_roster_signal.emit(list(r or [])))
+        self.engine.bus.subscribe(EVENT_GAMEPAD_RUMBLE_ACK, lambda a: self.gamepad_rumble_ack_signal.emit(dict(a or {})))
+        self.engine.bus.subscribe(EVENT_CLIENT_KEYBOARD_PROFILE, lambda p: self.client_kb_profile_signal.emit(dict(p or {})))
 
         self._init_ui()
 
@@ -335,6 +353,7 @@ class DavMainWindow(QMainWindow):
         self.settings_sheet.remote_perms_changed.connect(self._on_granular_perms_changed)
         self.settings_sheet.admin_elevation_requested.connect(lambda: self._request_admin_elevation(auto_triggered=False))
         self.settings_sheet.panic_revoke_requested.connect(self._on_panic_revoke_remote)
+        self.settings_sheet.open_gamepad_tester_requested.connect(self._open_gamepad_tester_sheet)
 
         self.stats_sheet = StatsSheet(parent=self.central_host)
         self.stats_sheet.hide()
@@ -344,9 +363,14 @@ class DavMainWindow(QMainWindow):
         self.view_discovery = self.stats_sheet.view_discovery
         self.view_workspace = self.stats_sheet.view_workspace
         self.view_troubleshoot = self.stats_sheet.view_troubleshoot
+        self.gamepad_tester = self.view_workspace.gamepad_tester
 
         self.view_workspace.send_file_requested.connect(self._send_p2p_file)
         self.view_workspace.shell_command_submitted.connect(self._send_remote_shell_cmd)
+        self.gamepad_tester.test_remote_rumble_requested.connect(self._on_test_remote_rumble_clicked)
+        self.gamepad_tester.test_local_rumble_requested.connect(self._on_test_local_rumble_clicked)
+        self.gamepad_tester.install_driver_requested.connect(self._on_install_gamepad_driver_clicked)
+        self.gamepad_tester.update_driver_status(self.universal_input_service.check_host_gamepad_driver())
 
         self.view_discovery.connect_peer_requested.connect(self._quick_connect_peer)
         self.view_discovery.refresh_requested.connect(self._manual_refresh_peers)
@@ -356,9 +380,10 @@ class DavMainWindow(QMainWindow):
         self.view_troubleshoot.export_logs_requested.connect(self._export_diagnostic_bundle)
         self.view_troubleshoot.check_update_requested.connect(self._manual_check_updates)
 
-        # Controles flutuantes no canto inferior direito (Controle Remoto, Audio & Tela Cheia)
+        # Controles flutuantes no canto inferior direito (Controle Remoto, Controles/Gamepads, Audio & Tela Cheia)
         self.overlay_controls = VideoOverlayControls(self.central_host)
         self.overlay_controls.remote_toggled.connect(self._on_overlay_remote_clicked)
+        self.overlay_controls.gamepad_toggled.connect(self._on_overlay_gamepad_clicked)
         self.overlay_controls.audio_toggled.connect(self._on_overlay_audio_clicked)
         self.overlay_controls.fullscreen_toggled.connect(self._toggle_fullscreen)
         self.overlay_controls.hide()
@@ -456,11 +481,27 @@ class DavMainWindow(QMainWindow):
             if self.mode == "sender"
             else not self.settings_sheet.chk_audio_rx.isChecked()
         )
-        self.overlay_controls.set_remote_visible(cur_page == self.PAGE_VIDEO and self.mode == "viewer")
+        is_viewer_live = cur_page == self.PAGE_VIDEO and self.mode == "viewer"
+        is_sender_live = cur_page == self.PAGE_SENDER and self.is_sending
+        self.overlay_controls.set_remote_visible(is_viewer_live)
         self.overlay_controls.set_remote_state(
             self.video_canvas.remote_control_enabled,
             self.video_canvas.host_allows_input,
         )
+        self.overlay_controls.set_gamepad_visible(is_viewer_live or is_sender_live)
+        if is_sender_live:
+            self.overlay_controls.set_gamepad_state(
+                self.settings_sheet.chk_allow_gamepad.isChecked(),
+                True,
+                count=self._host_gamepad_count,
+            )
+        else:
+            local_gp_cnt = len(self.engine.get_local_gamepads()) if self.is_receiving else 0
+            self.overlay_controls.set_gamepad_state(
+                self._client_gamepad_enabled,
+                self.video_canvas.host_allows_gamepad,
+                count=local_gp_cnt,
+            )
         self.overlay_controls.set_audio_muted(muted)
         self.overlay_controls.set_fullscreen(self.isFullScreen())
         self.overlay_controls.setVisible(show_overlay)
@@ -499,21 +540,97 @@ class DavMainWindow(QMainWindow):
         state_lbl = "ATIVADO" if self.video_canvas.remote_control_enabled else "PAUSADO"
         self._append_log("INFO", f"Controle remoto de mouse e teclado {state_lbl}.")
 
+    def _on_overlay_gamepad_clicked(self):
+        if self.mode == "sender":
+            new_allow = not self.settings_sheet.chk_allow_gamepad.isChecked()
+            self.settings_sheet.chk_allow_gamepad.setChecked(new_allow)
+            self._sync_overlay_controls_state()
+            self._append_log(
+                "INFO",
+                f"Controles / gamepads remotos no Host {'ATIVADOS' if new_allow else 'DESATIVADOS'}.",
+            )
+            return
+
+        if not self.video_canvas.host_allows_gamepad:
+            self._append_log("WARN", "O Transmissor ainda não habilitou controles / gamepads nesta sessão.")
+            return
+        self._client_gamepad_enabled = not self._client_gamepad_enabled
+        self.engine.set_client_gamepad_enabled(self._client_gamepad_enabled)
+        self._sync_overlay_controls_state()
+        st_lbl = "ATIVADO" if self._client_gamepad_enabled else "PAUSADO"
+        self._append_log("INFO", f"Envio de controles locais (DualShock / DualSense / Xbox / Genéricos) {st_lbl}.")
+
+    def _open_gamepad_tester_sheet(self):
+        self.gamepad_tester.update_driver_status(self.universal_input_service.check_host_gamepad_driver())
+        self.settings_sheet.hide()
+        self.active_sheet = "stats"
+        scale = T.ui_scale(self.width(), self.height())
+        self.stats_sheet.set_ui_scale(scale)
+        self.stats_sheet.setGeometry(0, 0, self.central_host.width(), self.central_host.height())
+        self.stats_sheet.set_tab(2)
+        self.stats_sheet.show()
+        self.stats_sheet.raise_()
+        self.nav_pill.set_active("stats")
+        self.nav_pill.raise_()
+
+    def _on_test_remote_rumble_clicked(self, host_slot):
+        if not self.is_sending:
+            self.gamepad_tester.show_rumble_ack({
+                "ok": False,
+                "device_name": "Inicie a transmissão e conecte um cliente remoto antes de testar a vibração",
+            })
+            return
+        if not self.settings_sheet.chk_allow_gamepad.isChecked():
+            self.settings_sheet.chk_allow_gamepad.setChecked(True)
+        sent = self.engine.trigger_remote_gamepad_rumble_test(host_slot=host_slot)
+        if sent:
+            self._append_log("INFO", "[Controles] Comando de vibração enviado ao controle do cliente remoto.")
+        else:
+            self.gamepad_tester.show_rumble_ack({
+                "ok": False,
+                "device_name": "Nenhum cliente P2P autenticado no momento",
+            })
+
+    def _on_test_local_rumble_clicked(self):
+        ok, dev_name = self.engine.test_local_gamepad_rumble()
+        self.gamepad_tester.show_rumble_ack({
+            "ok": ok,
+            "device_name": dev_name,
+            "rtt_ms": 0.1,
+            "backend": "local",
+        })
+        self._append_log(
+            "SUCCESS" if ok else "WARN",
+            f"[Controles Locais] Teste de vibração local: {dev_name}.",
+        )
+
+    def _on_install_gamepad_driver_clicked(self):
+        ok, msg = self.universal_input_service.install_host_gamepad_driver()
+        self._append_log("INFO" if ok else "WARN", f"[ViGEmBus] {msg}")
+        QTimer.singleShot(
+            6000,
+            lambda: self.gamepad_tester.update_driver_status(
+                self.universal_input_service.check_host_gamepad_driver()
+            ),
+        )
+
     def _on_canvas_remote_input(self, pkt):
         self.engine.send_remote_input(pkt)
 
     def _on_sender_interactive_toggled(self, enabled: bool):
         snap = self.engine.set_remote_permissions(
             allow_input=enabled,
+            allow_gamepad=enabled,
             allow_clipboard=enabled,
             allow_files=enabled,
         )
         self.settings_sheet.sync_remote_permissions(snap)
         self.page_sender.set_interactive_state(enabled, admin_elevated=bool(snap.get("admin_elevated")))
+        self._sync_overlay_controls_state()
         if enabled:
             self._append_log(
                 "SUCCESS",
-                "[Modo Interativo] Compartilhamento de área de trabalho ativado (Ctrl+Alt+Shift+Esc para revogar).",
+                "[Modo Interativo] Área de trabalho e controles universais ativados (Ctrl+Alt+Shift+Esc para revogar).",
             )
             if (
                 not snap.get("admin_elevated")
@@ -528,9 +645,14 @@ class DavMainWindow(QMainWindow):
     def _on_granular_perms_changed(self, perms: dict):
         snap = self.engine.set_remote_permissions(**perms)
         any_interactive = bool(
-            snap.get("allow_input") or snap.get("allow_clipboard") or snap.get("allow_files") or snap.get("allow_shell")
+            snap.get("allow_input")
+            or snap.get("allow_gamepad")
+            or snap.get("allow_clipboard")
+            or snap.get("allow_files")
+            or snap.get("allow_shell")
         )
         self.page_sender.set_interactive_state(any_interactive, admin_elevated=bool(snap.get("admin_elevated")))
+        self._sync_overlay_controls_state()
 
     def _request_admin_elevation(self, auto_triggered: bool = False):
         if self.engine.is_remote_admin_elevated():
@@ -568,15 +690,22 @@ class DavMainWindow(QMainWindow):
             return
         if self.mode == "sender" or self.is_sending:
             any_int = bool(
-                perms.get("allow_input") or perms.get("allow_clipboard")
-                or perms.get("allow_files") or perms.get("allow_shell")
+                perms.get("allow_input")
+                or perms.get("allow_gamepad")
+                or perms.get("allow_clipboard")
+                or perms.get("allow_files")
+                or perms.get("allow_shell")
             )
             self.settings_sheet.sync_remote_permissions(perms)
             self.page_sender.set_interactive_state(any_int, admin_elevated=bool(perms.get("admin_elevated")))
+            self._sync_overlay_controls_state()
         if self.is_receiving:
             allow_in = bool(perms.get("allow_input"))
+            allow_gp = bool(perms.get("allow_gamepad"))
             was_allowed = self.video_canvas.host_allows_input
+            was_gp_allowed = self.video_canvas.host_allows_gamepad
             self.video_canvas.host_allows_input = allow_in
+            self.video_canvas.host_allows_gamepad = allow_gp
             self.video_canvas.host_allows_files = bool(perms.get("allow_files"))
             if allow_in and not was_allowed:
                 self.video_canvas.remote_control_enabled = True
@@ -584,9 +713,46 @@ class DavMainWindow(QMainWindow):
             elif not allow_in and was_allowed:
                 self.video_canvas.remote_control_enabled = False
                 self._append_log("WARN", "[Área Remota] O Transmissor revogou o controle interativo.")
+            if allow_gp and not was_gp_allowed:
+                self._client_gamepad_enabled = True
+                self.engine.set_client_gamepad_enabled(True)
+                self._append_log("SUCCESS", "[Controles] O Transmissor habilitou controles / gamepads remotos.")
+            elif not allow_gp and was_gp_allowed:
+                self._client_gamepad_enabled = False
+                self.engine.set_client_gamepad_enabled(False)
+                self._append_log("WARN", "[Controles] O Transmissor desativou controles / gamepads remotos.")
             self.view_workspace.update_peer_permissions(perms)
             self._sync_overlay_controls_state()
             self.video_canvas.update()
+
+    @Slot(list)
+    def _on_gamepad_roster_event(self, roster: list):
+        if self._is_closing:
+            return
+        self._host_gamepad_count = len(roster)
+        self.gamepad_tester.update_roster(roster)
+        self._sync_overlay_controls_state()
+
+    @Slot(dict)
+    def _on_gamepad_rumble_ack_event(self, ack: dict):
+        if self._is_closing:
+            return
+        self.gamepad_tester.show_rumble_ack(ack)
+        lvl = "SUCCESS" if ack.get("ok") else "WARN"
+        self._append_log(
+            lvl,
+            f"[Testador de Controles] Vibração no cliente: {ack.get('device_name')} (RTT {ack.get('rtt_ms', 0.0):.1f} ms).",
+        )
+
+    @Slot(dict)
+    def _on_client_kb_profile_event(self, prof: dict):
+        if self._is_closing:
+            return
+        self.gamepad_tester.update_client_keyboard_profile(prof)
+        self._append_log(
+            "INFO",
+            f"[Teclado Universal] Layout do cliente conectado: {prof.get('layout_code')} ({prof.get('variant')}).",
+        )
 
     @Slot(str)
     def _on_remote_clipboard_event(self, text: str):
@@ -997,8 +1163,11 @@ class DavMainWindow(QMainWindow):
             self.is_receiving = False
             self._waiting_first_frame = False
             self.settings_sheet.set_connection_state(False)
+            self._client_gamepad_enabled = False
+            self.engine.set_client_gamepad_enabled(False)
             self.video_canvas.remote_control_enabled = False
             self.video_canvas.host_allows_input = False
+            self.video_canvas.host_allows_gamepad = False
             self.video_canvas.host_allows_files = False
             self.view_workspace.update_peer_permissions({})
             self.video_canvas.clear_display()

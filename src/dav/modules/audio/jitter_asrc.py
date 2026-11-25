@@ -120,6 +120,14 @@ class AudioJitterAsrcBuffer:
             self._update_welford_jitter(tx_ts_us)
             self._update_asrc_ratio()
 
+            # Detecta reinicio de sessao ou retorno de silencio/mute prolongado (> 350 ms)
+            now_clk = time.monotonic()
+            if self._last_expected_frame_id is not None and (
+                frame_id < (self._last_expected_frame_id - 20)
+                or (self._last_rx_clock_mono > 0.0 and (now_clk - self._last_rx_clock_mono) > 0.35)
+            ):
+                self._last_expected_frame_id = None
+
             need_prev = False
             gap = 0
             if self._last_expected_frame_id is not None and frame_id > self._last_expected_frame_id:
@@ -191,8 +199,27 @@ class AudioJitterAsrcBuffer:
             )
             return float(video_tx_ts_us - playing_pts) / 1000.0
 
+    def reset(self) -> None:
+        """Limpa buffers e estado temporal entre reconexoes mantendo o codec Opus operacional."""
+        with self._lock:
+            self._pcm_chunks.clear()
+            self._buffered_samples = 0
+            self._last_rx_mono = None
+            self._last_tx_ts_us = None
+            self._welford_n = 0
+            self._welford_mean_ms = 0.0
+            self._welford_m2 = 0.0
+            self.target_delay_ms = self.min_target_ms
+            self.asrc_ratio = 1.0
+            self._integral_err = 0.0
+            self._last_expected_frame_id = None
+            self.audio_master_ts_us = 0
+            self._last_rx_clock_mono = 0.0
+            self.decoder.ensure_open()
+
     def close(self) -> None:
         with self._lock:
             self._pcm_chunks.clear()
             self._buffered_samples = 0
+            self._last_expected_frame_id = None
             self.decoder.close()

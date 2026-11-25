@@ -42,6 +42,10 @@ py -3.13 -m PyInstaller --noconfirm --clean --onedir --windowed `
   --hidden-import src.dav.modules.updater.manifest `
   --hidden-import src.dav.modules.audio.manifest `
   --hidden-import src.dav.modules.remote_desktop.manifest `
+  --hidden-import src.dav.modules.universal_input.manifest `
+  --hidden-import PySide6.QtMultimedia `
+  --collect-all sdl2dll `
+  --collect-all vgamepad `
   --hidden-import comtypes `
   --hidden-import cryptography `
   --exclude-module PyQt5 `

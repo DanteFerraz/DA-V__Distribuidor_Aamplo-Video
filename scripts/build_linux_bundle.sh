@@ -95,6 +95,9 @@ QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" pyinstaller --noconfirm --clean 
     --hidden-import src.dav.modules.updater.manifest \
     --hidden-import src.dav.modules.audio.manifest \
     --hidden-import src.dav.modules.remote_desktop.manifest \
+    --hidden-import src.dav.modules.universal_input.manifest \
+    --hidden-import PySide6.QtMultimedia \
+    --collect-all sdl2dll \
     --hidden-import cryptography \
     --exclude-module PyQt5 \
     --exclude-module PyQt6 \

@@ -2,15 +2,15 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/Release-v5.0.0-0ea5e9?style=for-the-badge)
+![Version](https://img.shields.io/badge/Release-v5.1.0-0ea5e9?style=for-the-badge)
 ![Core](https://img.shields.io/badge/Architecture-MonoTech%20Core%20Kernel%20v2.0-1e293b?style=for-the-badge)
 ![Cadence](https://img.shields.io/badge/Streaming-Up%20to%204K%20%40%20120%20FPS-10b981?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-GNU%20AGPLv3%20%2B%20Section%207%20Notice-8b5cf6?style=for-the-badge)
 ![Platforms](https://img.shields.io/badge/OS-Windows%2010%2F11%20%7C%20Linux%20x64-6366f1?style=for-the-badge)
 
-**Compartilhamento de tela e área de trabalho remota interativa ponto a ponto de ultra-baixa latência (até 4K 120 FPS, meta Input-to-Photon <= 15 ms) entre Windows e Linux — com pareamento universal por PIN, arquitetura modular MonoTech Core Kernel v2.0, elevação administrativa sob demanda (UAC/Polkit), perfuração direta de NAT e fallback automático para CGNAT Simétrico.**
+**Compartilhamento de tela, área de trabalho remota interativa e universalizador multi-controle ponto a ponto de ultra-baixa latência (até 4K 120 FPS, meta Input-to-Photon <= 15 ms) entre Windows e Linux — com tradução fiel ao teclado do cliente (`~`, dead keys e ABNT2/US), suporte nativo a DualShock 4, DualSense, Xbox e Gamepads Genéricos com vibração remota, pareamento universal por PIN e arquitetura modular MonoTech Core Kernel v2.0.**
 
-[Arquitetura de Software v5.0](#arquitetura-de-software-v50--monotech-core-kernel) •
+[Arquitetura de Software v5.1](#arquitetura-de-software-v51--monotech-core-kernel) •
 [Protocolo P2P e Travessia de NAT](#engenharia-p2p-stun-single-socket-e-blind-relay) •
 [Formato de Pacote na Rede](#protocolo-binário-de-transporte) •
 [Como Executar](#instalação-e-execução) •
@@ -30,9 +30,9 @@ Em vez de embutir um navegador inteiro (Electron/WebRTC), o DA-V separa estritam
 
 ---
 
-## Arquitetura de Software v5.0 — MonoTech Core Kernel
+## Arquitetura de Software v5.1 — MonoTech Core Kernel
 
-O **DA-V v5.0.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0**. O sistema é decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e 10 fatias verticais desacopladas (`src/dav/modules/`), garantindo isolamento de falhas, latência sub-milissegundo e extensibilidade sem acoplamento direto:
+O **DA-V v5.1.0** adota o padrão arquitetural **MonoTech Core Kernel v2.0**. O sistema é decomposto em um núcleo funcional reutilizável (`src/dav/kernel/`) e 11 fatias verticais desacopladas (`src/dav/modules/`), garantindo isolamento de falhas, latência sub-milissegundo e extensibilidade sem acoplamento direto:
 
 ```mermaid
 flowchart TB
@@ -52,8 +52,9 @@ flowchart TB
         COD["codec: NVENC GPU, libx264 AVX2 e PyAV"]
         NET["transport_p2p: STUN, ICE-Lite, PAKE, SQP, FEC e Blind Relay"]
         AUD["audio: WASAPI/PipeWire, Resampler, Opus 48 kHz e ASRC"]
-        ENG["stream_engine: Subprocesso TX Lockless e ReceiverWorker"]
+        ENG["stream_engine: Subprocesso TX Multi-Peer e ReceiverWorker"]
         REM["remote_desktop: Input 24B, UAC/Polkit Broker, Clipboard, Arquivos e PTY"]
+        UNI["universal_input: Tradutor Teclado Cliente, Multi-Gamepad DS4/DualSense/Xbox e Rumble"]
         COM["commercial: MonoTech Community Edition 100% Free e Open"]
         TEL["telemetry: Sondas TUPA (Jitter/RTT/Input) e Hub SDE"]
         UI["presentation: Shell Glassmorphism PySide6 e Instaladores"]
@@ -65,6 +66,7 @@ flowchart TB
     AUD -->|"Mux Opus PCM"| ENG
     NET -->|"Controle SQP/PAKE/FEC"| ENG
     REM <-->|"PT_INPUT e PT_WORKSPACE"| ENG
+    UNI <-->|"KEY_UNICODE, GAMEPAD_STATE e Rumble"| ENG
     ENG -->|"Eventos"| BUS
     ENG -->|"Alocacao"| POOL
     ENG -->|"Retorno"| RES

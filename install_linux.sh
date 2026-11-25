@@ -80,6 +80,12 @@ ensure_runtime_deps() {
         if ! dpkg -s libxcb-cursor0 >/dev/null 2>&1; then
             missing_pkgs+=("libxcb-cursor0")
         fi
+        if ! command -v parec >/dev/null 2>&1 && ! command -v pw-cat >/dev/null 2>&1; then
+            missing_pkgs+=("pulseaudio-utils")
+        fi
+        if ! dpkg -s libsdl2-2.0-0 >/dev/null 2>&1; then
+            missing_pkgs+=("libsdl2-2.0-0")
+        fi
         if [ "${IS_WAYLAND}" -eq 1 ] && ! command -v gst-launch-1.0 >/dev/null 2>&1; then
             missing_pkgs+=("python3-gi" "gstreamer1.0-pipewire" "gstreamer1.0-tools" "gstreamer1.0-plugins-base")
         fi

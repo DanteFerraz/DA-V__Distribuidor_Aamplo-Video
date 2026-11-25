@@ -25,6 +25,7 @@ from src.dav.modules.remote_desktop.protocol import (
     pack_wheel_deltas,
 )
 from src.dav.modules.telemetry.stage_probe import probe_send as _probe_send
+from src.dav.modules.universal_input.keyboard_translator import ClientKeyboardTranslator
 
 
 class VideoCanvasWidget(QWidget):
@@ -53,8 +54,11 @@ class VideoCanvasWidget(QWidget):
         self.is_connected = False
         self.remote_control_enabled = False
         self.host_allows_input = False
+        self.host_allows_gamepad = False
         self.host_allows_files = False
         self.relative_mouse_mode = False
+        self._kb_translator = ClientKeyboardTranslator()
+        self._last_input_ts_us = 0
 
         self._frame_times = deque(maxlen=60)
         self._last_move_sent_mono = 0.0
@@ -69,6 +73,7 @@ class VideoCanvasWidget(QWidget):
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         self.sender_codec = "H.264 / HEVC ULL"
         self.sender_frame_kb = 24
         self.gpu_mode = "PyAV SIMD Zero-Copy + DirectComposition"
@@ -118,6 +123,7 @@ class VideoCanvasWidget(QWidget):
         self._move_timer.stop()
         self._pending_move = None
         self._last_cursor_pos = None
+        self._kb_translator.reset()
         self.current_image = None
         self.is_connected = False
         self.input_to_photon_ms = 0.0
@@ -203,8 +209,31 @@ class VideoCanvasWidget(QWidget):
         return mask
 
     def _emit_input(self, pkt: InputEventPacket) -> None:
-        pkt.client_ts_us = int(time.perf_counter_ns() // 1000)
+        now_us = int(time.perf_counter_ns() // 1000)
+        if now_us <= self._last_input_ts_us:
+            now_us = self._last_input_ts_us + 1
+        self._last_input_ts_us = now_us
+        pkt.client_ts_us = now_us
         self.remote_input_event.emit(pkt)
+
+    def _dispatch_key_actions(self, actions) -> None:
+        for act in actions:
+            if act.mode == "unicode" and act.codepoint > 0:
+                self._emit_input(
+                    InputEventPacket(
+                        ev_type=EvType.KEY_UNICODE,
+                        modifiers_mask=act.modifiers_mask,
+                        key_or_wheel=act.codepoint,
+                    )
+                )
+            elif act.mode == "hid" and act.hid_code > 0:
+                self._emit_input(
+                    InputEventPacket(
+                        ev_type=EvType.KEY_UP if act.is_up else EvType.KEY_DOWN,
+                        modifiers_mask=act.modifiers_mask,
+                        key_or_wheel=act.hid_code,
+                    )
+                )
 
     def _flush_coalesced_move(self) -> None:
         if self._pending_move is None or not self.is_interactive_active:
@@ -396,20 +425,17 @@ class VideoCanvasWidget(QWidget):
             return
 
         if self.is_interactive_active:
-            if not event.isAutoRepeat():
-                hid_code = qt_key_to_hid(
-                    int(key),
-                    native_scancode=int(event.nativeScanCode()),
-                    native_vk=int(event.nativeVirtualKey()),
-                )
-                if hid_code > 0:
-                    self._emit_input(
-                        InputEventPacket(
-                            ev_type=EvType.KEY_DOWN,
-                            modifiers_mask=self._extract_modifiers_mask(mods),
-                            key_or_wheel=hid_code,
-                        )
-                    )
+            m_mask = self._extract_modifiers_mask(mods)
+            txt = event.text() if hasattr(event, "text") else ""
+            actions = self._kb_translator.translate_key_press(
+                qt_key=int(key),
+                modifiers_mask=m_mask,
+                text=txt,
+                native_scancode=int(event.nativeScanCode()),
+                native_vk=int(event.nativeVirtualKey()),
+                is_auto_repeat=bool(event.isAutoRepeat()),
+            )
+            self._dispatch_key_actions(actions)
             event.accept()
             return
 
@@ -435,25 +461,32 @@ class VideoCanvasWidget(QWidget):
 
     def keyReleaseEvent(self, event):
         if self.is_interactive_active:
-            if not event.isAutoRepeat():
-                hid_code = qt_key_to_hid(
-                    int(event.key()),
-                    native_scancode=int(event.nativeScanCode()),
-                    native_vk=int(event.nativeVirtualKey()),
-                )
-                if hid_code > 0:
-                    self._emit_input(
-                        InputEventPacket(
-                            ev_type=EvType.KEY_UP,
-                            modifiers_mask=self._extract_modifiers_mask(event.modifiers()),
-                            key_or_wheel=hid_code,
-                        )
-                    )
+            m_mask = self._extract_modifiers_mask(event.modifiers())
+            actions = self._kb_translator.translate_key_release(
+                qt_key=int(event.key()),
+                modifiers_mask=m_mask,
+                native_scancode=int(event.nativeScanCode()),
+                native_vk=int(event.nativeVirtualKey()),
+                is_auto_repeat=bool(event.isAutoRepeat()),
+            )
+            self._dispatch_key_actions(actions)
             event.accept()
             return
         super().keyReleaseEvent(event)
 
+    def inputMethodEvent(self, event):
+        """Processa caracteres compostos pelo teclado do cliente (ex: '~' + Espaco -> '~', '~' + 'a' -> 'ã')."""
+        if self.is_interactive_active:
+            committed = event.commitString() if hasattr(event, "commitString") else ""
+            if committed:
+                actions = self._kb_translator.translate_ime_commit(committed)
+                self._dispatch_key_actions(actions)
+            event.accept()
+            return
+        super().inputMethodEvent(event)
+
     def focusOutEvent(self, event):
+        self._kb_translator.reset()
         if self.is_connected and self.host_allows_input:
             self._emit_input(InputEventPacket(ev_type=EvType.RELEASE_ALL))
         super().focusOutEvent(event)

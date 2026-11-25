@@ -40,6 +40,9 @@ import numpy as np
 
 from src.dav.kernel.contracts import (
     EVENT_AUDIO_FRAME_RX,
+    EVENT_CLIENT_KEYBOARD_PROFILE,
+    EVENT_GAMEPAD_ROSTER_CHANGED,
+    EVENT_GAMEPAD_RUMBLE_ACK,
     EVENT_REMOTE_CLIPBOARD,
     EVENT_REMOTE_FILE_STATUS,
     EVENT_REMOTE_INPUT_METRICS,
@@ -62,6 +65,7 @@ from src.dav.modules.stream_engine.receiver_worker import ReceiverWorker
 from src.dav.modules.stream_engine.sender_worker import SenderWorker
 from src.dav.modules.stream_engine.subprocess_sender import run_sender_subprocess
 from src.dav.modules.transport_p2p.service import TransportService
+from src.dav.modules.universal_input.service import UniversalInputService
 from src.dav.modules.transport_p2p.signaling_client import (
     DEFAULT_RENDEZVOUS_HOST,
     DEFAULT_STUN_PORT,
@@ -127,6 +131,7 @@ class StreamEngineService:
         self.transport_service = transport_service or TransportService()
         self.audio_service = audio_service or AudioService()
         self.remote_desktop_service = RemoteDesktopService()
+        self.universal_input_service = UniversalInputService()
 
         self._sender: Optional[SenderWorker] = None
         self._receiver: Optional[ReceiverWorker] = None
@@ -135,6 +140,8 @@ class StreamEngineService:
         self._latest_stats: Dict[str, Any] = {}
         self._remote_perms = WorkspacePermissions(admin_elevated=is_process_elevated())
         self._peer_remote_perms = WorkspacePermissions()
+        self._client_gamepad_enabled: bool = False
+        self._host_gamepad_roster: List[Dict[str, Any]] = []
 
         # Estado de subprocesso TX e socket preparado RX (fluxo desktop GIL-free)
         self._dll = None
@@ -289,6 +296,13 @@ class StreamEngineService:
                 self.bus.publish(EVENT_REMOTE_CLIPBOARD, payload)
             elif kind == "file_status":
                 self.bus.publish(EVENT_REMOTE_FILE_STATUS, payload)
+            elif kind == "gamepad_roster":
+                self._host_gamepad_roster = list(payload or [])
+                self.bus.publish(EVENT_GAMEPAD_ROSTER_CHANGED, self._host_gamepad_roster)
+            elif kind == "gamepad_rumble_ack":
+                self.bus.publish(EVENT_GAMEPAD_RUMBLE_ACK, payload)
+            elif kind == "client_kb_profile":
+                self.bus.publish(EVENT_CLIENT_KEYBOARD_PROFILE, payload)
 
         eff_perms = initial_permissions if initial_permissions is not None else self._remote_perms.to_dict()
         sender = SenderWorker(
@@ -570,6 +584,13 @@ class StreamEngineService:
                         self.bus.publish(EVENT_REMOTE_CLIPBOARD, evt[1])
                     elif evt[0] == "REMOTE_FILE_STATUS":
                         self.bus.publish(EVENT_REMOTE_FILE_STATUS, evt[1])
+                    elif evt[0] == "GAMEPAD_ROSTER":
+                        self._host_gamepad_roster = list(evt[1] or [])
+                        self.bus.publish(EVENT_GAMEPAD_ROSTER_CHANGED, self._host_gamepad_roster)
+                    elif evt[0] == "GAMEPAD_RUMBLE_ACK":
+                        self.bus.publish(EVENT_GAMEPAD_RUMBLE_ACK, evt[1])
+                    elif evt[0] == "CLIENT_KB_PROFILE":
+                        self.bus.publish(EVENT_CLIENT_KEYBOARD_PROFILE, evt[1])
                     elif evt[0] == "log":
                         if self._user_log_callback:
                             try:
@@ -792,6 +813,7 @@ class StreamEngineService:
             on_shell_output=_on_shell_desk,
             on_input_echo=_on_echo_desk,
         )
+        receiver.set_gamepad_enabled(self._client_gamepad_enabled)
         receiver.start()
         self._receiver = receiver
         self._fallback_running = True
@@ -799,7 +821,14 @@ class StreamEngineService:
         return True
 
     def set_remote_permissions(self, **perms: bool) -> Dict[str, bool]:
-        for k in ("allow_input", "allow_clipboard", "allow_files", "allow_shell", "admin_elevated"):
+        for k in (
+            "allow_input",
+            "allow_gamepad",
+            "allow_clipboard",
+            "allow_files",
+            "allow_shell",
+            "admin_elevated",
+        ):
             if k in perms and perms[k] is not None:
                 setattr(self._remote_perms, k, bool(perms[k]))
         snap = self._remote_perms.to_dict()
@@ -821,6 +850,7 @@ class StreamEngineService:
 
     def panic_revoke_remote(self) -> Dict[str, bool]:
         self._remote_perms.allow_input = False
+        self._remote_perms.allow_gamepad = False
         self._remote_perms.allow_clipboard = False
         self._remote_perms.allow_files = False
         self._remote_perms.allow_shell = False
@@ -834,6 +864,70 @@ class StreamEngineService:
                 pass
         self.bus.publish(EVENT_REMOTE_PERM_CHANGED, snap)
         return snap
+
+    def set_client_gamepad_enabled(self, enabled: bool) -> bool:
+        self._client_gamepad_enabled = bool(enabled)
+        if self._receiver is not None:
+            return self._receiver.set_gamepad_enabled(self._client_gamepad_enabled)
+        return self._client_gamepad_enabled
+
+    @property
+    def is_client_gamepad_enabled(self) -> bool:
+        if self._receiver is not None:
+            return self._receiver.is_gamepad_enabled
+        return self._client_gamepad_enabled
+
+    def get_host_gamepad_roster(self) -> List[Dict[str, Any]]:
+        if self._sender is not None:
+            return self._sender.gamepad_hub.get_roster_snapshot()
+        return list(self._host_gamepad_roster)
+
+    def get_local_gamepads(self) -> List[Dict[str, Any]]:
+        if self._receiver is not None and self._receiver.gamepad_capturer is not None:
+            states = self._receiver.gamepad_capturer.get_local_controllers()
+        else:
+            states = []
+        return [
+            {
+                "local_slot": st.local_slot,
+                "kind": int(st.kind),
+                "kind_label": st.kind.display_label,
+                "device_name": st.device_name or st.kind.display_label,
+                "connected": st.connected,
+                "buttons_mask": st.buttons_mask,
+                "lt_u8": st.lt_u8,
+                "rt_u8": st.rt_u8,
+                "lx_i16": st.lx_i16,
+                "ly_i16": st.ly_i16,
+                "rx_i16": st.rx_i16,
+                "ry_i16": st.ry_i16,
+            }
+            for st in states
+        ]
+
+    def trigger_remote_gamepad_rumble_test(self, host_slot: Optional[int] = None) -> bool:
+        if self._sender is not None:
+            return self._sender.trigger_gamepad_rumble_test(host_slot=host_slot)
+        if self._sender_cmd_queue is not None and self._sender_process is not None and self._sender_process.is_alive():
+            try:
+                self._sender_cmd_queue.put_nowait(("TEST_GAMEPAD_RUMBLE", host_slot))
+                return True
+            except Exception:
+                return False
+        return False
+
+    def test_local_gamepad_rumble(self, local_slot: int = 0xFF) -> Tuple[bool, str]:
+        if self._receiver is not None and self._receiver.gamepad_capturer is not None:
+            return self._receiver.gamepad_capturer.trigger_rumble(local_slot=local_slot)
+        cap_res = self.universal_input_service.create_gamepad_capturer()
+        if not cap_res.is_success or cap_res.data is None:
+            return False, cap_res.error or "Capturador indisponivel"
+        cap = cap_res.data
+        try:
+            cap.backend.poll_states()
+            return cap.trigger_rumble(local_slot=local_slot)
+        finally:
+            cap.close()
 
     def is_remote_admin_elevated(self) -> bool:
         return bool(self._remote_perms.admin_elevated or self.remote_desktop_service.is_admin_elevated())

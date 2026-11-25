@@ -141,10 +141,13 @@ class OpusAudioDecoder:
 
     def __init__(self):
         self._codec_ctx = None
+        self._opus_unavailable = False
         self._last_good_frame = np.zeros((AUDIO_FRAME_SAMPLES, AUDIO_CHANNELS), dtype=np.int16)
         self._init_codec()
 
     def _init_codec(self) -> None:
+        if self._opus_unavailable:
+            return
         try:
             import av
 
@@ -155,6 +158,12 @@ class OpusAudioDecoder:
             self._codec_ctx = dec
         except Exception:
             self._codec_ctx = None
+            self._opus_unavailable = True
+
+    def ensure_open(self) -> None:
+        """Garante que o contexto libopus esteja aberto apos um ciclo stop() -> start()."""
+        if self._codec_ctx is None and not self._opus_unavailable:
+            self._init_codec()
 
     def _decode_chunk(self, codec_id: int, chunk: bytes, is_silence: bool) -> np.ndarray:
         if is_silence or not chunk:
@@ -167,6 +176,9 @@ class OpusAudioDecoder:
             self._last_good_frame = out
             return out
 
+        if codec_id == AUDIO_CODEC_OPUS:
+            if self._codec_ctx is None:
+                self.ensure_open()
         if codec_id == AUDIO_CODEC_OPUS and self._codec_ctx is not None:
             try:
                 import av

@@ -16,6 +16,9 @@ from src.dav.kernel.circuit_breaker import CircuitBreaker, CircuitBreakerOpenErr
 from src.dav.kernel.config import ConfigEngine
 from src.dav.kernel.contracts import (
     EVENT_AUDIO_FRAME_RX,
+    EVENT_CLIENT_KEYBOARD_PROFILE,
+    EVENT_GAMEPAD_ROSTER_CHANGED,
+    EVENT_GAMEPAD_RUMBLE_ACK,
     EVENT_LAN_PEERS_UPDATED,
     EVENT_LOG_MESSAGE,
     EVENT_REMOTE_CLIPBOARD,
@@ -35,6 +38,7 @@ from src.dav.kernel.contracts import (
     IStreamEngineService,
     ITelemetryService,
     ITransportService,
+    IUniversalInputService,
 )
 
 __all__ = [
@@ -62,6 +66,9 @@ __all__ = [
     "EVENT_REMOTE_FILE_STATUS",
     "EVENT_REMOTE_SHELL_OUTPUT",
     "EVENT_REMOTE_INPUT_METRICS",
+    "EVENT_GAMEPAD_ROSTER_CHANGED",
+    "EVENT_GAMEPAD_RUMBLE_ACK",
+    "EVENT_CLIENT_KEYBOARD_PROFILE",
     "ICaptureService",
     "ICodecService",
     "ITransportService",
@@ -69,5 +76,6 @@ __all__ = [
     "IRemoteDesktopService",
     "IStreamEngineService",
     "ITelemetryService",
+    "IUniversalInputService",
 ]
 

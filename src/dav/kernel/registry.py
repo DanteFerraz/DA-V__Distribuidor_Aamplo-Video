@@ -122,6 +122,8 @@ class ModuleRegistry:
                 "src.dav.modules.codec.manifest",
                 "src.dav.modules.transport_p2p.manifest",
                 "src.dav.modules.audio.manifest",
+                "src.dav.modules.remote_desktop.manifest",
+                "src.dav.modules.universal_input.manifest",
                 "src.dav.modules.stream_engine.manifest",
                 "src.dav.modules.commercial.manifest",
                 "src.dav.modules.telemetry.manifest",

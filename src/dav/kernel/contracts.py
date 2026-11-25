@@ -28,6 +28,9 @@ EVENT_REMOTE_CLIPBOARD = "remote.clipboard_synced"
 EVENT_REMOTE_FILE_STATUS = "remote.file_transfer_status"
 EVENT_REMOTE_SHELL_OUTPUT = "remote.shell_output"
 EVENT_REMOTE_INPUT_METRICS = "remote.input_metrics"
+EVENT_GAMEPAD_ROSTER_CHANGED = "input.gamepad_roster_changed"
+EVENT_GAMEPAD_RUMBLE_ACK = "input.gamepad_rumble_ack"
+EVENT_CLIENT_KEYBOARD_PROFILE = "input.client_keyboard_profile"
 
 
 @runtime_checkable
@@ -120,3 +123,20 @@ class IRemoteDesktopService(Protocol):
     ) -> int: ...
     def is_admin_elevated(self) -> bool: ...
     def request_admin_elevation(self) -> ServiceResult[Any]: ...
+
+
+@runtime_checkable
+class IUniversalInputService(Protocol):
+    def detect_client_keyboard_profile(self) -> ServiceResult[Any]: ...
+    def create_keyboard_translator(self) -> Any: ...
+    def create_keyboard_reproducer(self) -> Any: ...
+    def create_gamepad_capturer(
+        self,
+        on_state_packet: Optional[Callable[[Any], None]] = None,
+        prefer_synthetic: bool = False,
+    ) -> ServiceResult[Any]: ...
+    def create_virtual_gamepad_hub(
+        self,
+        on_rumble_to_peer: Optional[Callable[[str, bytes], None]] = None,
+        force_synthetic: bool = False,
+    ) -> ServiceResult[Any]: ...
