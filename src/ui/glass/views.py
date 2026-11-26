@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import urllib.parse
 from typing import Optional, Tuple
 
 from src.ui.qt_compat import Qt, QTimer, Signal
 from src.dav.modules.transport_p2p.blind_relay import normalize_pin
+from src.dav.modules.transport_p2p.dualstack import canonicalize_ip, is_valid_ip, parse_host_port
 from src.ui.glass import tokens as T
 from src.ui.glass.widgets import (
     CardPage,
@@ -40,8 +42,10 @@ def parse_access_input(raw: str) -> Tuple[str, Optional[int], str]:
     Aceita:
     - PIN numerico P2P (ex: '300-631', '300631')
     - URI 'dav://connect/300-631' ou 'dav://300-631'
+    - URI Direta IPv6/IPv4 + PIN: 'dav://[2804:3690::1]:9000/300-631' ou '?pin=300-631'
+    - IPv6 direto ou [IPv6]:porta (ex: '2804:3690::1', '[2804:3690::1]:9000', '::1')
     - IPv4 direto ou IPv4:porta (ex: '192.168.1.25' ou '192.168.1.25:9000')
-    - Hostname:porta (ex: 'pc-sala.local:9000')
+    - Hostname[:porta] com registros A ou AAAA (ex: 'pc-sala.local:9000')
 
     Retorna `(target_ip, target_port, pin)`.
     """
@@ -54,12 +58,39 @@ def parse_access_input(raw: str) -> Tuple[str, Optional[int], str]:
         body = text[6:].strip().strip("/")
         if body.lower().startswith("connect/"):
             body = body[8:].strip("/")
-        # Suporta formato opcional ip:port dentro do link ou PIN
-        ip_check = _IPV4_PORT_RE.match(body)
-        if ip_check:
-            return parse_access_input(body)
-        pin = normalize_pin(body)
+
+        # Suporta query opcional ?pin=XXX e sufixo /PIN apos host:porta (ex: dav://[2804:...]:9000/423-391)
+        pin_from_uri = ""
+        if "?" in body:
+            body, qs = body.split("?", 1)
+            qmap = urllib.parse.parse_qs(qs)
+            if "pin" in qmap and qmap["pin"]:
+                pin_from_uri = normalize_pin(qmap["pin"][0])
+        if "/" in body:
+            host_seg, tail_seg = body.split("/", 1)
+            if not pin_from_uri and tail_seg.strip():
+                pin_from_uri = normalize_pin(tail_seg.strip().strip("/"))
+            body = host_seg.strip()
+
+        host_u, port_u = parse_host_port(body)
+        if host_u and (is_valid_ip(host_u) or "." in host_u):
+            return (canonicalize_ip(host_u) if is_valid_ip(host_u) else host_u, port_u, pin_from_uri)
+
+        pin = pin_from_uri or normalize_pin(body)
         return ("", None, pin or body)
+
+    # 1. IPv6 com colchetes `[2804:...]:9000` ou `[2804:...]`
+    if text.startswith("["):
+        ip_u, port_u = parse_host_port(text)
+        if ip_u and is_valid_ip(ip_u):
+            return (ip_u, port_u, "")
+        return ("", None, "")
+
+    # 2. Literal IPv6 puro sem colchetes (`2804:3690::1`, `::1`, `fe80::1%eth0`)
+    if text.count(":") >= 2:
+        if is_valid_ip(text):
+            return (canonicalize_ip(text), None, "")
+        return ("", None, "")
 
     m_ip = _IPV4_PORT_RE.match(text)
     if m_ip:
@@ -220,6 +251,7 @@ class SenderHomePage(CardPage):
     """Tela principal do Modo Transmissor com controle de Modo Interativo e gatilho Admin."""
 
     copy_key_clicked = Signal()
+    copy_ipv6_link_clicked = Signal()
     toggle_send_clicked = Signal()
     interactive_toggled = Signal(bool)
     admin_elevation_requested = Signal()
@@ -249,7 +281,22 @@ class SenderHomePage(CardPage):
         self.btn_copy_key.clicked.connect(self.copy_key_clicked.emit)
         lay.addWidget(self.btn_copy_key, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        lay.addWidget(GlassSpacer(18))
+        lay.addWidget(GlassSpacer(10))
+
+        self.btn_copy_ipv6 = GlassButton(
+            "Copiar Link Direto IPv6",
+            design_w=T.CONTROL_W,
+            design_h=50.0,
+            design_font=22,
+        )
+        self.btn_copy_ipv6.setToolTip(
+            "Copia o link direto dav://[IPv6]:porta/PIN para amigos em redes somente IPv6 sem depender de servidor"
+        )
+        self.btn_copy_ipv6.clicked.connect(self.copy_ipv6_link_clicked.emit)
+        self.btn_copy_ipv6.setVisible(False)
+        lay.addWidget(self.btn_copy_ipv6, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        lay.addWidget(GlassSpacer(14))
 
         self.switch_interactive = GlassToggleSwitch(
             "Transmissão Interativa (Área de Trabalho)",
@@ -306,6 +353,13 @@ class SenderHomePage(CardPage):
     def _on_interactive_switch_changed(self, checked: bool) -> None:
         self.btn_admin_privilege.setVisible(bool(checked))
         self.interactive_toggled.emit(bool(checked))
+
+    def set_ipv6_direct_available(self, available: bool, ipv6_addr: str = "") -> None:
+        self.btn_copy_ipv6.setVisible(bool(available))
+        if available and ipv6_addr:
+            self.btn_copy_ipv6.setToolTip(
+                f"Link direto IPv6 ({ipv6_addr}): conecta diretamente sem servidor mesmo em operadoras somente IPv6"
+            )
 
     def set_interactive_state(self, interactive: bool, admin_elevated: bool = False) -> None:
         self._admin_elevated = bool(admin_elevated)

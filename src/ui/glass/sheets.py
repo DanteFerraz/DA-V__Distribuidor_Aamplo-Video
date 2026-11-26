@@ -204,7 +204,7 @@ class SettingsSheet(BaseOverlaySheet):
 
         grid.addWidget(QLabel("IP do Transmissor:"), 0, 0)
         self.txt_recv_ip = QLineEdit("")
-        self.txt_recv_ip.setPlaceholderText("Deixe vazio para PIN P2P ou IP LAN")
+        self.txt_recv_ip.setPlaceholderText("Vazio p/ PIN P2P, IPv4 ou [IPv6]:porta")
         grid.addWidget(_compact_field(self.txt_recv_ip), 0, 1)
 
         grid.addWidget(QLabel("Porta UDP:"), 0, 2)
@@ -299,7 +299,7 @@ class SettingsSheet(BaseOverlaySheet):
 
         grid.addWidget(QLabel("IP Alvo (Destino):"), 0, 0)
         self.txt_send_ip = QLineEdit("")
-        self.txt_send_ip.setPlaceholderText("Vazio p/ P2P (PIN) ou IP direto")
+        self.txt_send_ip.setPlaceholderText("Vazio p/ PIN P2P, IPv4 ou [IPv6]")
         grid.addWidget(_compact_field(self.txt_send_ip), 0, 1)
 
         grid.addWidget(QLabel("Porta UDP Alvo:"), 0, 2)

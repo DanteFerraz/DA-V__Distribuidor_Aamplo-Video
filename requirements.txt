@@ -18,9 +18,9 @@ psutil>=5.9.0
 comtypes>=1.4.0; sys_platform == "win32"
 
 # Universal Gamepad & Multi-Controller Input (DualShock 4, DualSense, Xbox, Generic HID)
+# Nota: Emulacao virtual Windows usa `third_party/vigem/x64/ViGEmClient.dll` pre-compilada via ctypes (zero build no CI)
 PySDL2>=0.9.16
 pysdl2-dll>=2.30.0
-vgamepad>=0.1.0; sys_platform == "win32"
 
 # Testing
 pytest>=8.0.0

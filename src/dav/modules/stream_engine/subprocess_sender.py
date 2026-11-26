@@ -12,6 +12,7 @@ apenas as fatias `capture`, `codec`, `transport_p2p`, `audio` e `telemetry`.
 
 from __future__ import annotations
 
+import collections
 import ctypes
 import json
 import multiprocessing as mp
@@ -43,11 +44,22 @@ from src.dav.modules.remote_desktop.security_gate import SecurityGate, Workspace
 from src.dav.modules.remote_desktop.service import RemoteDesktopService
 from src.dav.modules.remote_desktop.workspace_agent import WorkspaceAgent
 from src.dav.modules.telemetry.stage_probe import probe_init, probe_send as _probe_send
-from src.dav.modules.transport_p2p.blind_relay import normalize_pin, wrap_relay_packet
+from src.dav.modules.transport_p2p.blind_relay import normalize_pin, unwrap_relay_packet, wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
 from src.dav.modules.transport_p2p.crypto_pake import MAGIC_PAKE_ACK, MAGIC_PAKE_SYN
 from src.dav.modules.transport_p2p.data_plane import DataPlaneSender
-from src.dav.modules.transport_p2p.packetizer import MAGIC_ACK, MAGIC_PLI, MAGIC_SYN
+from src.dav.modules.transport_p2p.dualstack import (
+    canonicalize_ip,
+    create_dualstack_udp_socket,
+    format_endpoint_display,
+    format_url_host,
+    is_ipv6_address,
+    is_overlay_address,
+    normalize_recv_addr,
+    sendto_dualstack,
+)
+from src.dav.modules.transport_p2p.http_tunnel_relay import HttpTunnelRelayClient
+from src.dav.modules.transport_p2p.packetizer import MAGIC_ACK, MAGIC_PLI, MAGIC_RLY, MAGIC_SYN
 from src.dav.modules.universal_input.gamepad_virtual_hub import VirtualGamepadHub
 from src.dav.modules.universal_input.models import (
     ClientKeyboardProfileDTO,
@@ -163,7 +175,7 @@ class SenderTransportEndpoint:
         input_wake_evt: Optional[threading.Event] = None,
     ):
         self.clean_pin = normalize_pin(pin)
-        self.target_ip = str(initial_target_ip or "").strip()
+        self.target_ip = canonicalize_ip(str(initial_target_ip or "").strip()) if initial_target_ip else ""
         self.target_port = int(initial_target_port or bind_port or 9000)
         self._target_ep: Optional[Tuple[str, int]] = (
             (self.target_ip, self.target_port) if self.target_ip else None
@@ -177,7 +189,11 @@ class SenderTransportEndpoint:
 
         self.candidates: List[Tuple[str, int, str]] = []
         self.relay_addr: Optional[Tuple[str, int]] = None
+        self.relay_http_base_url: Optional[str] = None
         self.use_relay = False
+        self.use_http_relay = False
+        self._http_relay: Optional[HttpTunnelRelayClient] = None
+        self._http_rx_queue: "collections.deque[bytes]" = collections.deque(maxlen=512)
         self.punch_locked = False
         self.punch_started_at = time.monotonic() if self.target_ip else 0.0
         self.last_punch_sent = 0.0
@@ -196,6 +212,7 @@ class SenderTransportEndpoint:
         self._extra_peers: Dict[bytes, Dict[str, Any]] = {}
         self._pending_extra_dp: Optional[DataPlaneSender] = None
         self._pending_extra_cands: List[Tuple[str, int, str]] = []
+        self._pending_extra_started: float = 0.0
         self.client_keyboard_profiles: Dict[str, Dict[str, str]] = {}
 
         self.dp = DataPlaneSender(
@@ -204,6 +221,8 @@ class SenderTransportEndpoint:
             initial_bitrate_kbps=bitrate_kbps,
             fps=fps,
         )
+        if self.target_ip:
+            self.dp.set_target_mtu_for_ip(self.target_ip)
 
         self.rd_service = RemoteDesktopService()
         init_perms = WorkspacePermissions.from_dict(initial_permissions or {})
@@ -224,27 +243,8 @@ class SenderTransportEndpoint:
             on_roster_changed=lambda roster: self._emit_event(("GAMEPAD_ROSTER", roster)),
         )
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024 * 1024)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0xB8)
-        except Exception:
-            pass
-        if hasattr(socket, "SO_PRIORITY"):
-            try:
-                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_PRIORITY, 6)
-            except Exception:
-                pass
-        disable_win_udp_connreset(self.sock)
-
         desired_bind = int(bind_port or 9000)
-        try:
-            self.sock.bind(("0.0.0.0", desired_bind))
-        except Exception:
-            self.sock.bind(("0.0.0.0", 0))
-
+        self.sock = create_dualstack_udp_socket(bind_port=desired_bind, rcvbuf_mb=8, sndbuf_mb=32)
         self.bound_port = int(self.sock.getsockname()[1])
 
         if self.evt_queue is not None and not self.target_ip:
@@ -253,12 +253,14 @@ class SenderTransportEndpoint:
                 self.evt_queue.put_nowait(("ENDPOINT_READY", ep_info))
             except Exception:
                 pass
+            bind_tag = "[::]" if self.sock.family == socket.AF_INET6 else "0.0.0.0"
+            v6_extra = f" | IPv6: [{ep_info.get('public_ipv6')}]:{ep_info.get('public_ipv6_port')}" if ep_info.get("public_ipv6") else ""
             print(
-                f"[Sender P2P] Socket UDP vinculado em 0.0.0.0:{self.bound_port} "
-                f"| STUN Publico: {ep_info.get('public_ip')}:{ep_info.get('public_port')} ({ep_info.get('nat_type')})"
+                f"[Sender P2P] Socket UDP Dual-Stack vinculado em {bind_tag}:{self.bound_port} "
+                f"| STUN Publico: {ep_info.get('public_ip')}:{ep_info.get('public_port')} ({ep_info.get('nat_type')}){v6_extra}"
             )
         else:
-            print(f"[Sender] Socket UDP ativo na porta local {self.bound_port}.")
+            print(f"[Sender] Socket UDP Dual-Stack ativo na porta local {self.bound_port}.")
             if self.evt_queue is not None:
                 try:
                     self.evt_queue.put_nowait((
@@ -335,15 +337,44 @@ class SenderTransportEndpoint:
         if not addr:
             return
         if self.relay_addr and addr == self.relay_addr:
-            try:
-                self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", pkt), self.relay_addr)
-            except OSError:
-                pass
+            sendto_dualstack(self.sock, wrap_relay_packet(self.clean_pin, b"S", pkt), self.relay_addr[0], self.relay_addr[1])
             return
-        try:
-            self.sock.sendto(pkt, addr)
-        except OSError:
-            pass
+        sendto_dualstack(self.sock, pkt, addr[0], int(addr[1]))
+
+    def _start_http_relay_if_needed(self) -> None:
+        if self._http_relay is not None or not self.relay_http_base_url or not self.clean_pin:
+            return
+
+        def _on_http_pkt(raw_pkt: bytes) -> None:
+            self._http_rx_queue.append(raw_pkt)
+
+        def _on_http_conn() -> None:
+            if not self.dp.pake.confirmed:
+                self.use_http_relay = True
+                self.is_streaming_active.set()
+                if self._http_relay is not None:
+                    self._http_relay.send_datagram(self.dp.build_pake_syn())
+                host_label = self.relay_addr[0] if self.relay_addr else self.relay_http_base_url or "relay"
+                port_label = self.relay_addr[1] if self.relay_addr else 80
+                self._emit_event(("P2P_LOCKED", str(host_label), int(port_label), "Blind Relay HTTP"))
+
+        self._http_relay = HttpTunnelRelayClient(
+            base_url=self.relay_http_base_url,
+            pin=self.clean_pin,
+            role="S",
+            on_packet_rx=_on_http_pkt,
+            on_connected=_on_http_conn,
+        )
+        self._http_relay.start()
+
+    def _stop_http_relay(self) -> None:
+        if self._http_relay is not None:
+            try:
+                self._http_relay.stop()
+            except Exception:
+                pass
+            self._http_relay = None
+        self.use_http_relay = False
 
     def _create_extra_peer_entry(self, peer_nonce: bytes, addr: Tuple[str, int], dp_inst: Optional[DataPlaneSender] = None) -> Dict[str, Any]:
         entry: Dict[str, Any] = {
@@ -431,7 +462,10 @@ class SenderTransportEndpoint:
 
     def _handle_host_ws_messages(self, peer_id: str, accepted_msgs: list) -> None:
         for msg in accepted_msgs:
-            if msg.msg_type == WsMsgType.CLIENT_INPUT_PROFILE:
+            if msg.msg_type == WsMsgType.PLI_REQ:
+                if self._active_encoder is not None:
+                    self._active_encoder.request_keyframe(force=False)
+            elif msg.msg_type == WsMsgType.CLIENT_INPUT_PROFILE:
                 d = msg.decode_json() or {}
                 prof = ClientKeyboardProfileDTO.from_dict(d).to_dict()
                 self.client_keyboard_profiles[peer_id] = prof
@@ -479,7 +513,7 @@ class SenderTransportEndpoint:
             or (self._echo_counter & 0x07) == 0
         ) and in_pkt.client_ts_us > 0:
             dp_ref.send_workspace_datagram(pack_input_echo(in_pkt.client_ts_us))
-        if in_pkt.is_critical_transition or in_pkt.ev_type in (EvType.WHEEL, EvType.GAMEPAD_STATE):
+        if in_pkt.is_critical_transition:
             self.input_wake_evt.set()
 
     def tick_remote_housekeeping(self, now_mono: Optional[float] = None) -> None:
@@ -497,30 +531,20 @@ class SenderTransportEndpoint:
     def _send_punch_burst(self):
         syn_pkt = self.dp.build_pake_syn()
         for ip, port, _ in self.candidates:
-            try:
-                self.sock.sendto(syn_pkt, (ip, port))
-            except Exception:
-                pass
-        if self.target_ip and not self.use_relay:
-            try:
-                self.sock.sendto(syn_pkt, (self.target_ip, self.target_port))
-            except Exception:
-                pass
+            sendto_dualstack(self.sock, syn_pkt, ip, port)
+        if self.target_ip and not self.use_relay and not self.use_http_relay:
+            sendto_dualstack(self.sock, syn_pkt, self.target_ip, self.target_port)
         if self.use_relay and self.relay_addr:
-            try:
-                self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", syn_pkt), self.relay_addr)
-            except Exception:
-                pass
+            sendto_dualstack(self.sock, wrap_relay_packet(self.clean_pin, b"S", syn_pkt), self.relay_addr[0], self.relay_addr[1])
+        if self.use_http_relay and self._http_relay is not None:
+            self._http_relay.send_datagram(syn_pkt)
         self.last_punch_sent = time.monotonic()
 
     def _send_lan_upgrade_probe(self):
         syn_pkt = self.dp.build_pake_syn()
-        for ip, port, _ in self.candidates:
-            if self._is_lan_addr(ip) or str(ip).startswith("100."):
-                try:
-                    self.sock.sendto(syn_pkt, (ip, port))
-                except Exception:
-                    pass
+        for ip, port, mode in self.candidates:
+            if self._is_lan_addr(ip) or is_overlay_address(ip) or mode == "ipv6":
+                sendto_dualstack(self.sock, syn_pkt, ip, port)
         self.last_lan_upgrade_sent = time.monotonic()
 
     @staticmethod
@@ -547,27 +571,54 @@ class SenderTransportEndpoint:
                     break
                 action = cmd[0]
                 if action in ("UPDATE_TARGET", "START_STREAM"):
-                    tip = str(cmd[1]).strip()
+                    tip = canonicalize_ip(str(cmd[1]).strip())
                     tport = int(cmd[2])
                     self.target_ip = tip
                     self.target_port = tport
                     self._target_ep = (tip, tport) if tip else None
+                    if tip:
+                        self.dp.set_target_mtu_for_ip(tip)
                     self.use_relay = False
+                    self._stop_http_relay()
                     self.punch_locked = False
                     self.punch_started_at = time.monotonic()
                     if tip:
                         self.is_streaming_active.set()
                         self._send_punch_burst()
-                        print(f"[Sender] Destino direto configurado para {tip}:{tport}")
+                        print(f"[Sender] Destino direto configurado para {format_endpoint_display(tip, tport)}")
                 elif action == "PAIR_PEER":
                     peer_dict = cmd[1] if len(cmd) > 1 and isinstance(cmd[1], dict) else {}
                     my_pub_ip = cmd[2] if len(cmd) > 2 else None
                     relay_dict = cmd[3] if len(cmd) > 3 and isinstance(cmd[3], dict) else peer_dict.get("_relay")
                     new_cands = build_peer_candidates(peer_dict, my_public_ip=my_pub_ip)
                     if relay_dict and relay_dict.get("host") and relay_dict.get("port"):
-                        self.relay_addr = (str(relay_dict["host"]), int(relay_dict["port"]))
+                        r_host = canonicalize_ip(str(relay_dict["host"]))
+                        self.relay_addr = (r_host, int(relay_dict["port"]))
+                        if relay_dict.get("http_base_url"):
+                            self.relay_http_base_url = str(relay_dict["http_base_url"])
+                        elif not self.relay_http_base_url:
+                            self.relay_http_base_url = f"http://{format_url_host(r_host)}"
+
+                    new_ep_set = {(ip, int(p)) for ip, p, _ in new_cands}
                     if self.dp.pake.confirmed:
+                        # Idempotencia: ignora PAIR_PEER duplicado para o peer primario ou extra ja conectado!
+                        known_eps = set()
+                        if self._target_ep:
+                            known_eps.add(self._target_ep)
+                        for ip, p, _ in self.candidates:
+                            known_eps.add((ip, int(p)))
+                        for ex in self._extra_peers.values():
+                            known_eps.add(ex["addr"])
+                        if new_ep_set and (new_ep_set & known_eps):
+                            continue
+                        if (
+                            self._pending_extra_dp is not None
+                            and new_ep_set == {(ip, int(p)) for ip, p, _ in self._pending_extra_cands}
+                            and (time.monotonic() - self._pending_extra_started) < 6.0
+                        ):
+                            continue
                         self._pending_extra_cands = new_cands
+                        self._pending_extra_started = time.monotonic()
                         self._pending_extra_dp = DataPlaneSender(
                             pin=self._pin_raw,
                             send_raw_fn=lambda _raw: None,
@@ -579,8 +630,14 @@ class SenderTransportEndpoint:
                             self._send_to_addr(syn_extra, (cip, int(cport)))
                         print(f"[Sender Multi-Peer] Sondando novo receptor adicional em {new_cands}")
                     else:
+                        # Idempotencia antes da confirmacao: NAO reseta punch_started_at / use_relay se candidatos sao os mesmos!
+                        cur_ep_set = {(ip, int(p)) for ip, p, _ in self.candidates}
+                        if new_ep_set and new_ep_set == cur_ep_set and self.punch_started_at > 0.0 and (time.monotonic() - self.punch_started_at) < 12.0:
+                            self._send_punch_burst()
+                            continue
                         self.candidates = new_cands
                         self.use_relay = False
+                        self._stop_http_relay()
                         self.punch_locked = False
                         self.punch_started_at = time.monotonic()
                         self.last_relay_bind = 0.0
@@ -655,12 +712,29 @@ class SenderTransportEndpoint:
                         except Exception as f_exc:
                             self._emit_event(("log", "WARN", f"[Arquivo P2P] Falha ao enviar: {f_exc}"))
 
-        while True:
+        incoming_batch: List[Tuple[bytes, Tuple[str, int], bool]] = []
+        while self._http_rx_queue:
             try:
-                in_pkt, in_addr = self.sock.recvfrom(4096)
-            except (BlockingIOError, OSError):
+                hpkt = self._http_rx_queue.popleft()
+                r_ep = self.relay_addr or ("http-relay", 80)
+                incoming_batch.append((hpkt, r_ep, True))
+            except IndexError:
                 break
 
+        while True:
+            try:
+                raw_pkt, raw_addr = self.sock.recvfrom(4096)
+            except (BlockingIOError, OSError):
+                break
+            if raw_pkt:
+                norm_addr = normalize_recv_addr(raw_addr)
+                if raw_pkt.startswith(MAGIC_RLY):
+                    unwrapped = unwrap_relay_packet(raw_pkt)
+                    if unwrapped and unwrapped[0] == self.clean_pin:
+                        raw_pkt = unwrapped[2]
+                incoming_batch.append((raw_pkt, norm_addr, False))
+
+        for in_pkt, in_addr, from_http_relay in incoming_batch:
             if not in_pkt:
                 continue
 
@@ -677,11 +751,15 @@ class SenderTransportEndpoint:
                     or self.dp.pake.peer_nonce == p_nonce
                 )
                 if not is_primary_peer:
+                    # Se o pacote veio do mesmo IP:porta ja confirmado do peer primario, ignora SYN2 espurio
+                    if self._target_ep and in_addr == self._target_ep:
+                        continue
                     extra_entry = self._extra_peers.get(p_nonce)
                     if extra_entry is None and len(self._extra_peers) < 3:
                         dp_seed = self._pending_extra_dp
                         self._pending_extra_dp = None
                         extra_entry = self._create_extra_peer_entry(p_nonce, in_addr, dp_inst=dp_seed)
+                        extra_entry["dp"].set_target_mtu_for_ip(in_addr[0])
                         self._extra_peers[p_nonce] = extra_entry
                     if extra_entry is not None:
                         extra_entry["addr"] = (in_addr[0], int(in_addr[1]))
@@ -697,7 +775,7 @@ class SenderTransportEndpoint:
                             self._emit_event((
                                 "log",
                                 "SUCCESS",
-                                f"[Multi-Peer] Cliente adicional conectado em {in_addr[0]}:{in_addr[1]}.",
+                                f"[Multi-Peer] Cliente adicional conectado em {format_endpoint_display(in_addr[0], in_addr[1])}.",
                             ))
                     continue
 
@@ -721,35 +799,47 @@ class SenderTransportEndpoint:
 
             evt, reply_ack = self.dp.handle_incoming_packet(in_pkt)
             if evt in ("pake_confirmed", "pake_ack"):
-                from_relay = bool(self.relay_addr and in_addr == self.relay_addr)
+                from_udp_relay = bool((not from_http_relay) and self.relay_addr and in_addr == self.relay_addr)
+                from_any_relay = from_http_relay or from_udp_relay
                 should_switch = (
                     not self.punch_locked
-                    or (self.use_relay and not from_relay)
-                    or (not from_relay and not self._is_lan_addr(self.target_ip) and self._is_lan_addr(in_addr[0]))
+                    or ((self.use_relay or self.use_http_relay) and not from_any_relay)
+                    or (not from_any_relay and not self._is_lan_addr(self.target_ip) and self._is_lan_addr(in_addr[0]))
                 )
-                if should_switch and not from_relay:
+                if should_switch and not from_any_relay:
                     new_ip, new_port = in_addr[0], int(in_addr[1])
                     self._target_ep = (new_ip, new_port)
                     self.target_ip, self.target_port = new_ip, new_port
+                    self.dp.set_target_mtu_for_ip(new_ip)
                     self.punch_locked = True
                     self.use_relay = False
+                    self._stop_http_relay()
                     self.is_streaming_active.set()
-                    mode_tag = "LAN Direto" if self._is_lan_addr(new_ip) else "WAN P2P Direto"
-                    print(f"[Sender PAKE] Tunel autenticado ({mode_tag}) -> {new_ip}:{new_port}")
+                    if self._is_lan_addr(new_ip):
+                        mode_tag = "LAN Direto"
+                    elif is_ipv6_address(new_ip):
+                        mode_tag = "IPv6 P2P Direto"
+                    else:
+                        mode_tag = "WAN P2P Direto"
+                    print(f"[Sender PAKE] Tunel autenticado ({mode_tag}) -> {format_endpoint_display(new_ip, new_port)}")
                     self._emit_event(("P2P_LOCKED", new_ip, new_port, mode_tag))
-                elif from_relay and not self.punch_locked:
+                elif from_http_relay and not self.punch_locked:
+                    self.use_http_relay = True
+                    self.use_relay = False
+                    self.punch_locked = True
+                    self.is_streaming_active.set()
+                elif from_udp_relay and not self.punch_locked:
                     self.use_relay = True
                     self.punch_locked = True
                     self.is_streaming_active.set()
 
                 if reply_ack is not None:
-                    try:
-                        if from_relay and self.relay_addr:
-                            self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", reply_ack), self.relay_addr)
-                        else:
-                            self.sock.sendto(reply_ack, in_addr)
-                    except Exception:
-                        pass
+                    if from_http_relay and self._http_relay is not None:
+                        self._http_relay.send_datagram(reply_ack)
+                    elif from_udp_relay and self.relay_addr:
+                        sendto_dualstack(self.sock, wrap_relay_packet(self.clean_pin, b"S", reply_ack), self.relay_addr[0], self.relay_addr[1])
+                    else:
+                        sendto_dualstack(self.sock, reply_ack, in_addr[0], in_addr[1])
 
                 if evt == "pake_confirmed":
                     if encoder is not None:
@@ -768,7 +858,7 @@ class SenderTransportEndpoint:
 
             if in_pkt.startswith(MAGIC_PLI):
                 if encoder is not None:
-                    encoder.request_keyframe(force=True)
+                    encoder.request_keyframe(force=False)
             elif in_pkt in (b"DAV_RLY_ACK", b"DAV_RLY_PEER_READY"):
                 if (not self.punch_locked or not self.dp.pake.confirmed) and self.relay_addr:
                     was_relay = self.use_relay
@@ -776,42 +866,42 @@ class SenderTransportEndpoint:
                     self.is_streaming_active.set()
                     self._send_punch_burst()
                     if not was_relay:
-                        print(f"[Sender P2P] Blind Encrypted UDP Relay ativo via {self.relay_addr[0]}:{self.relay_addr[1]}")
+                        print(f"[Sender P2P] Blind Encrypted UDP Relay ativo via {format_endpoint_display(self.relay_addr[0], self.relay_addr[1])}")
                         self._emit_event(("P2P_LOCKED", self.relay_addr[0], self.relay_addr[1], "Blind Relay UDP"))
             elif in_pkt.startswith(MAGIC_SYN) or in_pkt.startswith(MAGIC_ACK):
-                try:
-                    if self.relay_addr and in_addr == self.relay_addr:
-                        self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", self.dp.build_pake_syn()), self.relay_addr)
-                    else:
-                        self.sock.sendto(self.dp.build_pake_syn(), in_addr)
-                except Exception:
-                    pass
+                syn_b = self.dp.build_pake_syn()
+                if from_http_relay and self._http_relay is not None:
+                    self._http_relay.send_datagram(syn_b)
+                elif self.relay_addr and in_addr == self.relay_addr:
+                    sendto_dualstack(self.sock, wrap_relay_packet(self.clean_pin, b"S", syn_b), self.relay_addr[0], self.relay_addr[1])
+                else:
+                    sendto_dualstack(self.sock, syn_b, in_addr[0], in_addr[1])
 
         now = time.monotonic()
         if not self.dp.pake.confirmed:
-            if (self.candidates or self.target_ip or self.use_relay) and (now - self.last_punch_sent >= 0.045):
+            if (self.candidates or self.target_ip or self.use_relay or self.use_http_relay) and (now - self.last_punch_sent >= 0.045):
                 self._send_punch_burst()
 
             if self.candidates and not self.punch_locked:
                 elapsed_punch = now - self.punch_started_at
                 if elapsed_punch >= 0.85 and self.relay_addr and not self.use_relay and (now - self.last_relay_bind >= 0.3):
-                    try:
-                        self.sock.sendto(wrap_relay_packet(self.clean_pin, b"S", b"BIND"), self.relay_addr)
-                    except Exception:
-                        pass
+                    sendto_dualstack(self.sock, wrap_relay_packet(self.clean_pin, b"S", b"BIND"), self.relay_addr[0], self.relay_addr[1])
                     self.last_relay_bind = now
+                if elapsed_punch >= 1.70 and not self.use_relay and not self.use_http_relay and self.relay_http_base_url:
+                    self._start_http_relay_if_needed()
                 if elapsed_punch >= 1.6 and not self.target_ip:
                     best_ip, best_port, best_mode = self.candidates[0]
                     self._target_ep = (best_ip, int(best_port))
                     self.target_ip, self.target_port = best_ip, best_port
+                    self.dp.set_target_mtu_for_ip(best_ip)
                     self.is_streaming_active.set()
-                    print(f"[Sender P2P] Sondando rota primaria PAKE ({best_mode}) para {best_ip}:{best_port}")
+                    print(f"[Sender P2P] Sondando rota primaria PAKE ({best_mode}) para {format_endpoint_display(best_ip, best_port)}")
         elif (
             self.dp.pake.confirmed
             and self.candidates
             and self.punch_started_at > 0.0
             and (now - self.punch_started_at <= 6.0)
-            and (self.use_relay or not self._is_lan_addr(self.target_ip))
+            and (self.use_relay or self.use_http_relay or not self._is_lan_addr(self.target_ip))
             and (now - self.last_lan_upgrade_sent >= 0.20)
         ):
             self._send_lan_upgrade_probe()
@@ -820,27 +910,24 @@ class SenderTransportEndpoint:
             self.last_keepalive = now
 
     def send_datagram(self, pkt: bytes):
+        if self.use_http_relay and self._http_relay is not None:
+            self._http_relay.send_datagram(pkt)
+            return
+
         use_rly = self.use_relay
         rly = self.relay_addr
         if use_rly and rly:
             wrapped = wrap_relay_packet(self.clean_pin, b"S", pkt)
-            try:
-                self.sock.sendto(wrapped, rly)
-            except (BlockingIOError, OSError):
-                pass
+            sendto_dualstack(self.sock, wrapped, rly[0], rly[1])
             return
 
         ep = self._target_ep
         if ep:
-            try:
-                self.sock.sendto(pkt, ep)
-            except (BlockingIOError, OSError):
-                try:
-                    self.sock.sendto(pkt, ep)
-                except Exception:
-                    pass
+            if not sendto_dualstack(self.sock, pkt, ep[0], ep[1]):
+                sendto_dualstack(self.sock, pkt, ep[0], ep[1])
 
     def close(self):
+        self._stop_http_relay()
         try:
             self.gamepad_hub.close()
         except Exception:
@@ -1374,7 +1461,10 @@ def run_sender_subprocess(
             transport.poll_control(encoder)
             has_first_frame.wait(timeout=0.05)
         frame_interval = 1.0 / float(max(1, fps))
+        min_frame_spacing = frame_interval * 0.96
         t_target = time.perf_counter() + frame_interval
+        last_encode_t = 0.0
+        last_encoded_cap_id = -1
 
         while not stop_event.is_set():
             transport.poll_control(encoder)
@@ -1386,7 +1476,10 @@ def run_sender_subprocess(
 
             with buf_lock:
                 np.copyto(local_enc_buf, shared_frame_buf)
+                cur_cap_id = cap_id
 
+            last_encode_t = time.perf_counter()
+            last_encoded_cap_id = cur_cap_id
             _encode_and_transmit_frame(
                 local_enc_buf,
                 _t_latest_cap_start,
@@ -1395,19 +1488,20 @@ def run_sender_subprocess(
             )
 
             now = time.perf_counter()
-            slack = t_target - now
+            min_next_t = last_encode_t + min_frame_spacing
+            effective_target = max(t_target, min_next_t)
+            slack = effective_target - now
             if slack > 0.002:
                 woke = input_wake_evt.wait(timeout=slack - 0.001)
                 if woke:
                     input_wake_evt.clear()
-                    t_target = time.perf_counter()
-            while time.perf_counter() < t_target and not input_wake_evt.is_set():
+                    # Permite despertar adiantado apenas se ja houve novo quadro WGC e respeita teto de FPS
+                    if cap_id != last_encoded_cap_id and time.perf_counter() >= min_next_t:
+                        effective_target = time.perf_counter()
+            while time.perf_counter() < effective_target:
                 pass
-            if input_wake_evt.is_set():
-                input_wake_evt.clear()
-                t_target = time.perf_counter() + frame_interval
-            else:
-                t_target = max(t_target + frame_interval, time.perf_counter())
+            input_wake_evt.clear()
+            t_target = max(t_target + frame_interval, last_encode_t + frame_interval, time.perf_counter())
 
         encoder.close()
 
@@ -1490,7 +1584,12 @@ def run_sender_subprocess(
         while not stop_event.is_set():
             try:
                 rlist, _, _ = select.select([transport.sock], [], [], 0.002)
-                if rlist or not transport.dp.pake.confirmed or (cmd_queue is not None and not cmd_queue.empty()):
+                if (
+                    rlist
+                    or transport._http_rx_queue
+                    or not transport.dp.pake.confirmed
+                    or (cmd_queue is not None and not cmd_queue.empty())
+                ):
                     transport.poll_control()
                 now_hk = time.monotonic()
                 if (now_hk - last_hk) >= 0.025:

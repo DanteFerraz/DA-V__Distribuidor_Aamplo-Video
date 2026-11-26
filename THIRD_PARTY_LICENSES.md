@@ -24,6 +24,8 @@ Esta distribuição utiliza e interopera com bibliotecas de código aberto de te
 | **Intel oneVPL (`libvpl`)** | `2.x` | `MIT` | Intel Corporation | Biblioteca compartilhada dinâmica (`av.libs/`) |
 | **GCC Runtime (`libgcc_s_seh`, `libstdc++`, `libwinpthread`)** | `13+` | `GPL-3.0-with-GCC-exception` / `MIT` | Free Software Foundation / MinGW-w64 | Runtime C/C++ dinâmico |
 | **KCP (`third_party/kcp/ikcp.c`, `ikcp.h`)** | `1.7` | `MIT` | skywind3000 (`Linwei`) | Código-fonte C incluído em [`third_party/kcp/`](third_party/kcp/LICENSE) |
+| **ViGEmClient (`third_party/vigem/x64/ViGEmClient.dll`)** | `1.21+` | `MIT` | Nefarius Software Solutions e.U. / ViGEm Contributors | Biblioteca binária x64 pré-compilada em [`third_party/vigem/`](LICENSES/MIT-ViGEmClient.txt) |
+| **PySDL2 + SDL2 (`sdl2dll`)** | `0.9.17` / `2.32.x` | `Zlib / Public Domain` | Marcus von Appen / Sam Lantinga (SDL) | Captura universal de gamepads HID (DualShock 4, DualSense, Xbox, Genéricos) |
 | **cryptography + OpenSSL 3** (`libcrypto-3`, `libssl-3`) | `46.x` / `3.x` | `Apache-2.0 OR BSD-3-Clause` | Python Cryptographic Authority / OpenSSL Project | Pacote Python + DLLs dinâmicas |
 | **NumPy (`numpy`)** | `2.x` | `BSD-3-Clause` | NumPy Developers | Pacote Python |
 | **Python MSS (`mss`)** | `10.x` | `MIT` | Mickaël Schoentgen (`BoboTiG`) | Pacote Python |

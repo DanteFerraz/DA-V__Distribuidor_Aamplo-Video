@@ -18,6 +18,10 @@ from src.dav.kernel.result import ServiceResult
 from src.dav.modules.transport_p2p.blind_relay import normalize_pin, unwrap_relay_packet, wrap_relay_packet
 from src.dav.modules.transport_p2p.candidates import is_lan_address
 from src.dav.modules.transport_p2p.data_plane import DataPlaneReceiver, DataPlaneSender
+from src.dav.modules.transport_p2p.dualstack import (
+    create_dualstack_udp_socket,
+    disable_win_udp_connreset as _disable_win_udp_connreset,
+)
 from src.dav.modules.transport_p2p.lan_beacon import LanBeaconService, get_local_ip
 from src.dav.modules.transport_p2p.signaling_client import (
     DEFAULT_HTTP_PORT,
@@ -53,19 +57,13 @@ class TransportService:
 
     @staticmethod
     def create_media_socket(bind_port: int, rcvbuf_mb: int = 32, sndbuf_mb: int = 8) -> ServiceResult[socket.socket]:
-        """Cria e configura o socket UDP de alta vazao com buffers de rede otimizados."""
+        """Cria e configura o socket UDP Dual-Stack (IPv6+IPv4) de alta vazao com buffers otimizados."""
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf_mb * 1024 * 1024)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, sndbuf_mb * 1024 * 1024)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            disable_win_udp_connreset(sock)
-
-            try:
-                sock.bind(("0.0.0.0", int(bind_port)))
-            except OSError:
-                sock.bind(("0.0.0.0", 0))
-
+            sock = create_dualstack_udp_socket(
+                bind_port=int(bind_port),
+                rcvbuf_mb=rcvbuf_mb,
+                sndbuf_mb=sndbuf_mb,
+            )
             return ServiceResult.ok(sock, code="SOCKET_BOUND")
         except Exception as exc:
             return ServiceResult.fail(str(exc), code="SOCKET_BIND_ERROR")

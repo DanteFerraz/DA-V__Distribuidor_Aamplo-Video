@@ -38,6 +38,14 @@ from src.dav.modules.stream_engine.service import StreamEngineService
 from src.dav.modules.telemetry.service import TelemetryService
 from src.dav.modules.telemetry.tupa_checker import TupaMetricsSnapshot
 from src.dav.modules.transport_p2p.blind_relay import normalize_pin
+from src.dav.modules.transport_p2p.dualstack import (
+    canonicalize_ip,
+    format_endpoint_display,
+    get_local_ipv6,
+    is_valid_ip,
+    parse_host_port,
+    resolve_host_dualstack,
+)
 from src.dav.modules.transport_p2p.service import TransportService
 from src.dav.modules.transport_p2p.signaling_client import P2PChannelClient
 from src.dav.modules.universal_input.service import UniversalInputService
@@ -187,9 +195,15 @@ class DavMainWindow(QMainWindow):
         self.bridge.sender_stats.connect(self._on_sender_stats_updated)
         self.bridge.log_message.connect(self._append_log)
 
-        self._decode_worker = DecodeWorker(self.bridge)
+        self._decode_worker = DecodeWorker(
+            self.bridge,
+            on_pli_needed=self.engine.request_receiver_pli,
+        )
         self._decode_worker.decoded.connect(self._on_decoded_frame)
         self._decode_worker.start()
+        self._sender_global_ipv6: Optional[str] = get_local_ipv6()
+        self._sender_global_ipv6_port: int = self.default_port
+        self._rendezvous_online: bool = True
         self.audio_player = DesktopAudioPlayer(
             parent=self,
             jitter_buffer=self.audio_service.create_jitter_buffer(),
@@ -314,6 +328,8 @@ class DavMainWindow(QMainWindow):
 
         self.page_sender = SenderHomePage(self.stage_stack)
         self.page_sender.copy_key_clicked.connect(self._copy_sender_access_key)
+        self.page_sender.copy_ipv6_link_clicked.connect(self._copy_ipv6_direct_link)
+        self.page_sender.set_ipv6_direct_available(bool(self._sender_global_ipv6), self._sender_global_ipv6 or "")
         self.page_sender.toggle_send_clicked.connect(self._toggle_sender)
         self.page_sender.interactive_toggled.connect(self._on_sender_interactive_toggled)
         self.page_sender.admin_elevation_requested.connect(lambda: self._request_admin_elevation(auto_triggered=False))
@@ -926,18 +942,13 @@ class DavMainWindow(QMainWindow):
         target_ip, target_port, pin = parse_access_input(raw)
         if not target_ip and not pin:
             self.page_viewer_idle.set_status(
-                "Chave inválida. Informe um PIN (6 dígitos), link dav:// ou IPv4.",
+                "Chave inválida. Informe um PIN (6 dígitos), link dav://, IPv4 ou [IPv6]:porta.",
                 error=True,
             )
             return
-        if target_ip and not _is_valid_ipv4(target_ip):
-            resolved_ip = None
-            if not target_ip.replace(".", "").isdigit():
-                try:
-                    resolved_ip = socket.gethostbyname(target_ip)
-                except OSError:
-                    resolved_ip = None
-            if resolved_ip and _is_valid_ipv4(resolved_ip):
+        if target_ip and not is_valid_ip(target_ip):
+            resolved_ip = resolve_host_dualstack(target_ip, prefer_ipv6=bool(self._sender_global_ipv6))
+            if resolved_ip and is_valid_ip(resolved_ip):
                 target_ip = resolved_ip
             else:
                 self.page_viewer_idle.set_status(
@@ -1011,11 +1022,29 @@ class DavMainWindow(QMainWindow):
             self._append_log("WARN", "Nenhum quadro de vídeo disponível para captura.")
 
     def _copy_sender_access_key(self):
+        # Em rede IPv6-only sem Rendezvous disponivel, copia o link direto IPv6 + PIN automaticamente
+        if not self._rendezvous_online and self._sender_global_ipv6:
+            self._copy_ipv6_direct_link()
+            return
         cb = QApplication.clipboard()
         if cb:
             cb.setText(self.my_pin)
         self.page_sender.flash_copied(f"Chave copiada: {self.my_pin}")
         self._append_log("INFO", f"Chave de acesso copiada: {self.my_pin}")
+
+    def _copy_ipv6_direct_link(self):
+        v6 = self._sender_global_ipv6 or get_local_ipv6()
+        if not v6:
+            self.page_sender.flash_warning("Nenhum endereço IPv6 global detectado nesta rede.")
+            return
+        self._sender_global_ipv6 = v6
+        v6_port = self._sender_global_ipv6_port or self.default_port
+        uri = f"dav://[{v6}]:{v6_port}/{self.my_pin}"
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(uri)
+        self.page_sender.flash_copied("Link Direto IPv6 copiado!")
+        self._append_log("INFO", f"[IPv6 Direto] Link P2P copiado (sem servidor): {uri}")
 
     def _copy_invite_uri(self):
         uri = f"dav://connect/{self.my_pin}"
@@ -1179,21 +1208,28 @@ class DavMainWindow(QMainWindow):
             self._append_log("INFO", "Receptor desconectado pelo usuário.")
             return
 
-        target_ip = self.settings_sheet.txt_recv_ip.text().strip()
+        raw_recv_ip = self.settings_sheet.txt_recv_ip.text().strip()
         port = self.settings_sheet.spn_recv_port.value()
+        target_ip, inline_port = parse_host_port(raw_recv_ip)
+        if inline_port is not None:
+            port = inline_port
+            self.settings_sheet.spn_recv_port.setValue(port)
         pin = self.settings_sheet.txt_recv_pin.text().strip()
         clean_pin = normalize_pin(pin)
 
-        if target_ip and not _is_valid_ipv4(target_ip):
-            if clean_pin:
+        if target_ip and not is_valid_ip(target_ip):
+            resolved_ip = resolve_host_dualstack(target_ip, prefer_ipv6=bool(self._sender_global_ipv6))
+            if resolved_ip and is_valid_ip(resolved_ip):
+                target_ip = resolved_ip
+            elif clean_pin:
                 self._append_log(
                     "WARN",
-                    f"[P2P] IP '{target_ip}' inválido ou incompleto. Alternando para Modo PIN Universal ('{pin}')...",
+                    f"[P2P] Endereço '{target_ip}' inválido ou incompleto. Alternando para Modo PIN Universal ('{pin}')...",
                 )
                 target_ip = ""
                 self.settings_sheet.txt_recv_ip.setText("")
             else:
-                msg = f"O IP '{target_ip}' é inválido. Informe um IPv4 completo ou PIN."
+                msg = f"O endereço '{target_ip}' é inválido. Informe um IPv4, [IPv6]:porta ou PIN."
                 self._append_log("ERROR", msg)
                 self._fail_receiver(msg)
                 return
@@ -1268,9 +1304,11 @@ class DavMainWindow(QMainWindow):
         else:
             target_peer = (target_ip, port)
 
+        self._decode_worker.reset_stream_state()
+
         def _on_raw_frame(frame_data, width, height, ts, is_kf):
             if isinstance(frame_data, bytes):
-                self._decode_worker.submit(frame_data, width, height)
+                self._decode_worker.submit(frame_data, width, height, is_keyframe=bool(is_kf))
 
         def _on_telem(fps, mbps, lat, pkts, frames):
             self.cur_fps = fps
@@ -1283,7 +1321,7 @@ class DavMainWindow(QMainWindow):
         def _on_rx_p2p_status(remote_ip: str, remote_port: int, route_label: str):
             self.bridge.log_message.emit(
                 "SUCCESS",
-                f"[{route_label}] Fluxo estabelecido com {remote_ip}:{remote_port}.",
+                f"[{route_label}] Fluxo estabelecido com {format_endpoint_display(remote_ip, remote_port)}.",
             )
 
         def _on_audio_pkt(audio_fid: int, tx_ts_us: int, audio_payload: bytes):
@@ -1316,7 +1354,11 @@ class DavMainWindow(QMainWindow):
             self.settings_sheet.set_connection_state(True)
             self.nav_pill.set_live(True)
             self._conn_hint_timer.start(3000)
-            mode_str = f"PIN Universal {pin}" if not target_ip else f"LAN Direto {target_ip}:{port}"
+            mode_str = (
+                f"PIN Universal {pin}"
+                if not target_ip
+                else f"Direto {format_endpoint_display(target_ip, port)}"
+            )
             self._append_log("INFO", f"Receptor ativo na porta UDP {eff_bind_port} ({mode_str}).")
         else:
             self.audio_player.stop()
@@ -1349,8 +1391,16 @@ class DavMainWindow(QMainWindow):
         if self.is_receiving:
             self._toggle_receiver()
 
-        target_ip = self.settings_sheet.txt_send_ip.text().strip()
+        raw_send_ip = self.settings_sheet.txt_send_ip.text().strip()
         target_port = self.settings_sheet.spn_send_port.value()
+        target_ip, send_inline_port = parse_host_port(raw_send_ip)
+        if send_inline_port is not None:
+            target_port = send_inline_port
+            self.settings_sheet.spn_send_port.setValue(target_port)
+        if target_ip and not is_valid_ip(target_ip):
+            resolved_tx = resolve_host_dualstack(target_ip, prefer_ipv6=bool(self._sender_global_ipv6))
+            if resolved_tx:
+                target_ip = resolved_tx
         pin = self.settings_sheet.txt_send_pin.text().strip()
 
         res_text = self.settings_sheet.cmb_res.currentText()
@@ -1386,7 +1436,7 @@ class DavMainWindow(QMainWindow):
         def _on_tx_p2p_locked(remote_ip: str, remote_port: int, mode_tag: str):
             self.bridge.log_message.emit(
                 "SUCCESS",
-                f"[{mode_tag}] Túnel de transmissão confirmado -> {remote_ip}:{remote_port}",
+                f"[{mode_tag}] Túnel de transmissão confirmado -> {format_endpoint_display(remote_ip, remote_port)}",
             )
             self.target_updated_signal.emit(remote_ip, remote_port, mode_tag)
 
@@ -1488,18 +1538,50 @@ class DavMainWindow(QMainWindow):
                     p2p.stop()
                     return
                 if reg:
+                    self._rendezvous_online = True
                     reg_holder.update(reg)
-                    pub_ep_str = f"{reg.get('your_public_ip')}:{(ep_info or {}).get('public_port', eff_local_port)}"
+                    pub_ep_str = format_endpoint_display(
+                        str(reg.get("your_public_ip") or ""),
+                        int((ep_info or {}).get("public_port", eff_local_port)),
+                    )
                     nat_str = (ep_info or {}).get("nat_type", "auto")
+                    pub_v6 = (ep_info or {}).get("public_ipv6")
+                    pub_v6_p = int((ep_info or {}).get("public_ipv6_port") or eff_local_port)
+                    if pub_v6:
+                        self._sender_global_ipv6 = str(pub_v6)
+                        self._sender_global_ipv6_port = pub_v6_p
+                        QTimer.singleShot(
+                            0,
+                            lambda v6=str(pub_v6): self.page_sender.set_ipv6_direct_available(True, v6),
+                        )
+                        _emit_log(
+                            "INFO",
+                            f"[IPv6 Direto] Endereço global ativo: dav://[{pub_v6}]:{pub_v6_p}/{pin}",
+                        )
                     _emit_log(
                         "SUCCESS",
                         f"[P2P] PIN '{pin}' ativo no Rendezvous (Endpoint Público: {pub_ep_str} · NAT: {nat_str}).",
                     )
                 else:
-                    _emit_log(
-                        "WARN",
-                        "[P2P] Servidor Rendezvous indisponível no momento; pareamento por PIN permanece ativo na rede local (Beacon LAN).",
-                    )
+                    self._rendezvous_online = False
+                    pub_v6 = (ep_info or {}).get("public_ipv6") or get_local_ipv6()
+                    pub_v6_p = int((ep_info or {}).get("public_ipv6_port") or eff_local_port)
+                    if pub_v6:
+                        self._sender_global_ipv6 = str(pub_v6)
+                        self._sender_global_ipv6_port = pub_v6_p
+                        QTimer.singleShot(
+                            0,
+                            lambda v6=str(pub_v6): self.page_sender.set_ipv6_direct_available(True, v6),
+                        )
+                        _emit_log(
+                            "WARN",
+                            f"[P2P] Rendezvous indisponível; use 'Copiar Link Direto IPv6' (dav://[{pub_v6}]:{pub_v6_p}/{pin}) ou Beacon LAN.",
+                        )
+                    else:
+                        _emit_log(
+                            "WARN",
+                            "[P2P] Servidor Rendezvous indisponível no momento; pareamento por PIN permanece ativo na rede local (Beacon LAN).",
+                        )
             except Exception as exc:
                 _emit_log("DEBUG", f"[P2P] Aviso no registro assíncrono: {exc}")
 
@@ -1538,9 +1620,10 @@ class DavMainWindow(QMainWindow):
         self._active_peer_endpoint = (ip, int(port))
         res_txt = self.settings_sheet.cmb_res.currentText().split()[0]
         fps_txt = self.settings_sheet.cmb_fps.currentText().split()[0]
-        details = f"{res_txt} @ {fps_txt} [{mode_tag} -> {ip}:{port}]"
+        ep_disp = format_endpoint_display(ip, int(port))
+        details = f"{res_txt} @ {fps_txt} [{mode_tag} -> {ep_disp}]"
         self.settings_sheet.set_sending_state(True, details)
-        self.page_sender.set_sending_state(True, f"Transmitindo -> {ip}:{port}")
+        self.page_sender.set_sending_state(True, f"Transmitindo -> {ep_disp}")
 
     @Slot(float, float, float, int, int)
     def _on_telemetry_updated(self, fps: float, mbps: float, lat: float, pkts: int, frames: int):
@@ -1632,10 +1715,10 @@ class DavMainWindow(QMainWindow):
         if self.is_receiving:
             self._toggle_receiver()
         self.settings_sheet.set_target(ip, port)
-        self.page_viewer_idle.set_access_key(f"{ip}:{port}")
+        self.page_viewer_idle.set_access_key(format_endpoint_display(ip, int(port)))
         self._set_mode("viewer")
         self._close_sheets()
-        self._append_log("INFO", f"Conectando diretamente a {ip}:{port} na rede local...")
+        self._append_log("INFO", f"Conectando diretamente a {format_endpoint_display(ip, int(port))} na rede local...")
         QTimer.singleShot(150, self._toggle_receiver)
 
     def _manual_refresh_peers(self):

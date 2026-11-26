@@ -18,6 +18,7 @@ import hmac
 import os
 import struct
 import threading
+import time
 from typing import Dict, Optional, Tuple
 
 from cryptography.hazmat.primitives import hashes
@@ -214,7 +215,18 @@ class PakeSession:
         self._derived: Optional[dict] = None
         self.confirmed: bool = False
         self.cipher: Optional[PacketCipher] = None
+        self.confirmed_at_mono: float = 0.0
+        self.last_valid_rx_mono: float = 0.0
         self._lock = threading.Lock()
+
+    def mark_valid_rx(self, now_mono: Optional[float] = None) -> None:
+        """Registra trafego AEAD autenticado valido para blindar a sessao contra SYN2 espurio."""
+        ts = now_mono if now_mono is not None else time.monotonic()
+        with self._lock:
+            self.last_valid_rx_mono = ts
+            if not self.confirmed:
+                self.confirmed = True
+                self.confirmed_at_mono = ts
 
     def build_syn(self) -> bytes:
         return MAGIC_PAKE_SYN + self.tag + self.role.encode("ascii") + self.local_nonce + self.local_share
@@ -310,6 +322,12 @@ class PakeSession:
 
         with self._lock:
             if self.peer_nonce != p_nonce or self.peer_share != p_share or self._derived is None:
+                # Blindagem contra SYN2/ACK2 espurios durante sessao ativa confirmada (ex: polls duplicados)
+                if self.confirmed and self.peer_nonce is not None:
+                    now_m = time.monotonic()
+                    active_anchor = max(self.last_valid_rx_mono, self.confirmed_at_mono)
+                    if (now_m - active_anchor) < 4.0:
+                        return False, None, False
                 if not self._derive_from_peer(p_role, p_nonce, p_share):
                     return False, None, False
                 self.confirmed = False
@@ -321,6 +339,9 @@ class PakeSession:
                     return False, None, False
                 if not self.confirmed:
                     self.confirmed = True
+                    now_m = time.monotonic()
+                    self.confirmed_at_mono = now_m
+                    self.last_valid_rx_mono = max(self.last_valid_rx_mono, now_m)
                     newly_confirmed = True
 
             my_conf = self._derived["conf_tx"] if self.role == "S" else self._derived["conf_rx"]

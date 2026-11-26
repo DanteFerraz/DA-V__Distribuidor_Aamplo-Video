@@ -48,6 +48,9 @@ Testing/
 *.dll
 *.exe
 *.dylib
+# Precompiled MIT ViGEmClient & offline ViGEmBus installer (avoids >2h CI build)
+!third_party/vigem/
+!third_party/vigem/**
 *.pdb
 *.ilk
 *.exp

@@ -41,6 +41,17 @@ class VideoDecoder(BaseDecoder):
     def __init__(self):
         self._h264_dec = None
         self._hevc_dec = None
+        self.last_decode_corrupted: bool = False
+
+    def flush(self) -> None:
+        """Limpa o DPB interno dos decodificadores H.264/HEVC antes de um IDR limpo."""
+        for ctx in (self._h264_dec, self._hevc_dec):
+            if ctx is not None:
+                try:
+                    ctx.flush_buffers()
+                except Exception:
+                    pass
+        self.last_decode_corrupted = False
 
     def _get_h264_decoder(self):
         if self._h264_dec is None and HAS_AV:
@@ -94,6 +105,7 @@ class VideoDecoder(BaseDecoder):
         return arr
 
     def decode_all(self, payload: bytes, width: int = 1920, height: int = 1080) -> List[np.ndarray]:
+        self.last_decode_corrupted = False
         if not payload:
             return []
 
@@ -102,8 +114,17 @@ class VideoDecoder(BaseDecoder):
             if dec:
                 try:
                     frames = dec.decode(av.Packet(payload[len(MAGIC_H264):]))
-                    return [self._convert_frame_to_bgr(f) for f in frames if f is not None]
+                    out: List[np.ndarray] = []
+                    for f in frames:
+                        if f is None:
+                            continue
+                        if getattr(f, "is_corrupt", False):
+                            self.last_decode_corrupted = True
+                            continue
+                        out.append(self._convert_frame_to_bgr(f))
+                    return out
                 except Exception as exc:
+                    self.last_decode_corrupted = True
                     logger.debug(f"[Codec] Erro no decode H.264: {exc}")
                     return []
             return []
@@ -113,8 +134,17 @@ class VideoDecoder(BaseDecoder):
             if dec:
                 try:
                     frames = dec.decode(av.Packet(payload[len(MAGIC_HEVC):]))
-                    return [self._convert_frame_to_bgr(f) for f in frames if f is not None]
+                    out_hevc: List[np.ndarray] = []
+                    for f in frames:
+                        if f is None:
+                            continue
+                        if getattr(f, "is_corrupt", False):
+                            self.last_decode_corrupted = True
+                            continue
+                        out_hevc.append(self._convert_frame_to_bgr(f))
+                    return out_hevc
                 except Exception as exc:
+                    self.last_decode_corrupted = True
                     logger.debug(f"[Codec] Erro no decode HEVC: {exc}")
                     return []
             return []

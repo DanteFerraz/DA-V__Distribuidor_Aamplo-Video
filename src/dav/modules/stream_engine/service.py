@@ -669,6 +669,14 @@ class StreamEngineService:
             except Exception:
                 pass
 
+    def request_receiver_pli(self) -> None:
+        """Aciona pedido imediato de IDR limpo no Receptor ativo (usado pelo DecodeWorker em Zero-Ghosting)."""
+        if self._receiver is not None:
+            try:
+                self._receiver.request_pli(force=True)
+            except Exception:
+                pass
+
     def prepare_receiver_socket(
         self,
         bind_port: int,
@@ -747,8 +755,11 @@ class StreamEngineService:
             candidates = [(str(target_peer[0]), int(target_peer[1]), "direct")]
 
         relay_addr: Optional[Tuple[str, int]] = None
+        relay_http_url: Optional[str] = None
         if relay_info and relay_info.get("host") and relay_info.get("port"):
             relay_addr = (str(relay_info["host"]), int(relay_info["port"]))
+            if relay_info.get("http_base_url"):
+                relay_http_url = str(relay_info["http_base_url"])
 
         def _on_route_locked(ip: str, p: int, mode_tag: str) -> None:
             self._active_route = {"ip": ip, "port": p, "mode": mode_tag}
@@ -803,6 +814,7 @@ class StreamEngineService:
             pin=pin,
             candidates=candidates,
             relay_addr=relay_addr,
+            relay_http_base_url=relay_http_url,
             on_encoded_frame=on_frame_ready,
             on_audio=_on_audio,
             on_route_locked=_on_route_locked,

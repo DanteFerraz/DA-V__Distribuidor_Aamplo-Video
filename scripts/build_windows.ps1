@@ -45,7 +45,8 @@ py -3.13 -m PyInstaller --noconfirm --clean --onedir --windowed `
   --hidden-import src.dav.modules.universal_input.manifest `
   --hidden-import PySide6.QtMultimedia `
   --collect-all sdl2dll `
-  --collect-all vgamepad `
+  --add-binary "$Root\third_party\vigem\x64\ViGEmClient.dll;third_party/vigem/x64" `
+  --add-data "$Root\third_party\vigem\install\x64\ViGEmBusSetup_x64.msi;third_party/vigem/install/x64" `
   --hidden-import comtypes `
   --hidden-import cryptography `
   --exclude-module PyQt5 `

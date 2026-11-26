@@ -4,6 +4,23 @@ Todas as mudanças arquiteturais, melhorias de protocolo e marcos de governança
 
 ---
 
+## [5.2.0] — 2026-11-26
+
+### Suporte nativo Dual-Stack IPv6 e hosts IPv6-Only (`src/dav/modules/transport_p2p/dualstack.py`)
+- **Socket único Dual-Stack (`AF_INET6` + `IPV6_V6ONLY=0` em `[::]`):** Todos os sockets de mídia (`TransportService`, `SenderTransportEndpoint`, `find_available_port`) e o servidor `dav_rendezvous.py` (v3.2.0) passam a aceitar tráfego IPv6 nativo e IPv4 mapeado (`::ffff:x.x.x.x`) no mesmo descritor, com normalização canônica (`normalize_recv_addr`) e ajuste automático de MTU para `1180 B` em rotas IPv6 (`<= 1280 B` RFC 8200).
+- **Descoberta STUN RFC 5389 IPv6 (`0x02`), síntese NAT64 (RFC 7050) e URI direta IPv6:** `signaling_client.py` e `stun.py` passam a decodificar `XOR-MAPPED-ADDRESS` de 128 bits (`family == 0x02`), priorizar candidatos IPv6 Global Unicast (`2000::/3`, sem CGNAT) acima de WAN IPv4, sintetizar rotas NAT64 via `ipv4only.arpa` para clientes IPv6-only atrás de NAT64 e aceitar `dav://[ipv6]:porta/PIN`, `[ipv6]:porta`, literais IPv6 puros e registros DNS `AAAA` na interface (`views.py`, `sheets.py` e `main_window.py`), além do botão **Copiar Link Direto IPv6** no Modo Transmissor.
+- **Blind Relay Cross-Family (`IPv4 <-> IPv6`) e HTTP-Stream/WebSocket (`80/443`):** Adicionado `HttpTunnelRelayClient` (`http_tunnel_relay.py`) e endpoints `/p2p/relay_stream` (`X-Accel-Buffering: no`), `/p2p/relay_push` (keep-alive em lotes binários) e `/p2p/ws_relay` (RFC 6455 stdlib) em `dav_rendezvous.py` com acionamento automático em `1,70 s` quando o UDP `8768` estiver bloqueado por firewalls institucionais, acompanhado do guia operacional `deploy/DEPLOY_VPS_ORACLE.md`.
+
+### Eliminação do loop de re-pareamento e pipeline Zero-Ghosting H.264
+- **Correção da regressão de `1,2 s` em `signaling_client.py` e blindagem PAKE:** Janela de deduplicação elevada para `60 s` contra servidores Rendezvous legados sem `since_index`, idempotência de `PAIR_PEER` em `subprocess_sender.py` e `sender_worker.py`, e rejeição de `MAGIC_PAKE_SYN` espúrio durante sessões AEAD ativas (`< 4,0 s`) em `crypto_pake.py`.
+- **Block-RS FEC (`algo = 2`) para Mega-IDRs (`fec_engine.py` e `data_plane.py`):** Quadros-chave acima de `200` fragmentos (até `4096`) são particionados em sub-blocos contíguos de `160` shards com paridade Cauchy Reed-Solomon `GF(2^8)` independente por sub-bloco, eliminando o teto silencioso de `255` que deixava Mega-IDRs sem proteção FEC.
+- **Gate Zero-Ghosting ponta a ponta e trava de cadência WGC:** Removido o abandono sujo de `450 ms` em `ReceiverWorker`, adicionado `WsMsgType.PLI_REQ = 0x0E` autenticado, inspeção de `frame.is_corrupt` + `flush()` em `VideoDecoder`, modo *fast-catchup* preservando o DPB sem descarte silencioso de P-frames em `DecodeWorker` (`bridge.py` + `main_window.py`) e remoção de `GAMEPAD_STATE` de `input_wake_evt` com piso `0.96 * frame_interval` (eliminando picos de `99 FPS / 21,8 Mbps`).
+
+### ViGEm pré-compilado versionado no Git e build Windows zero-travamento (`universal_input` + CI)
+- **Adaptador nativo `ctypes` (`vigem_ctypes.py`) sobre `ViGEmClient.dll` pré-compilado:** Versionados `third_party/vigem/x64/ViGEmClient.dll` (`130 KB`, MIT) e `third_party/vigem/install/x64/ViGEmBusSetup_x64.msi` (`856 KB`) com exceção explícita em `.gitignore`, removendo `vgamepad` de `requirements.txt` (eliminando travamentos >2h no GitHub Actions) e restaurando emulação real Xbox 360 + DualShock 4 em 100% dos instaladores oficiais Windows.
+
+---
+
 ## [5.1.0] — 2026-11-24
 
 ### Universalizador de entradas de teclado e controles (`src/dav/modules/universal_input/`)

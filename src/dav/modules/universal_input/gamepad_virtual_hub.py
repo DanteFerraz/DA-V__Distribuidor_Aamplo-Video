@@ -38,6 +38,13 @@ from src.dav.modules.universal_input.models import (
     GamepadStateDTO,
     RumbleRequestDTO,
 )
+from src.dav.modules.universal_input.vigem_ctypes import (
+    NativeViGEmDS4Device,
+    NativeViGEmX360Device,
+    find_vigem_bus_installer_msi,
+    is_vigem_bus_ready,
+    is_vigem_dll_available,
+)
 
 logger = logging.getLogger("DAV.UniversalInput.VirtualHub")
 
@@ -419,30 +426,35 @@ class _LinuxUInputVirtualGamepad(_BaseVirtualDevice):
 def check_host_gamepad_driver_status() -> Dict[str, Any]:
     """Verifica disponibilidade do driver virtual (`ViGEmBus` no Windows / `/dev/uinput` no Linux)."""
     if sys.platform == "win32":
-        has_vgamepad = False
+        has_native_dll = is_vigem_dll_available()
         bus_ready = False
-        try:
-            import vgamepad as vg  # type: ignore
-
-            has_vgamepad = True
-            # Testa conexao rapida ou checa servico ViGEmBus no SCM/System32
-            drivers_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "drivers")
-            bus_ready = os.path.isfile(os.path.join(drivers_dir, "ViGEmBus.sys"))
+        if has_native_dll:
+            bus_ready = is_vigem_bus_ready()
             if not bus_ready:
-                # Alguns setups instalam via DriverStore sem copiar para drivers\ViGEmBus.sys
-                try:
-                    pad = vg.VX360Gamepad()
-                    pad.reset()
-                    del pad
-                    bus_ready = True
-                except Exception:
-                    bus_ready = False
-        except Exception:
-            has_vgamepad = False
+                drivers_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "drivers")
+                bus_ready = os.path.isfile(os.path.join(drivers_dir, "ViGEmBus.sys"))
+        has_vgamepad = has_native_dll
+        if not has_native_dll:
+            try:
+                import vgamepad as vg  # type: ignore
+
+                has_vgamepad = True
+                drivers_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "drivers")
+                bus_ready = os.path.isfile(os.path.join(drivers_dir, "ViGEmBus.sys"))
+                if not bus_ready:
+                    try:
+                        pad = vg.VX360Gamepad()
+                        pad.reset()
+                        del pad
+                        bus_ready = True
+                    except Exception:
+                        bus_ready = False
+            except Exception:
+                has_vgamepad = False
         return {
             "platform": "win32",
             "driver_name": "Nefarius ViGEmBus",
-            "python_lib_installed": has_vgamepad,
+            "python_lib_installed": bool(has_vgamepad),
             "driver_ready": bool(has_vgamepad and bus_ready),
         }
 
@@ -456,11 +468,20 @@ def check_host_gamepad_driver_status() -> Dict[str, Any]:
 
 
 def install_vigembus_driver_win32() -> Tuple[bool, str]:
-    """Aciona instalacao assistida do driver assinado ViGEmBus no Windows via winget + UAC."""
+    """Aciona instalacao assistida do driver ViGEmBus via MSI offline embutido ou fallback winget + UAC."""
     if sys.platform != "win32":
         return False, "Instalador ViGEmBus aplica-se apenas ao Windows."
     try:
         import ctypes
+
+        msi_path = find_vigem_bus_installer_msi()
+        if msi_path is not None and msi_path.is_file():
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "msiexec.exe", f'/i "{msi_path}" /qb', None, 1
+            )
+            if int(ret) <= 32:
+                return False, f"Autorizacao UAC recusada (codigo={ret})."
+            return True, "Instalador offline ViGEmBus (MSI) iniciado via UAC."
 
         cmd_args = '/c winget install --id Nefarius.ViGEmBus --exact --accept-package-agreements --accept-source-agreements'
         ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", cmd_args, None, 1)
@@ -516,11 +537,19 @@ class VirtualGamepadHub:
         if sys.platform == "win32":
             try:
                 if want_ds4:
-                    return _WinViGEmDS4Device(on_rumble=_game_rumble_cb)
-                return _WinViGEmX360Device(on_rumble=_game_rumble_cb)
-            except Exception as exc:
-                logger.warning(f"[GamepadHub] ViGEmBus indisponivel ({exc}); mantendo slot em modo diagnostico.")
-                return _SyntheticVirtualDevice(profile_name="diag_sem_vigem")
+                    return NativeViGEmDS4Device(on_rumble=_game_rumble_cb)
+                return NativeViGEmX360Device(on_rumble=_game_rumble_cb)
+            except Exception as native_exc:
+                try:
+                    if want_ds4:
+                        return _WinViGEmDS4Device(on_rumble=_game_rumble_cb)
+                    return _WinViGEmX360Device(on_rumble=_game_rumble_cb)
+                except Exception as vg_exc:
+                    logger.warning(
+                        f"[GamepadHub] ViGEmBus indisponivel (nativo={native_exc}; vgamepad={vg_exc}); "
+                        "mantendo slot em modo diagnostico."
+                    )
+                    return _SyntheticVirtualDevice(profile_name="diag_sem_vigem")
 
         try:
             return _LinuxUInputVirtualGamepad(as_ds4=want_ds4, slot_idx=host_slot, on_rumble=_game_rumble_cb)

@@ -17,6 +17,12 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
+from src.dav.modules.transport_p2p.dualstack import (
+    canonicalize_ip,
+    format_endpoint_display,
+    get_local_ipv6,
+)
+
 BEACON_PORT = 9005
 BEACON_MAGIC = "DAV_BEACON_V1"
 PING_MAGIC = "DAV_PING"
@@ -56,8 +62,13 @@ def get_all_active_ipv4_interfaces() -> List[Tuple[str, str, str]]:
 def get_local_ip() -> str:
     ifaces = get_all_active_ipv4_interfaces()
     for name, ip, bcast in ifaces:
-        if not ip.startswith("192.168.56.") and not ip.startswith("169.254."):
+        if not ip.startswith("192.168.56.") and not ip.startswith("169.254.") and not ip.startswith("127."):
             return ip
+    if ifaces and not ifaces[0][1].startswith("127."):
+        return ifaces[0][1]
+    v6 = get_local_ipv6()
+    if v6:
+        return v6
     return ifaces[0][1] if ifaces else "127.0.0.1"
 
 
@@ -214,7 +225,7 @@ class LanBeaconService:
                 if magic not in (BEACON_MAGIC, PING_MAGIC, PONG_MAGIC):
                     continue
 
-                peer_ip = obj.get("ip") or addr[0]
+                peer_ip = canonicalize_ip(obj.get("ip") or addr[0])
                 peer_port = obj.get("port", 9000)
 
                 all_local_ips = [a[1] for a in get_all_active_ipv4_interfaces()]
@@ -222,7 +233,7 @@ class LanBeaconService:
                     continue
 
                 peer_pin = obj.get("pin", "")
-                peer_key = f"{peer_ip}:{peer_port}"
+                peer_key = format_endpoint_display(peer_ip, int(peer_port))
                 now = time.time()
                 is_sharing = obj.get("is_sharing", False)
                 node_name = obj.get("node_name", "Desconhecido")

@@ -22,6 +22,7 @@ from src.dav.modules.transport_p2p.crypto_pake import (
     MAGIC_PAKE_SYN,
     PakeSession,
 )
+from src.dav.modules.transport_p2p.dualstack import effective_mtu_for_ip
 from src.dav.modules.transport_p2p.fec_engine import (
     AdaptiveFecPolicy,
     FecDecoder,
@@ -94,6 +95,11 @@ class DataPlaneSender:
             self._ws_seq += 1
             return self._ws_seq
 
+    def set_target_mtu_for_ip(self, target_ip: str) -> int:
+        """Ajusta MTU dinamicamente (`1180 B` em IPv6 <= 1280 RFC 8200; `1300 B` em IPv4)."""
+        self.max_chunk = effective_mtu_for_ip(target_ip)
+        return self.max_chunk
+
     def build_pake_syn(self) -> bytes:
         return self.pake.build_syn()
 
@@ -122,9 +128,8 @@ class DataPlaneSender:
             opened = unpack_and_decrypt(pkt, aead_cipher=cipher, enforce_replay=True)
             if opened is not None:
                 hdr, plaintext = opened
-                # Confirma implicitamente PAKE se o RX ja enviou trafego autenticado valido
-                if not self.pake.confirmed:
-                    self.pake.confirmed = True
+                # Confirma e renova timestamp de trafego AEAD valido (blindagem contra SYN2 espurio)
+                self.pake.mark_valid_rx()
                 if hdr.payload_type == PT_INPUT:
                     return "remote_input", plaintext
                 if hdr.payload_type == PT_WORKSPACE:
@@ -422,8 +427,9 @@ class DataPlaneReceiver:
             return res
 
         hdr, plaintext = opened
-        if not self.pake.confirmed:
-            self.pake.confirmed = True
+        was_confirmed = self.pake.confirmed
+        self.pake.mark_valid_rx()
+        if not was_confirmed:
             res["newly_confirmed"] = True
 
         if hdr.payload_type == PT_AUDIO:
@@ -515,7 +521,7 @@ class DataPlaneReceiver:
         n_data = len(entry["data"])
         n_par = len(entry["parity"])
 
-        if k_data > 0 and (n_data == k_data or (n_data + n_par) >= k_data):
+        if k_data > 0 and (n_data == k_data or (n_par > 0 and (n_data + n_par) >= k_data)):
             used_fec = (n_data < k_data)
             shards = FecDecoder.recover(k_data, entry["data"], entry["parity"])
             if shards is not None:

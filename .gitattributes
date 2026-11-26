@@ -10,4 +10,5 @@
 CMakeLists.txt text eol=lf
 *.bat text eol=crlf
 *.ps1 text eol=crlf
+third_party/vigem/** binary
 

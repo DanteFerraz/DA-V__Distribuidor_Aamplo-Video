@@ -84,10 +84,10 @@ class VideoEncoder(BaseEncoder):
             self.active_backend_name = self.codec_type.upper()
             return
 
-        maxrate_kbps = max(800, int(self.bitrate_kbps * 1.15))
-        bufsize_kbps = max(1500, int(self.bitrate_kbps // 3))
+        maxrate_kbps = max(1200, int(self.bitrate_kbps * 1.25))
+        bufsize_kbps = max(1600, int(self.bitrate_kbps * 0.50))
 
-        # 1. Tentativa primária: NVENC GPU (perfil p1 ULL fiel ao baseline de 1 ms)
+        # 1. Tentativa primária: NVENC GPU (perfil p1 ULL com VBV suave para conter mega-IDRs)
         if self.codec_type in ("h264_nvenc", "hevc_nvenc"):
             try:
                 ctx = av.CodecContext.create(self.codec_type, "w")
@@ -106,7 +106,7 @@ class VideoEncoder(BaseEncoder):
                     "delay": "0",
                     "rc": "cbr",
                     "b": f"{self.bitrate_kbps}k",
-                    "g": str(self.fps * 3),
+                    "g": str(self.fps * 2),
                     "forced-idr": "1",
                     "repeat-headers": "1",
                     "bf": "0",
@@ -169,7 +169,7 @@ class VideoEncoder(BaseEncoder):
 
     def request_keyframe(self, force: bool = False) -> None:
         now = time.monotonic()
-        if force or self._frame_seq == 0 or (now - self._last_idr_mono) >= 0.08:
+        if force or self._frame_seq == 0 or (now - self._last_idr_mono) >= 0.12:
             self._force_next_idr = True
 
     def update_rate_budget(self, bitrate_kbps: int, pir_mode: bool = False) -> None:

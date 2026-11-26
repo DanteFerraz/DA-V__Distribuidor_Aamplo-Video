@@ -84,6 +84,7 @@ class WsMsgType(IntEnum):
     GAMEPAD_RUMBLE = 0x0B
     GAMEPAD_RUMBLE_ACK = 0x0C
     GAMEPAD_ROSTER = 0x0D
+    PLI_REQ = 0x0E
 
 
 def pack_wheel_deltas(dx: int, dy: int) -> int:
